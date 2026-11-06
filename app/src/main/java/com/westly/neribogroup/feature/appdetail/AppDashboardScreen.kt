@@ -1,6 +1,7 @@
 package com.westly.neribogroup.feature.appdetail
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,9 +18,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -30,15 +34,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
+import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.Entry
+import com.westly.neribogroup.data.Plan
 import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.EntryRow
@@ -64,6 +74,14 @@ fun AppDashboardScreen(
     var addIncome by remember { mutableStateOf(false) }
     var addExpense by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var addUser by remember { mutableStateOf(false) }
+    var editUserId by remember { mutableStateOf<String?>(null) }
+    // Goes up when a user change moves the Premium or Pro numbers, so those boxes refresh.
+    var countsVersion by remember { mutableStateOf(0) }
+    // The "new users today" pop-up sequence: 0 means not running.
+    var seqTotal by rememberSaveable { mutableStateOf(0) }
+    var seqIndex by rememberSaveable { mutableStateOf(1) }
+    val latestApp by rememberUpdatedState(app)
 
     val now = System.currentTimeMillis()
     val shown = if (editing) draft else app
@@ -75,6 +93,9 @@ fun AppDashboardScreen(
 
     BackHandler {
         if (editing) editing = false else onBack()
+    }
+    BackHandler(enabled = seqTotal > 0) {
+        seqTotal = 0
     }
 
     Scaffold(
@@ -118,6 +139,8 @@ fun AppDashboardScreen(
                                     onClick = {
                                         menuOpen = false
                                         draft = app.forEditing(now)
+                                        addUser = false
+                                        editUserId = null
                                         editing = true
                                     }
                                 )
@@ -132,8 +155,14 @@ fun AppDashboardScreen(
                 SaveBar(
                     onCancel = { editing = false },
                     onSave = {
+                        val saveNow = System.currentTimeMillis()
+                        val newUsers = draft.dailyNewUsers - app.newUsersToday(saveNow)
                         onSave(draft.copy(name = draft.name.trim().ifBlank { app.name }))
                         editing = false
+                        if (newUsers > 0L) {
+                            seqTotal = minOf(newUsers, 100L).toInt()
+                            seqIndex = 1
+                        }
                     }
                 )
             }
@@ -164,14 +193,18 @@ fun AppDashboardScreen(
                     })
                 }
                 item {
-                    NumberField("Premium users", draft.premiumUsers, {
-                        draft = draft.copy(premiumUsers = it)
-                    })
+                    key(countsVersion) {
+                        NumberField("Premium users", draft.premiumUsers, {
+                            draft = draft.copy(premiumUsers = it)
+                        })
+                    }
                 }
                 item {
-                    NumberField("Pro users", draft.proUsers, {
-                        draft = draft.copy(proUsers = it)
-                    })
+                    key(countsVersion) {
+                        NumberField("Pro users", draft.proUsers, {
+                            draft = draft.copy(proUsers = it)
+                        })
+                    }
                 }
                 item {
                     NumberField("New users today", draft.dailyNewUsers, {
@@ -235,6 +268,64 @@ fun AppDashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         valueColor = MaterialTheme.colorScheme.primary
                     )
+                }
+            }
+
+            item { SectionTitle("Plan benefits") }
+
+            if (editing) {
+                item {
+                    OutlinedTextField(
+                        value = draft.premiumBenefits,
+                        onValueChange = { draft = draft.copy(premiumBenefits = it.take(500)) },
+                        label = { Text("What Premium includes") },
+                        minLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                item {
+                    OutlinedTextField(
+                        value = draft.proBenefits,
+                        onValueChange = { draft = draft.copy(proBenefits = it.take(500)) },
+                        label = { Text("What Pro includes") },
+                        minLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            } else {
+                item { BenefitsBlock("Premium includes", shown.premiumBenefits) }
+                item { BenefitsBlock("Pro includes", shown.proBenefits) }
+            }
+
+            item { SectionTitle("App users") }
+
+            item {
+                val count = shown.users.size
+                Text(
+                    text = when (count) {
+                        0 -> "No users recorded yet."
+                        1 -> "1 user recorded"
+                        else -> formatCount(count.toLong()) + " users recorded"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            items(shown.users.reversed().sortedByDescending { it.addedMillis }, key = { it.id }) { user ->
+                UserRow(
+                    user = user,
+                    editing = editing,
+                    onClick = { editUserId = user.id }
+                )
+            }
+
+            if (editing) {
+                item {
+                    Button(
+                        onClick = { addUser = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Add user") }
                 }
             }
 
@@ -340,6 +431,94 @@ fun AppDashboardScreen(
         )
     }
 
+    if (addUser) {
+        UserDialog(
+            heading = "Add user",
+            initial = null,
+            otherUsers = draft.users,
+            onSave = { name, email, phone, plan ->
+                draft = draft.withUserAdded(
+                    AppUser(
+                        name = name,
+                        email = email,
+                        phone = phone,
+                        plan = plan,
+                        addedMillis = System.currentTimeMillis()
+                    )
+                )
+                countsVersion++
+                addUser = false
+            },
+            onDismiss = { addUser = false }
+        )
+    }
+
+    val userBeingEdited = editUserId?.let { id -> draft.users.firstOrNull { it.id == id } }
+    if (editing && userBeingEdited != null) {
+        key(userBeingEdited.id) {
+            UserDialog(
+                heading = "Edit user",
+                initial = userBeingEdited,
+                otherUsers = draft.users.filter { it.id != userBeingEdited.id },
+                onSave = { name, email, phone, plan ->
+                    draft = draft.withUserUpdated(
+                        userBeingEdited.copy(
+                            name = name,
+                            email = email,
+                            phone = phone,
+                            plan = plan
+                        )
+                    )
+                    countsVersion++
+                    editUserId = null
+                },
+                onDismiss = { editUserId = null },
+                onDelete = {
+                    draft = draft.withUserRemoved(userBeingEdited.id)
+                    countsVersion++
+                    editUserId = null
+                }
+            )
+        }
+    }
+
+    if (seqTotal > 0) {
+        val isLast = seqIndex >= seqTotal
+        val next: () -> Unit = {
+            if (seqIndex >= seqTotal) {
+                seqTotal = 0
+            } else {
+                seqIndex += 1
+            }
+        }
+        key(seqIndex) {
+            UserDialog(
+                heading = "Add user $seqIndex of $seqTotal",
+                initial = null,
+                otherUsers = latestApp.users,
+                saveLabel = if (isLast) "Save and finish" else "Save and next",
+                onSave = { name, email, phone, plan ->
+                    // Built from the latest saved app so no earlier user or count is lost.
+                    onSave(
+                        latestApp.withUserAdded(
+                            AppUser(
+                                name = name,
+                                email = email,
+                                phone = phone,
+                                plan = plan,
+                                addedMillis = System.currentTimeMillis()
+                            )
+                        )
+                    )
+                    next()
+                },
+                onDismiss = { seqTotal = 0 },
+                onSkip = { next() },
+                onStop = { seqTotal = 0 }
+            )
+        }
+    }
+
     if (confirmDelete) {
         ConfirmDialog(
             heading = "Delete ${app.name}?",
@@ -352,4 +531,71 @@ fun AppDashboardScreen(
             onDismiss = { confirmDelete = false }
         )
     }
+}
+
+/** One block in the Plan benefits section (read-only view). */
+@Composable
+private fun BenefitsBlock(label: String, text: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            if (text.isBlank()) {
+                Text(
+                    text = "Not written yet. Tap the three dots, choose Edit, then write it.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+}
+
+/** One user: name, email, phone (if given) and a small plan label. Tappable only while editing. */
+@Composable
+private fun UserRow(user: AppUser, editing: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (editing) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = user.name, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = user.email,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (user.phone.isNotBlank()) {
+                Text(
+                    text = user.phone,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Text(
+            text = planText(user.plan),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium,
+            color = if (user.plan == Plan.FREE) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.primary
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }

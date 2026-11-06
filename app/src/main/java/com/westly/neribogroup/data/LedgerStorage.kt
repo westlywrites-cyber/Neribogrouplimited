@@ -37,7 +37,7 @@ object LedgerStorage {
 
     fun toJson(ledger: Ledger): String {
         val root = JSONObject()
-        root.put("version", 2)
+        root.put("version", 3)
         root.put("companyName", ledger.company.name)
         root.put("companyExpenses", entriesToJson(ledger.company.expenses))
 
@@ -57,6 +57,9 @@ object LedgerStorage {
             o.put("todayKey", app.todayKey)
             o.put("newUsersDayKey", app.newUsersDayKey)
             o.put("entries", entriesToJson(app.entries))
+            o.put("users", usersToJson(app.users))
+            o.put("premiumBenefits", app.premiumBenefits)
+            o.put("proBenefits", app.proBenefits)
             apps.put(o)
         }
         root.put("apps", apps)
@@ -146,7 +149,10 @@ object LedgerStorage {
                     proToday = o.optLong("proToday"),
                     todayKey = o.optString("todayKey"),
                     newUsersDayKey = o.optString("newUsersDayKey"),
-                    entries = jsonToEntries(o.optJSONArray("entries"))
+                    entries = jsonToEntries(o.optJSONArray("entries")),
+                    users = jsonToUsers(o.optJSONArray("users")),
+                    premiumBenefits = o.optString("premiumBenefits"),
+                    proBenefits = o.optString("proBenefits")
                 )
             )
         }
@@ -221,6 +227,44 @@ object LedgerStorage {
         }
 
         return Ledger(company = company, apps = apps, staff = staff, renewals = renewals)
+    }
+
+    private fun usersToJson(users: List<AppUser>): JSONArray {
+        val array = JSONArray()
+        for (u in users) {
+            val o = JSONObject()
+            o.put("id", u.id)
+            o.put("name", u.name)
+            o.put("email", u.email)
+            o.put("phone", u.phone)
+            o.put("plan", u.plan.name)
+            o.put("addedMillis", u.addedMillis)
+            array.put(o)
+        }
+        return array
+    }
+
+    /** Skips any user without a name. An unknown plan becomes Free. */
+    private fun jsonToUsers(array: JSONArray?): List<AppUser> {
+        if (array == null) return emptyList()
+        val list = ArrayList<AppUser>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val name = o.optString("name").trim()
+            if (name.isEmpty()) continue
+            val plan = runCatching { Plan.valueOf(o.optString("plan")) }.getOrDefault(Plan.FREE)
+            list.add(
+                AppUser(
+                    id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    name = name,
+                    email = o.optString("email"),
+                    phone = o.optString("phone"),
+                    plan = plan,
+                    addedMillis = o.optLong("addedMillis")
+                )
+            )
+        }
+        return list
     }
 
     private fun entriesToJson(entries: List<Entry>): JSONArray {

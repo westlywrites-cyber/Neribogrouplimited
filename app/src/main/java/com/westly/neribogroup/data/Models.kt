@@ -29,6 +29,20 @@ data class Entry(
     val auto: Boolean = false
 )
 
+/** The plan a user of an app is on. */
+enum class Plan { FREE, PREMIUM, PRO }
+
+/** One real user of an app, with the plan they are on. */
+data class AppUser(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val email: String,
+    /** Empty when no phone number was given. */
+    val phone: String = "",
+    val plan: Plan = Plan.FREE,
+    val addedMillis: Long
+)
+
 /** One app dashboard, for example "Neribo Vault". */
 data class AppData(
     val id: String = UUID.randomUUID().toString(),
@@ -48,7 +62,10 @@ data class AppData(
     val todayKey: String = "",
     /** The day [dailyNewUsers] was last typed in. Older days count as zero. */
     val newUsersDayKey: String = "",
-    val entries: List<Entry> = emptyList()
+    val entries: List<Entry> = emptyList(),
+    val users: List<AppUser> = emptyList(),
+    val premiumBenefits: String = "",
+    val proBenefits: String = ""
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
@@ -68,6 +85,34 @@ data class AppData(
 
     /** The copy used while editing, so the "new users today" box shows today's real value. */
     fun forEditing(now: Long): AppData = copy(dailyNewUsers = newUsersToday(now))
+
+    /** Moves the Premium or Pro count by [delta] (never below 0). FREE changes nothing. */
+    private fun withPlanCount(plan: Plan, delta: Long): AppData = when (plan) {
+        Plan.PREMIUM -> copy(premiumUsers = (premiumUsers + delta).coerceAtLeast(0L))
+        Plan.PRO -> copy(proUsers = (proUsers + delta).coerceAtLeast(0L))
+        Plan.FREE -> this
+    }
+
+    /** Adds a user and raises the Premium or Pro count if the user is on that plan. */
+    fun withUserAdded(user: AppUser): AppData =
+        copy(users = users + user).withPlanCount(user.plan, 1L)
+
+    /** Replaces a user (matched by id). If the plan changed, the counts move with it. */
+    fun withUserUpdated(updated: AppUser): AppData {
+        val old = users.firstOrNull { it.id == updated.id } ?: return this
+        val replaced = copy(users = users.map { if (it.id == updated.id) updated else it })
+        return if (old.plan == updated.plan) {
+            replaced
+        } else {
+            replaced.withPlanCount(old.plan, -1L).withPlanCount(updated.plan, 1L)
+        }
+    }
+
+    /** Removes a user and lowers the count of their plan. Income already recorded stays. */
+    fun withUserRemoved(userId: String): AppData {
+        val old = users.firstOrNull { it.id == userId } ?: return this
+        return copy(users = users.filter { it.id != userId }).withPlanCount(old.plan, -1L)
+    }
 
     /**
      * Called when saving an edit. [previous] is the saved version before the edit.
