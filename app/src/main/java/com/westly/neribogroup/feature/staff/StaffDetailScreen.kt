@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,11 +37,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.Allowance
+import com.westly.neribogroup.data.PayItem
+import com.westly.neribogroup.data.SALARY_KEY
+import com.westly.neribogroup.data.allowanceKey
 import com.westly.neribogroup.data.Staff
 import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
@@ -48,7 +53,10 @@ import com.westly.neribogroup.feature.common.MoneyRow
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.SaveBar
 import com.westly.neribogroup.feature.common.SectionTitle
+import com.westly.neribogroup.feature.common.StatColumn
 import com.westly.neribogroup.feature.common.StatTile
+import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.feature.common.StatusDot
 import com.westly.neribogroup.ui.formatDate
 import com.westly.neribogroup.ui.formatMonth
 import com.westly.neribogroup.ui.formatNaira
@@ -68,6 +76,7 @@ fun StaffDetailScreen(
     var addAllowance by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmPay by remember { mutableStateOf(false) }
+    var itemToPay by remember { mutableStateOf<PayItem?>(null) }
 
     val now = System.currentTimeMillis()
     val shown = if (editing) draft else staff
@@ -210,11 +219,33 @@ fun StaffDetailScreen(
                 }
             } else {
                 item {
-                    StatTile(
-                        label = "Salary",
-                        value = formatNaira(shown.monthlySalary),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    val salaryItem = shown.payItems().firstOrNull { it.key == SALARY_KEY }
+                    FlatCard(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            StatColumn(
+                                label = "Salary",
+                                value = formatNaira(shown.monthlySalary),
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (salaryItem != null) {
+                                PayControl(
+                                    paid = shown.isItemPaid(SALARY_KEY, now),
+                                    onPay = { itemToPay = salaryItem }
+                                )
+                            }
+                        }
+                        val salaryPayment = shown.itemPayment(SALARY_KEY, now)
+                        if (salaryItem != null && salaryPayment != null) {
+                            Text(
+                                text = "Paid on " + formatDate(salaryPayment.dateMillis),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
 
@@ -231,17 +262,37 @@ fun StaffDetailScreen(
             }
 
             items(shown.allowances, key = { it.id }) { allowance ->
-                MoneyRow(
-                    title = allowance.name,
-                    subtitle = null,
-                    amountText = formatNaira(allowance.amount),
-                    editing = editing,
-                    onDelete = {
-                        draft = draft.copy(
-                            allowances = draft.allowances.filter { it.id != allowance.id }
-                        )
-                    }
-                )
+                if (editing) {
+                    MoneyRow(
+                        title = allowance.name,
+                        subtitle = null,
+                        amountText = formatNaira(allowance.amount),
+                        editing = true,
+                        onDelete = {
+                            draft = draft.copy(
+                                allowances = draft.allowances.filter { it.id != allowance.id }
+                            )
+                        }
+                    )
+                } else {
+                    val key = allowanceKey(allowance.id)
+                    val payment = shown.itemPayment(key, now)
+                    val payable = allowance.amount > 0L
+                    PayableRow(
+                        title = allowance.name,
+                        subtitle = if (payable && payment != null) {
+                            "Paid on " + formatDate(payment.dateMillis)
+                        } else {
+                            null
+                        },
+                        amountText = formatNaira(allowance.amount),
+                        showPay = payable,
+                        paid = payment != null,
+                        onPay = {
+                            itemToPay = PayItem(key, allowance.name, allowance.amount)
+                        }
+                    )
+                }
             }
 
             if (editing) {
@@ -274,9 +325,17 @@ fun StaffDetailScreen(
                     } else {
                         Button(
                             onClick = { confirmPay = true },
-                            enabled = shown.monthlyTotal > 0L,
+                            enabled = shown.outstandingItems(now).isNotEmpty(),
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("Mark as paid for " + formatMonth(now)) }
+                        ) {
+                            Text(
+                                if (shown.paidInMonth(now) > 0L) {
+                                    "Mark the rest as paid for " + formatMonth(now)
+                                } else {
+                                    "Mark as paid for " + formatMonth(now)
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -295,7 +354,8 @@ fun StaffDetailScreen(
 
             items(shown.payments.sortedByDescending { it.dateMillis }, key = { it.id }) { payment ->
                 MoneyRow(
-                    title = formatMonth(payment.dateMillis),
+                    title = formatMonth(payment.dateMillis) +
+                        if (payment.itemName.isBlank()) "" else " - " + payment.itemName,
                     subtitle = "Paid on " + formatDate(payment.dateMillis),
                     amountText = formatNaira(payment.amount),
                     editing = editing,
@@ -338,7 +398,7 @@ fun StaffDetailScreen(
     if (confirmPay) {
         ConfirmDialog(
             heading = "Mark as paid?",
-            message = "Record a payment of " + formatNaira(staff.monthlyTotal) + " to " +
+            message = "Record a payment of " + formatNaira(staff.outstandingTotal(now)) + " to " +
                 staff.name + " for " + formatMonth(now) + ".",
             confirmLabel = "Mark as paid",
             onConfirm = {
@@ -346,6 +406,20 @@ fun StaffDetailScreen(
                 onPay()
             },
             onDismiss = { confirmPay = false }
+        )
+    }
+
+    itemToPay?.let { item ->
+        ConfirmDialog(
+            heading = "Mark as paid?",
+            message = "Record a payment of " + formatNaira(item.amount) + " to " +
+                staff.name + " for " + item.name + ", " + formatMonth(now) + ".",
+            confirmLabel = "Mark as paid",
+            onConfirm = {
+                itemToPay = null
+                onSave(staff.paidItem(item.key, System.currentTimeMillis()))
+            },
+            onDismiss = { itemToPay = null }
         )
     }
 
@@ -392,5 +466,49 @@ private fun InfoRow(label: String, value: String) {
             text = value.ifBlank { "-" },
             style = MaterialTheme.typography.bodyLarge
         )
+    }
+}
+
+/** The pay control on the right of a pay row: a "Mark paid" button, or a green "Paid" status once paid. */
+@Composable
+private fun PayControl(paid: Boolean, onPay: () -> Unit) {
+    if (paid) {
+        StatusDot(text = "Paid", color = MaterialTheme.colorScheme.primary)
+    } else {
+        TextButton(onClick = onPay) { Text("Mark paid") }
+    }
+}
+
+/** One allowance row in normal view: name, optional paid date, amount and its own pay control. */
+@Composable
+private fun PayableRow(
+    title: String,
+    subtitle: String?,
+    amountText: String,
+    showPay: Boolean,
+    paid: Boolean,
+    onPay: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.titleSmall)
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Text(text = amountText, style = MaterialTheme.typography.titleSmall)
+        if (showPay) {
+            Spacer(modifier = Modifier.width(8.dp))
+            PayControl(paid = paid, onPay = onPay)
+        }
     }
 }

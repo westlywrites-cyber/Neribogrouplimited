@@ -448,7 +448,7 @@ fun GroupDashboardScreen(
         val unpaid = ledger.unpaidStaff(now)
         ConfirmDialog(
             heading = "Pay all staff?",
-            message = "Record " + formatNaira(unpaid.sumOf { it.monthlyTotal }) + " for " +
+            message = "Record " + formatNaira(unpaid.sumOf { it.outstandingTotal(now) }) + " for " +
                 unpaid.size + " staff for " + formatMonth(now) + ".",
             confirmLabel = "Pay all",
             onConfirm = {

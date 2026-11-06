@@ -173,11 +173,31 @@ data class Allowance(
     val amount: Long
 )
 
-/** One recorded salary payment. */
+/** Key used for the salary part of a staff member's monthly pay. */
+const val SALARY_KEY = "salary"
+
+/** Key used for one allowance of a staff member's monthly pay. */
+fun allowanceKey(allowanceId: String): String = "allowance:$allowanceId"
+
+/** One part of a staff member's monthly pay that can be paid on its own: the salary or one allowance. */
+data class PayItem(
+    val key: String,
+    val name: String,
+    val amount: Long
+)
+
+/** One recorded payment. */
 data class Payment(
     val id: String = UUID.randomUUID().toString(),
     val dateMillis: Long,
-    val amount: Long
+    val amount: Long,
+    /**
+     * What this payment covers: [SALARY_KEY] or an [allowanceKey]. Empty means the whole month
+     * (the way payments were recorded before salary and allowances could be paid separately).
+     */
+    val itemKey: String = "",
+    /** Readable name of what was paid, for example "Salary" or "Transport". Empty for whole-month payments. */
+    val itemName: String = ""
 )
 
 /** One staff member with contact details, pay and payment history. */
@@ -197,23 +217,63 @@ data class Staff(
     val monthlyTotal: Long get() = monthlySalary + allowancesTotal
     val totalPaid: Long get() = payments.sumOf { it.amount }
 
-    fun isPaidIn(millis: Long): Boolean {
+    private fun paymentsIn(millis: Long): List<Payment> {
         val key = monthKey(millis)
-        return payments.any { monthKey(it.dateMillis) == key }
+        return payments.filter { monthKey(it.dateMillis) == key }
     }
 
-    fun paidInMonth(millis: Long): Long {
-        val key = monthKey(millis)
-        return payments.filter { monthKey(it.dateMillis) == key }.sumOf { it.amount }
-    }
-
-    /** Records this month's pay. Does nothing if already paid this month or there is no pay set. */
-    fun paidForMonth(millis: Long): Staff =
-        if (isPaidIn(millis) || monthlyTotal <= 0L) {
-            this
-        } else {
-            copy(payments = payments + Payment(dateMillis = millis, amount = monthlyTotal))
+    /** The salary and every allowance that has an amount, each of which can be paid on its own. */
+    fun payItems(): List<PayItem> {
+        val items = ArrayList<PayItem>()
+        if (monthlySalary > 0L) items.add(PayItem(SALARY_KEY, "Salary", monthlySalary))
+        for (a in allowances) {
+            if (a.amount > 0L) items.add(PayItem(allowanceKey(a.id), a.name, a.amount))
         }
+        return items
+    }
+
+    /** The payment that covers this item in the month of [millis], or null if it is not paid yet. */
+    fun itemPayment(key: String, millis: Long): Payment? {
+        val inMonth = paymentsIn(millis)
+        return inMonth.firstOrNull { it.itemKey == key } ?: inMonth.firstOrNull { it.itemKey.isEmpty() }
+    }
+
+    fun isItemPaid(key: String, millis: Long): Boolean = itemPayment(key, millis) != null
+
+    /** Parts of this month's pay that are still unpaid. */
+    fun outstandingItems(millis: Long): List<PayItem> =
+        payItems().filter { !isItemPaid(it.key, millis) }
+
+    /** The amount still to be paid this month. */
+    fun outstandingTotal(millis: Long): Long = outstandingItems(millis).sumOf { it.amount }
+
+    /** True when something was paid this month and nothing is left to pay. */
+    fun isPaidIn(millis: Long): Boolean =
+        paymentsIn(millis).isNotEmpty() && outstandingItems(millis).isEmpty()
+
+    fun paidInMonth(millis: Long): Long = paymentsIn(millis).sumOf { it.amount }
+
+    /** Records one part of this month's pay (the salary or one allowance). Does nothing if it is already paid. */
+    fun paidItem(key: String, millis: Long): Staff {
+        val item = outstandingItems(millis).firstOrNull { it.key == key } ?: return this
+        return copy(
+            payments = payments + Payment(
+                dateMillis = millis,
+                amount = item.amount,
+                itemKey = item.key,
+                itemName = item.name
+            )
+        )
+    }
+
+    /** Records every part of this month's pay that is still unpaid. Does nothing if nothing is left to pay. */
+    fun paidForMonth(millis: Long): Staff {
+        var result = this
+        for (item in outstandingItems(millis)) {
+            result = result.paidItem(item.key, millis)
+        }
+        return result
+    }
 }
 
 const val DAY_MILLIS = 86_400_000L
@@ -314,7 +374,7 @@ data class Ledger(
 
     /** Staff who still have to be paid this month (and have pay set). */
     fun unpaidStaff(millis: Long): List<Staff> =
-        staff.filter { !it.isPaidIn(millis) && it.monthlyTotal > 0L }
+        staff.filter { it.outstandingItems(millis).isNotEmpty() }
 
     fun payStaff(staffId: String, millis: Long): Ledger =
         copy(staff = staff.map { if (it.id == staffId) it.paidForMonth(millis) else it })

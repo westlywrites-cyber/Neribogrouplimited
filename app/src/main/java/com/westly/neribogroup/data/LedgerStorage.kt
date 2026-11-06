@@ -92,6 +92,8 @@ object LedgerStorage {
                 po.put("id", p.id)
                 po.put("date", p.dateMillis)
                 po.put("amount", p.amount)
+                po.put("item", p.itemKey)
+                po.put("itemName", p.itemName)
                 payments.put(po)
             }
             o.put("payments", payments)
@@ -183,7 +185,9 @@ object LedgerStorage {
                     Payment(
                         id = po.optString("id").ifBlank { UUID.randomUUID().toString() },
                         dateMillis = po.optLong("date"),
-                        amount = po.optLong("amount")
+                        amount = po.optLong("amount"),
+                        itemKey = po.optString("item"),
+                        itemName = po.optString("itemName")
                     )
                 )
             }
