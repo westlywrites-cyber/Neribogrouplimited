@@ -12,7 +12,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
+import com.westly.neribogroup.feature.group.AppsScreen
+import com.westly.neribogroup.feature.group.CompanyCostsScreen
 import com.westly.neribogroup.feature.group.GroupDashboardScreen
+import com.westly.neribogroup.feature.group.RenewalsScreen
+import com.westly.neribogroup.feature.group.StaffListScreen
 import com.westly.neribogroup.feature.staff.StaffDetailScreen
 import com.westly.neribogroup.ui.theme.NeriboTheme
 
@@ -86,15 +90,40 @@ private fun NeriboRoot(vm: AppViewModel = viewModel()) {
             onDelete = { vm.deleteStaff(openStaff.id) }
         )
     } else {
-        GroupDashboardScreen(
-            ledger = vm.ledger,
-            onOpenApp = { vm.openAppId = it },
-            onOpenStaff = { vm.openStaffId = it },
-            onPayAllStaff = { vm.payAllStaff() },
-            onRenew = { vm.renew(it) },
-            onSave = { vm.saveLedger(it) },
-            onExport = { exportLauncher.launch("neribo-group-backup.json") },
-            onImport = { importLauncher.launch(arrayOf("*/*")) }
-        )
+        when (vm.openSection) {
+            Section.APPS -> AppsScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null },
+                onOpenApp = { vm.openAppId = it },
+                onSave = { vm.saveLedger(it) }
+            )
+            Section.RENEWALS -> RenewalsScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null },
+                onRenew = { vm.renew(it) },
+                onSave = { vm.saveLedger(it) }
+            )
+            Section.STAFF -> StaffListScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null },
+                onOpenStaff = { vm.openStaffId = it },
+                onPayAllStaff = { vm.payAllStaff() },
+                onSave = { vm.saveLedger(it) }
+            )
+            Section.COSTS -> CompanyCostsScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null },
+                onSave = { vm.saveLedger(it) }
+            )
+            null -> GroupDashboardScreen(
+                ledger = vm.ledger,
+                onOpenSection = { vm.openSection = it },
+                onOpenApp = { vm.openAppId = it },
+                onOpenStaff = { vm.openStaffId = it },
+                onSave = { vm.saveLedger(it) },
+                onExport = { exportLauncher.launch("neribo-group-backup.json") },
+                onImport = { importLauncher.launch(arrayOf("*/*")) }
+            )
+        }
     }
 }

@@ -10,10 +10,16 @@ import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.data.Staff
 
+/** The pages that open from the home screen tiles. */
+enum class Section { APPS, RENEWALS, STAFF, COSTS }
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     var ledger by mutableStateOf(LedgerStorage.load(application))
         private set
+
+    /** The page opened from a home tile (Apps, Renewals, Staff or Company costs), or null on the home screen. */
+    var openSection by mutableStateOf<Section?>(null)
 
     /** The id of the app dashboard that is open, or null when it is not showing. */
     var openAppId by mutableStateOf<String?>(null)
@@ -75,6 +81,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val imported = LedgerStorage.fromJson(text)
             openAppId = null
             openStaffId = null
+            openSection = null
             saveLedger(imported)
             true
         } catch (e: Exception) {

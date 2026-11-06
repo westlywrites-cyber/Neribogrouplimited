@@ -57,6 +57,7 @@ import com.westly.neribogroup.feature.common.SaveBar
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.StatTile
 import com.westly.neribogroup.feature.common.profitColor
+import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import com.westly.neribogroup.ui.formatNaira
 
@@ -83,7 +84,7 @@ fun AppDashboardScreen(
     var seqIndex by rememberSaveable { mutableStateOf(1) }
     val latestApp by rememberUpdatedState(app)
 
-    val now = System.currentTimeMillis()
+    val now = rememberNowMillis()
     val shown = if (editing) draft else app
 
     // What this save would add automatically, shown live while editing.
@@ -188,9 +189,11 @@ fun AppDashboardScreen(
                     )
                 }
                 item {
-                    NumberField("Total users", draft.totalUsers, {
-                        draft = draft.copy(totalUsers = it)
-                    })
+                    key(countsVersion) {
+                        NumberField("Total users", draft.totalUsers, {
+                            draft = draft.copy(totalUsers = it)
+                        })
+                    }
                 }
                 item {
                     key(countsVersion) {
@@ -207,9 +210,24 @@ fun AppDashboardScreen(
                     }
                 }
                 item {
-                    NumberField("New users today", draft.dailyNewUsers, {
-                        draft = draft.copy(dailyNewUsers = it)
+                    NumberField("New users today", draft.dailyNewUsers, { value ->
+                        // New users also raise Total users by the same amount.
+                        val change = value - draft.dailyNewUsers
+                        draft = draft.copy(
+                            dailyNewUsers = value,
+                            totalUsers = (draft.totalUsers + change).coerceAtLeast(0L)
+                        )
+                        countsVersion++
                     })
+                }
+                item {
+                    Text(
+                        text = "New users today are added to Total users for you. " +
+                            "After saving you can pick Free, Premium or Pro for each one. " +
+                            "New users today goes back to 0 at 12 am.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 item { SectionTitle("Subscription prices") }
                 item {
