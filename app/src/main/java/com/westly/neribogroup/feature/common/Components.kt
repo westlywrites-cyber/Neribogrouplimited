@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -87,13 +88,14 @@ fun NumberField(
     label: String,
     value: Long,
     onChange: (Long) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    maxDigits: Int = 15
 ) {
     var text by remember { mutableStateOf(if (value == 0L) "" else value.toString()) }
     OutlinedTextField(
         value = text,
         onValueChange = { raw ->
-            val clean = raw.filter { it.isDigit() }.take(15)
+            val clean = raw.filter { it.isDigit() }.take(maxDigits)
             text = clean
             onChange(clean.toLongOrNull() ?: 0L)
         },
@@ -115,7 +117,7 @@ fun EntryRow(entry: Entry, editing: Boolean, onDelete: () -> Unit) {
         Column(modifier = Modifier.weight(1f)) {
             Text(text = entry.title, style = MaterialTheme.typography.bodyLarge)
             Text(
-                text = formatDate(entry.dateMillis),
+                text = (if (entry.auto) "Auto · " else "") + formatDate(entry.dateMillis),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -126,6 +128,45 @@ fun EntryRow(entry: Entry, editing: Boolean, onDelete: () -> Unit) {
             fontWeight = FontWeight.Medium,
             color = if (entry.isIncome) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurface
+        )
+        if (editing) {
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete")
+            }
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+/** A row with a title, optional small line under it, an amount and (while editing) a delete button. */
+@Composable
+fun MoneyRow(
+    title: String,
+    subtitle: String?,
+    amountText: String,
+    editing: Boolean,
+    onDelete: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Text(
+            text = amountText,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium
         )
         if (editing) {
             IconButton(onClick = onDelete) {
@@ -222,6 +263,83 @@ fun AddEntryDialog(
             TextButton(
                 onClick = { if (value != null) onAdd(title.trim(), value) },
                 enabled = value != null && value > 0 && title.isNotBlank()
+            ) { Text("Add") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+/** Adds something that expires. Reminder days are typed like "30, 7, 2". */
+@Composable
+fun AddRenewalDialog(
+    onDismiss: () -> Unit,
+    onAdd: (name: String, amount: Long, days: Int, reminders: List<Int>, recordCost: Boolean) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("") }
+    var days by remember { mutableStateOf("") }
+    var reminders by remember { mutableStateOf("30, 7, 2") }
+    var recordCost by remember { mutableStateOf(true) }
+
+    val dayCount = days.toIntOrNull() ?: 0
+    val amountValue = amount.toLongOrNull() ?: 0L
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add renewal") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(60) },
+                    label = { Text("What did you pay for?") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { raw -> amount = raw.filter { it.isDigit() }.take(15) },
+                    label = { Text("Amount paid (₦)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                OutlinedTextField(
+                    value = days,
+                    onValueChange = { raw -> days = raw.filter { it.isDigit() }.take(4) },
+                    label = { Text("Lasts how many days?") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                OutlinedTextField(
+                    value = reminders,
+                    onValueChange = { reminders = it.filter { c -> c.isDigit() || c == ',' || c == ' ' }.take(30) },
+                    label = { Text("Warn me this many days before") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Also add to company costs",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Switch(checked = recordCost, onCheckedChange = { recordCost = it })
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val parsed = reminders.split(',', ' ')
+                        .mapNotNull { it.trim().toIntOrNull() }
+                        .filter { it in 1..3650 }
+                        .distinct()
+                        .sortedDescending()
+                        .take(6)
+                    onAdd(name.trim(), amountValue, dayCount, parsed, recordCost && amountValue > 0L)
+                },
+                enabled = name.isNotBlank() && dayCount > 0
             ) { Text("Add") }
         },
         dismissButton = {

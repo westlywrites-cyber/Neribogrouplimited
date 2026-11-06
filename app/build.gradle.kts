@@ -4,6 +4,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// The signing key comes from GitHub secrets (the workflow decodes it to a file).
+// Using the same key for every build is what lets a new APK install over the old app.
+val keystorePath: String? = System.getenv("KEYSTORE_PATH")
+
 android {
     namespace = "com.westly.neribogroup"
     compileSdk = 34
@@ -12,14 +16,31 @@ android {
         applicationId = "com.westly.neribogroup"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
+        // Goes up by one on every GitHub build, so Android accepts it as an update.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "1.0"
+    }
+
+    signingConfigs {
+        if (keystorePath != null && File(keystorePath).exists()) {
+            create("release") {
+                storeFile = File(keystorePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
     }
 
     compileOptions {

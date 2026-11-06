@@ -65,7 +65,13 @@ fun AppDashboardScreen(
     var addExpense by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
+    val now = System.currentTimeMillis()
     val shown = if (editing) draft else app
+
+    // What this save would add automatically, shown live while editing.
+    val premiumAdded = (draft.premiumUsers - app.premiumUsers).coerceAtLeast(0L)
+    val proAdded = (draft.proUsers - app.proUsers).coerceAtLeast(0L)
+    val autoIncome = premiumAdded * draft.premiumPrice + proAdded * draft.proPrice
 
     BackHandler {
         if (editing) editing = false else onBack()
@@ -111,7 +117,7 @@ fun AppDashboardScreen(
                                     text = { Text("Edit") },
                                     onClick = {
                                         menuOpen = false
-                                        draft = app
+                                        draft = app.forEditing(now)
                                         editing = true
                                     }
                                 )
@@ -172,11 +178,36 @@ fun AppDashboardScreen(
                         draft = draft.copy(dailyNewUsers = it)
                     })
                 }
+                item { SectionTitle("Subscription prices") }
+                item {
+                    NumberField("Premium price (₦ per subscription)", draft.premiumPrice, {
+                        draft = draft.copy(premiumPrice = it)
+                    })
+                }
+                item {
+                    NumberField("Pro price (₦ per subscription)", draft.proPrice, {
+                        draft = draft.copy(proPrice = it)
+                    })
+                }
+                item {
+                    Text(
+                        text = if (autoIncome > 0L) {
+                            "Saving now adds " + formatNaira(autoIncome) + " income: " +
+                                formatCount(premiumAdded) + " Premium and " +
+                                formatCount(proAdded) + " Pro new subscriptions."
+                        } else {
+                            "Raise Premium or Pro users and the app adds the income for you when you save. " +
+                                "Premium today and Pro today are counted for you."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             } else {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         StatTile("Total users", formatCount(shown.totalUsers), Modifier.weight(1f))
-                        StatTile("New today", formatCount(shown.dailyNewUsers), Modifier.weight(1f))
+                        StatTile("New today", formatCount(shown.newUsersToday(now)), Modifier.weight(1f))
                     }
                 }
                 item {
@@ -184,6 +215,26 @@ fun AppDashboardScreen(
                         StatTile("Premium", formatCount(shown.premiumUsers), Modifier.weight(1f))
                         StatTile("Pro", formatCount(shown.proUsers), Modifier.weight(1f))
                     }
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        StatTile("Premium today", formatCount(shown.premiumTodayAt(now)), Modifier.weight(1f))
+                        StatTile("Pro today", formatCount(shown.proTodayAt(now)), Modifier.weight(1f))
+                    }
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        StatTile("Premium price", formatNaira(shown.premiumPrice), Modifier.weight(1f))
+                        StatTile("Pro price", formatNaira(shown.proPrice), Modifier.weight(1f))
+                    }
+                }
+                item {
+                    StatTile(
+                        label = "Subscription income today",
+                        value = formatNaira(shown.subscriptionIncomeToday(now)),
+                        modifier = Modifier.fillMaxWidth(),
+                        valueColor = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
 

@@ -14,5 +14,11 @@ fun formatNaira(value: Long): String {
     return sign + "₦" + NumberFormat.getIntegerInstance(Locale.US).format(abs(value))
 }
 
+fun formatFullDate(millis: Long): String =
+    SimpleDateFormat("EEEE, d MMM yyyy", Locale.getDefault()).format(Date(millis))
+
+fun formatMonth(millis: Long): String =
+    SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(Date(millis))
+
 fun formatDate(millis: Long): String =
     SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(millis))

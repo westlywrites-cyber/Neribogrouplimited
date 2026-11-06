@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
 import com.westly.neribogroup.feature.group.GroupDashboardScreen
+import com.westly.neribogroup.feature.staff.StaffDetailScreen
 import com.westly.neribogroup.ui.theme.NeriboTheme
 
 class MainActivity : ComponentActivity() {
@@ -67,21 +68,33 @@ private fun NeriboRoot(vm: AppViewModel = viewModel()) {
     }
 
     val openApp = vm.openAppId?.let { id -> vm.ledger.apps.firstOrNull { it.id == id } }
+    val openStaff = vm.openStaffId?.let { id -> vm.ledger.staff.firstOrNull { it.id == id } }
 
-    if (openApp == null) {
-        GroupDashboardScreen(
-            ledger = vm.ledger,
-            onOpenApp = { vm.openAppId = it },
-            onSave = { vm.saveLedger(it) },
-            onExport = { exportLauncher.launch("neribo-group-backup.json") },
-            onImport = { importLauncher.launch(arrayOf("*/*")) }
-        )
-    } else {
+    if (openApp != null) {
         AppDashboardScreen(
             app = openApp,
             onBack = { vm.openAppId = null },
             onSave = { vm.saveApp(it) },
             onDelete = { vm.deleteApp(openApp.id) }
+        )
+    } else if (openStaff != null) {
+        StaffDetailScreen(
+            staff = openStaff,
+            onBack = { vm.openStaffId = null },
+            onSave = { vm.saveStaff(it) },
+            onPay = { vm.payStaff(openStaff.id) },
+            onDelete = { vm.deleteStaff(openStaff.id) }
+        )
+    } else {
+        GroupDashboardScreen(
+            ledger = vm.ledger,
+            onOpenApp = { vm.openAppId = it },
+            onOpenStaff = { vm.openStaffId = it },
+            onPayAllStaff = { vm.payAllStaff() },
+            onRenew = { vm.renew(it) },
+            onSave = { vm.saveLedger(it) },
+            onExport = { exportLauncher.launch("neribo-group-backup.json") },
+            onImport = { importLauncher.launch(arrayOf("*/*")) }
         )
     }
 }
