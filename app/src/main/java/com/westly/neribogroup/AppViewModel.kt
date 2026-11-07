@@ -52,12 +52,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var fontStep by mutableStateOf(prefs.getInt("font_step", 2).coerceIn(0, 5))
         private set
 
-    fun setDarkTheme(dark: Boolean) {
+    fun updateDarkTheme(dark: Boolean) {
         darkTheme = dark
         prefs.edit().putBoolean("theme_dark", dark).apply()
     }
 
-    fun setFontStep(step: Int) {
+    fun updateFontStep(step: Int) {
         val fixed = step.coerceIn(0, 5)
         fontStep = fixed
         prefs.edit().putInt("font_step", fixed).apply()

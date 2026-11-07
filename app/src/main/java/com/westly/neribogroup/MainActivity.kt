@@ -103,8 +103,8 @@ private fun NeriboRoot(vm: AppViewModel) {
             darkTheme = vm.darkTheme,
             fontStep = vm.fontStep,
             onBack = { vm.showSettings = false },
-            onDarkTheme = { vm.setDarkTheme(it) },
-            onFontStep = { vm.setFontStep(it) }
+            onDarkTheme = { vm.updateDarkTheme(it) },
+            onFontStep = { vm.updateFontStep(it) }
         )
     } else if (openApp != null) {
         AppDashboardScreen(
