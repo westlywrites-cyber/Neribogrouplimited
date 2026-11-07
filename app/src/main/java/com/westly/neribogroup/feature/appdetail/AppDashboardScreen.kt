@@ -77,6 +77,8 @@ fun AppDashboardScreen(
     var confirmDelete by remember { mutableStateOf(false) }
     var addUser by remember { mutableStateOf(false) }
     var editUserId by remember { mutableStateOf<String?>(null) }
+    // The user whose plan end date was tapped, to say if they renewed.
+    var expiryUserId by remember { mutableStateOf<String?>(null) }
     // Goes up when a user change moves the Premium or Pro numbers, so those boxes refresh.
     var countsVersion by remember { mutableStateOf(0) }
     // The "new users today" pop-up sequence: 0 means not running.
@@ -86,6 +88,7 @@ fun AppDashboardScreen(
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else app
+    val activeDays = activeUsersWeek(shown, now)
 
     // What this save would add automatically, shown live while editing.
     val premiumAdded = (draft.premiumUsers - app.premiumUsers).coerceAtLeast(0L)
@@ -229,6 +232,19 @@ fun AppDashboardScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                item {
+                    NumberField("Active users today", draft.activeUsers, {
+                        draft = draft.copy(activeUsers = it)
+                    })
+                }
+                item {
+                    Text(
+                        text = "Active users today goes back to 0 at 12 am. " +
+                            "Each day is kept in the last 7 days chart.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 item { SectionTitle("Subscription prices") }
                 item {
                     NumberField("Premium price (₦ per subscription)", draft.premiumPrice, {
@@ -289,9 +305,77 @@ fun AppDashboardScreen(
                 }
             }
 
+            if (!editing) {
+                item { SectionTitle("Activity") }
+                item {
+                    ActiveUsersCard(
+                        activeToday = shown.activeUsersAt(now),
+                        totalUsers = shown.totalUsers,
+                        days = activeDays
+                    )
+                }
+
+                item { SectionTitle("Plan expiry") }
+
+                val paying = shown.users
+                    .filter { it.plan != Plan.FREE }
+                    .sortedWith(
+                        compareBy<AppUser> { it.planDaysLeft(now) == null }
+                            .thenBy { it.planExpiryMillis }
+                    )
+                val endingSoon = paying.count { user ->
+                    val left = user.planDaysLeft(now)
+                    left != null && left <= 7L
+                }
+
+                item {
+                    Text(
+                        text = when {
+                            paying.isEmpty() ->
+                                "No Premium or Pro users yet. Their plan end dates show here."
+                            endingSoon == 0 ->
+                                "No plans end in the next 7 days. Tap a user to say if they renewed."
+                            endingSoon == 1 ->
+                                "1 plan ends in the next 7 days. Tap a user to say if they renewed."
+                            else ->
+                                "$endingSoon plans end in the next 7 days. Tap a user to say if they renewed."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                items(paying.take(15), key = { "expiry-" + it.id }) { user ->
+                    ExpiryRow(
+                        user = user,
+                        now = now,
+                        onClick = { expiryUserId = user.id }
+                    )
+                }
+
+                if (paying.size > 15) {
+                    item {
+                        Text(
+                            text = "Showing the 15 soonest of " + paying.size + ".",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             item { SectionTitle("Plan benefits") }
 
             if (editing) {
+                item {
+                    OutlinedTextField(
+                        value = draft.freeBenefits,
+                        onValueChange = { draft = draft.copy(freeBenefits = it.take(500)) },
+                        label = { Text("What Free includes") },
+                        minLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 item {
                     OutlinedTextField(
                         value = draft.premiumBenefits,
@@ -311,6 +395,7 @@ fun AppDashboardScreen(
                     )
                 }
             } else {
+                item { BenefitsBlock("Free includes", shown.freeBenefits) }
                 item { BenefitsBlock("Premium includes", shown.premiumBenefits) }
                 item { BenefitsBlock("Pro includes", shown.proBenefits) }
             }
@@ -533,6 +618,32 @@ fun AppDashboardScreen(
                 onDismiss = { seqTotal = 0 },
                 onSkip = { next() },
                 onStop = { seqTotal = 0 }
+            )
+        }
+    }
+
+    val expiryUser = expiryUserId?.let { id -> app.users.firstOrNull { it.id == id } }
+    if (!editing && expiryUser != null) {
+        key(expiryUser.id) {
+            RenewPlanDialog(
+                user = expiryUser,
+                price = if (expiryUser.plan == Plan.PRO) app.proPrice else app.premiumPrice,
+                now = now,
+                onRenewed = {
+                    onSave(
+                        app.forEditing(System.currentTimeMillis())
+                            .withUserRenewed(expiryUser.id, System.currentTimeMillis())
+                    )
+                    expiryUserId = null
+                },
+                onNotRenewed = {
+                    onSave(
+                        app.forEditing(System.currentTimeMillis())
+                            .withPlanLapsed(expiryUser.id)
+                    )
+                    expiryUserId = null
+                },
+                onDismiss = { expiryUserId = null }
             )
         }
     }

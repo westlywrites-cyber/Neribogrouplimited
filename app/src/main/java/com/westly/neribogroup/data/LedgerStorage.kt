@@ -60,6 +60,10 @@ object LedgerStorage {
             o.put("users", usersToJson(app.users))
             o.put("premiumBenefits", app.premiumBenefits)
             o.put("proBenefits", app.proBenefits)
+            o.put("freeBenefits", app.freeBenefits)
+            o.put("activeUsers", app.activeUsers)
+            o.put("activeUsersDayKey", app.activeUsersDayKey)
+            o.put("activeHistory", historyToJson(app.activeHistory))
             apps.put(o)
         }
         root.put("apps", apps)
@@ -154,7 +158,11 @@ object LedgerStorage {
                     entries = jsonToEntries(o.optJSONArray("entries")),
                     users = jsonToUsers(o.optJSONArray("users")),
                     premiumBenefits = o.optString("premiumBenefits"),
-                    proBenefits = o.optString("proBenefits")
+                    proBenefits = o.optString("proBenefits"),
+                    freeBenefits = o.optString("freeBenefits"),
+                    activeUsers = o.optLong("activeUsers"),
+                    activeUsersDayKey = o.optString("activeUsersDayKey"),
+                    activeHistory = jsonToHistory(o.optJSONArray("activeHistory"))
                 )
             )
         }
@@ -243,6 +251,7 @@ object LedgerStorage {
             o.put("phone", u.phone)
             o.put("plan", u.plan.name)
             o.put("addedMillis", u.addedMillis)
+            o.put("planExpiry", u.planExpiryMillis)
             array.put(o)
         }
         return array
@@ -264,9 +273,33 @@ object LedgerStorage {
                     email = o.optString("email"),
                     phone = o.optString("phone"),
                     plan = plan,
-                    addedMillis = o.optLong("addedMillis")
+                    addedMillis = o.optLong("addedMillis"),
+                    planExpiryMillis = o.optLong("planExpiry")
                 )
             )
+        }
+        return list
+    }
+
+    private fun historyToJson(history: List<DayCount>): JSONArray {
+        val array = JSONArray()
+        for (h in history) {
+            val o = JSONObject()
+            o.put("day", h.dayKey)
+            o.put("count", h.count)
+            array.put(o)
+        }
+        return array
+    }
+
+    private fun jsonToHistory(array: JSONArray?): List<DayCount> {
+        if (array == null) return emptyList()
+        val list = ArrayList<DayCount>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val day = o.optString("day")
+            if (day.isBlank()) continue
+            list.add(DayCount(dayKey = day, count = o.optLong("count")))
         }
         return list
     }

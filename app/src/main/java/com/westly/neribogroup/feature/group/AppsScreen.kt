@@ -111,6 +111,21 @@ fun AppsScreen(
             }
 
             item {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    StatTile(
+                        "Active users",
+                        formatCount(shown.activeUsersToday(now)),
+                        Modifier.weight(1f)
+                    )
+                    StatTile(
+                        "Ending in 7 days",
+                        formatCount(shown.plansExpiringSoon(now).toLong()),
+                        Modifier.weight(1f)
+                    )
+                }
+            }
+
+            item {
                 StatTile(
                     label = "Subscription income today",
                     value = formatNaira(shown.subscriptionIncomeToday(now)),

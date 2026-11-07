@@ -18,6 +18,23 @@ fun monthKey(millis: Long): String =
 fun dayKey(millis: Long): String =
     SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(millis))
 
+/** How long one Premium or Pro subscription lasts. */
+const val PLAN_DAYS = 30
+
+/** Whole days from today to the day of [target]. Negative means the day has passed. */
+fun calendarDaysLeft(now: Long, target: Long): Long {
+    val zone = ZoneId.systemDefault()
+    val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+    val end = Instant.ofEpochMilli(target).atZone(zone).toLocalDate()
+    return ChronoUnit.DAYS.between(today, end)
+}
+
+/** The number of active users that was recorded for one day. */
+data class DayCount(
+    val dayKey: String,
+    val count: Long
+)
+
 /** One money line: either income or an expense. Amounts are whole naira. */
 data class Entry(
     val id: String = UUID.randomUUID().toString(),
@@ -40,8 +57,15 @@ data class AppUser(
     /** Empty when no phone number was given. */
     val phone: String = "",
     val plan: Plan = Plan.FREE,
-    val addedMillis: Long
-)
+    val addedMillis: Long,
+    /** When the paid plan ends. 0 means no date was set (Free users, or users added before this existed). */
+    val planExpiryMillis: Long = 0
+) {
+    /** Whole days until the paid plan ends. Null for Free users and users with no end date. */
+    fun planDaysLeft(now: Long): Long? =
+        if (plan == Plan.FREE || planExpiryMillis <= 0L) null
+        else calendarDaysLeft(now, planExpiryMillis)
+}
 
 /** One app dashboard, for example "Neribo Vault". */
 data class AppData(
@@ -65,7 +89,13 @@ data class AppData(
     val entries: List<Entry> = emptyList(),
     val users: List<AppUser> = emptyList(),
     val premiumBenefits: String = "",
-    val proBenefits: String = ""
+    val proBenefits: String = "",
+    val freeBenefits: String = "",
+    /** Active users typed in for the day named by [activeUsersDayKey]. */
+    val activeUsers: Long = 0,
+    val activeUsersDayKey: String = "",
+    /** Active users of earlier days (the last 30 are kept). */
+    val activeHistory: List<DayCount> = emptyList()
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
@@ -84,7 +114,19 @@ data class AppData(
         premiumTodayAt(now) * premiumPrice + proTodayAt(now) * proPrice
 
     /** The copy used while editing, so the "new users today" box shows today's real value. */
-    fun forEditing(now: Long): AppData = copy(dailyNewUsers = newUsersToday(now))
+    fun forEditing(now: Long): AppData =
+        copy(dailyNewUsers = newUsersToday(now), activeUsers = activeUsersAt(now))
+
+    /** Active users typed in today. Goes back to 0 on a new day. */
+    fun activeUsersAt(now: Long): Long =
+        if (activeUsersDayKey == dayKey(now)) activeUsers else 0L
+
+    /** Active users on the day of [millis]: today's number, or the number saved for an earlier day. */
+    fun activeUsersOn(millis: Long, now: Long): Long {
+        val key = dayKey(millis)
+        if (key == dayKey(now)) return activeUsersAt(now)
+        return activeHistory.firstOrNull { it.dayKey == key }?.count ?: 0L
+    }
 
     /** Moves the Premium or Pro count by [delta] (never below 0). FREE changes nothing. */
     private fun withPlanCount(plan: Plan, delta: Long): AppData = when (plan) {
@@ -94,18 +136,68 @@ data class AppData(
     }
 
     /** Adds a user and raises the Premium or Pro count if the user is on that plan. */
-    fun withUserAdded(user: AppUser): AppData =
-        copy(users = users + user).withPlanCount(user.plan, 1L)
+    fun withUserAdded(user: AppUser): AppData {
+        // A Premium or Pro user gets a plan end date PLAN_DAYS after they were added.
+        val fixed = if (user.plan != Plan.FREE && user.planExpiryMillis <= 0L) {
+            user.copy(planExpiryMillis = user.addedMillis + PLAN_DAYS * DAY_MILLIS)
+        } else {
+            user
+        }
+        return copy(users = users + fixed).withPlanCount(fixed.plan, 1L)
+    }
 
     /** Replaces a user (matched by id). If the plan changed, the counts move with it. */
-    fun withUserUpdated(updated: AppUser): AppData {
+    fun withUserUpdated(updated: AppUser, now: Long = System.currentTimeMillis()): AppData {
         val old = users.firstOrNull { it.id == updated.id } ?: return this
-        val replaced = copy(users = users.map { if (it.id == updated.id) updated else it })
-        return if (old.plan == updated.plan) {
+        // A new paid plan starts a new period. Free has no end date.
+        val fixed = when {
+            updated.plan == Plan.FREE -> updated.copy(planExpiryMillis = 0L)
+            old.plan != updated.plan -> updated.copy(planExpiryMillis = now + PLAN_DAYS * DAY_MILLIS)
+            else -> updated
+        }
+        val replaced = copy(users = users.map { if (it.id == fixed.id) fixed else it })
+        return if (old.plan == fixed.plan) {
             replaced
         } else {
-            replaced.withPlanCount(old.plan, -1L).withPlanCount(updated.plan, 1L)
+            replaced.withPlanCount(old.plan, -1L).withPlanCount(fixed.plan, 1L)
         }
+    }
+
+    /**
+     * The user renewed: adds PLAN_DAYS to the plan end date (from today if it already ended)
+     * and records the plan price as income.
+     */
+    fun withUserRenewed(userId: String, now: Long): AppData {
+        val user = users.firstOrNull { it.id == userId } ?: return this
+        if (user.plan == Plan.FREE) return this
+        val base = maxOf(now, user.planExpiryMillis)
+        val renewed = user.copy(planExpiryMillis = base + PLAN_DAYS * DAY_MILLIS)
+        val price = if (user.plan == Plan.PRO) proPrice else premiumPrice
+        val planName = if (user.plan == Plan.PRO) "Pro" else "Premium"
+        val newEntries = if (price > 0L) {
+            listOf(
+                Entry(
+                    title = user.name + " renewed " + planName,
+                    amount = price,
+                    isIncome = true,
+                    dateMillis = now,
+                    auto = true
+                )
+            )
+        } else {
+            emptyList()
+        }
+        return copy(
+            users = users.map { if (it.id == userId) renewed else it },
+            entries = entries + newEntries
+        )
+    }
+
+    /** The user did not renew: moves them to Free and lowers the Premium or Pro count. */
+    fun withPlanLapsed(userId: String): AppData {
+        val user = users.firstOrNull { it.id == userId } ?: return this
+        if (user.plan == Plan.FREE) return this
+        return withUserUpdated(user.copy(plan = Plan.FREE, planExpiryMillis = 0L))
     }
 
     /** Removes a user and lowers the count of their plan. Income already recorded stays. */
@@ -125,6 +217,12 @@ data class AppData(
 
         if (dailyNewUsers != previous.newUsersToday(now)) {
             result = result.copy(newUsersDayKey = today)
+        }
+
+        if (activeUsers != previous.activeUsersAt(now)) {
+            val kept = (result.activeHistory.filter { it.dayKey != today } +
+                DayCount(today, activeUsers)).sortedBy { it.dayKey }.takeLast(30)
+            result = result.copy(activeUsersDayKey = today, activeHistory = kept)
         }
 
         val premiumAdded = (premiumUsers - previous.premiumUsers).coerceAtLeast(0L)
@@ -367,6 +465,17 @@ data class Ledger(
     fun premiumToday(now: Long): Long = apps.sumOf { it.premiumTodayAt(now) }
     fun proToday(now: Long): Long = apps.sumOf { it.proTodayAt(now) }
     fun subscriptionIncomeToday(now: Long): Long = apps.sumOf { it.subscriptionIncomeToday(now) }
+
+    fun activeUsersToday(now: Long): Long = apps.sumOf { it.activeUsersAt(now) }
+
+    /** Paid plans that end within [days] days, or have already ended. */
+    fun plansExpiringSoon(now: Long, days: Long = 7L): Int =
+        apps.sumOf { app ->
+            app.users.count { user ->
+                val left = user.planDaysLeft(now)
+                left != null && left <= days
+            }
+        }
 
     val monthlyPayroll: Long get() = staff.sumOf { it.monthlyTotal }
 
