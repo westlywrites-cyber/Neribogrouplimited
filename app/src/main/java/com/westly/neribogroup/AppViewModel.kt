@@ -6,12 +6,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import com.westly.neribogroup.data.AppData
+import com.westly.neribogroup.data.CampaignSize
+import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.data.Staff
 
 /** The pages that open from the home screen tiles. */
-enum class Section { APPS, RENEWALS, STAFF, COSTS }
+enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY }
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -33,16 +35,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveApp(updated: AppData) {
-        val previous = ledger.apps.firstOrNull { it.id == updated.id }
-        // Adds income automatically when Premium or Pro users went up.
-        val finalApp = if (previous != null) {
-            updated.finalizeSave(previous, System.currentTimeMillis())
-        } else {
-            updated
-        }
+        val current = ledger.apps.firstOrNull { it.id == updated.id }
+        // Everything the dice own (their users, rolls, Play Balance, campaign) stays as it is saved.
+        val finalApp = if (current != null) updated.keepingDiceData(current) else updated
         saveLedger(
             ledger.copy(apps = ledger.apps.map { if (it.id == finalApp.id) finalApp else it })
         )
+    }
+
+    /** Rolls every dice of one app for today. Allowed once per calendar day. */
+    fun rollApp(id: String) {
+        saveLedger(DiceEngine.roll(ledger, id, System.currentTimeMillis()))
+    }
+
+    /** Moves one app's Google Play Balance into profit. */
+    fun withdrawApp(id: String) {
+        saveLedger(DiceEngine.withdrawApp(ledger, id, System.currentTimeMillis()))
+    }
+
+    /** Moves every app's Google Play Balance into profit. */
+    fun withdrawAll() {
+        saveLedger(DiceEngine.withdrawAll(ledger, System.currentTimeMillis()))
+    }
+
+    fun startCampaign(id: String, size: CampaignSize, startInDays: Int, lastsDays: Int) {
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        val updated = DiceEngine.startCampaign(
+            app, size, startInDays, lastsDays, System.currentTimeMillis()
+        )
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
+    }
+
+    fun stopCampaign(id: String) {
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        val updated = DiceEngine.stopCampaign(app, System.currentTimeMillis())
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
     }
 
     fun deleteApp(id: String) {

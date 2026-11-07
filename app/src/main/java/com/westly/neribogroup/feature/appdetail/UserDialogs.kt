@@ -70,6 +70,8 @@ fun UserDialog(
     initial: AppUser?,
     otherUsers: List<AppUser>,
     saveLabel: String = "Save",
+    premiumAvailable: Boolean = true,
+    proAvailable: Boolean = true,
     onSave: (name: String, email: String, phone: String, plan: Plan) -> Unit,
     onDismiss: () -> Unit,
     onDelete: (() -> Unit)? = null,
@@ -169,8 +171,14 @@ fun UserDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                val choices = Plan.values().filter {
+                    it == Plan.FREE ||
+                        (it == Plan.PREMIUM && premiumAvailable) ||
+                        (it == Plan.PRO && proAvailable) ||
+                        it == initial?.plan
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (choice in Plan.values()) {
+                    for (choice in choices) {
                         FilterChip(
                             selected = plan == choice,
                             onClick = { planKey = choice.name },
@@ -178,6 +186,15 @@ fun UserDialog(
                             modifier = Modifier.weight(1f)
                         )
                     }
+                }
+
+                if (choices.size == 1) {
+                    Text(
+                        text = "Premium and Pro are not available in this app. " +
+                            "Set their prices in Edit to turn them on.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))

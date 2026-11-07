@@ -52,7 +52,8 @@ import com.westly.neribogroup.ui.formatNaira
 
 /**
  * The home page. It stays short however many apps there are: search, the money summary,
- * a renewals alert and four tiles (Apps, Renewals, Staff, Company costs) that open their own pages.
+ * a renewals alert and five tiles (Apps, Renewals, Staff, Company costs, Google Play Balance)
+ * that open their own pages.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -305,6 +306,14 @@ fun GroupDashboardScreen(
                                 onClick = { onOpenSection(Section.COSTS) }
                             )
                         }
+                    }
+                    item {
+                        SectionTile(
+                            title = "Google Play Balance",
+                            subtitle = formatNaira(shown.playBalanceTotal) + " waiting to withdraw",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.PLAY) }
+                        )
                     }
                 }
             }

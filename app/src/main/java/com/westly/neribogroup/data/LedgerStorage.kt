@@ -37,7 +37,7 @@ object LedgerStorage {
 
     fun toJson(ledger: Ledger): String {
         val root = JSONObject()
-        root.put("version", 3)
+        root.put("version", 4)
         root.put("companyName", ledger.company.name)
         root.put("companyExpenses", entriesToJson(ledger.company.expenses))
 
@@ -46,16 +46,8 @@ object LedgerStorage {
             val o = JSONObject()
             o.put("id", app.id)
             o.put("name", app.name)
-            o.put("totalUsers", app.totalUsers)
-            o.put("premiumUsers", app.premiumUsers)
-            o.put("proUsers", app.proUsers)
-            o.put("dailyNewUsers", app.dailyNewUsers)
             o.put("premiumPrice", app.premiumPrice)
             o.put("proPrice", app.proPrice)
-            o.put("premiumToday", app.premiumToday)
-            o.put("proToday", app.proToday)
-            o.put("todayKey", app.todayKey)
-            o.put("newUsersDayKey", app.newUsersDayKey)
             o.put("entries", entriesToJson(app.entries))
             o.put("users", usersToJson(app.users))
             o.put("premiumBenefits", app.premiumBenefits)
@@ -64,6 +56,21 @@ object LedgerStorage {
             o.put("activeUsers", app.activeUsers)
             o.put("activeUsersDayKey", app.activeUsersDayKey)
             o.put("activeHistory", historyToJson(app.activeHistory))
+            o.put("adsEnabled", app.adsEnabled)
+            o.put("lastRollDayKey", app.lastRollDayKey)
+            o.put("playSubsBalance", app.playSubsBalance)
+            o.put("playAdsBalance", app.playAdsBalance)
+            o.put("rolls", rollsToJson(app.rolls))
+            o.put("playTx", playTxToJson(app.playTx))
+            val campaign = app.campaign
+            if (campaign != null) {
+                val co = JSONObject()
+                co.put("size", campaign.sizeName)
+                co.put("start", campaign.startDayKey)
+                co.put("end", campaign.endDayKey)
+                co.put("stopped", campaign.stoppedDayKey)
+                o.put("campaign", co)
+            }
             apps.put(o)
         }
         root.put("apps", apps)
@@ -122,6 +129,18 @@ object LedgerStorage {
         }
         root.put("renewals", renewalsArray)
 
+        val withdrawalsArray = JSONArray()
+        for (w in ledger.withdrawals) {
+            val o = JSONObject()
+            o.put("id", w.id)
+            o.put("date", w.dateMillis)
+            o.put("amount", w.amount)
+            o.put("label", w.label)
+            o.put("note", w.note)
+            withdrawalsArray.put(o)
+        }
+        root.put("withdrawals", withdrawalsArray)
+
         return root.toString(2)
     }
 
@@ -145,16 +164,8 @@ object LedgerStorage {
                 AppData(
                     id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
                     name = o.optString("name"),
-                    totalUsers = o.optLong("totalUsers"),
-                    premiumUsers = o.optLong("premiumUsers"),
-                    proUsers = o.optLong("proUsers"),
-                    dailyNewUsers = o.optLong("dailyNewUsers"),
                     premiumPrice = o.optLong("premiumPrice"),
                     proPrice = o.optLong("proPrice"),
-                    premiumToday = o.optLong("premiumToday"),
-                    proToday = o.optLong("proToday"),
-                    todayKey = o.optString("todayKey"),
-                    newUsersDayKey = o.optString("newUsersDayKey"),
                     entries = jsonToEntries(o.optJSONArray("entries")),
                     users = jsonToUsers(o.optJSONArray("users")),
                     premiumBenefits = o.optString("premiumBenefits"),
@@ -162,7 +173,14 @@ object LedgerStorage {
                     freeBenefits = o.optString("freeBenefits"),
                     activeUsers = o.optLong("activeUsers"),
                     activeUsersDayKey = o.optString("activeUsersDayKey"),
-                    activeHistory = jsonToHistory(o.optJSONArray("activeHistory"))
+                    activeHistory = jsonToHistory(o.optJSONArray("activeHistory")),
+                    adsEnabled = o.optBoolean("adsEnabled"),
+                    lastRollDayKey = o.optString("lastRollDayKey"),
+                    rolls = jsonToRolls(o.optJSONArray("rolls")),
+                    playTx = jsonToPlayTx(o.optJSONArray("playTx")),
+                    playSubsBalance = o.optLong("playSubsBalance"),
+                    playAdsBalance = o.optLong("playAdsBalance"),
+                    campaign = jsonToCampaign(o.optJSONObject("campaign"))
                 )
             )
         }
@@ -238,7 +256,28 @@ object LedgerStorage {
             )
         }
 
-        return Ledger(company = company, apps = apps, staff = staff, renewals = renewals)
+        val withdrawals = ArrayList<Withdrawal>()
+        val withdrawalsArray = root.optJSONArray("withdrawals") ?: JSONArray()
+        for (i in 0 until withdrawalsArray.length()) {
+            val o = withdrawalsArray.optJSONObject(i) ?: continue
+            withdrawals.add(
+                Withdrawal(
+                    id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    dateMillis = o.optLong("date"),
+                    amount = o.optLong("amount"),
+                    label = o.optString("label"),
+                    note = o.optString("note")
+                )
+            )
+        }
+
+        return Ledger(
+            company = company,
+            apps = apps,
+            staff = staff,
+            renewals = renewals,
+            withdrawals = withdrawals
+        )
     }
 
     private fun usersToJson(users: List<AppUser>): JSONArray {
@@ -252,6 +291,8 @@ object LedgerStorage {
             o.put("plan", u.plan.name)
             o.put("addedMillis", u.addedMillis)
             o.put("planExpiry", u.planExpiryMillis)
+            o.put("planStart", u.planStartMillis)
+            o.put("simulated", u.simulated)
             array.put(o)
         }
         return array
@@ -274,11 +315,117 @@ object LedgerStorage {
                     phone = o.optString("phone"),
                     plan = plan,
                     addedMillis = o.optLong("addedMillis"),
-                    planExpiryMillis = o.optLong("planExpiry")
+                    planExpiryMillis = o.optLong("planExpiry"),
+                    planStartMillis = o.optLong("planStart"),
+                    simulated = o.optBoolean("simulated")
                 )
             )
         }
         return list
+    }
+
+    private fun rollsToJson(rolls: List<RollRecord>): JSONArray {
+        val array = JSONArray()
+        for (r in rolls) {
+            val o = JSONObject()
+            o.put("day", r.dayKey)
+            val faces = JSONArray()
+            for (f in r.faces) faces.put(f)
+            o.put("faces", faces)
+            o.put("newUsers", r.newUsers)
+            o.put("active", r.active)
+            o.put("premium", r.premium)
+            o.put("pro", r.pro)
+            o.put("renewed", r.renewed)
+            o.put("lapsed", r.lapsed)
+            o.put("subsNet", r.subsNet)
+            o.put("adsNet", r.adsNet)
+            o.put("campaign", r.campaign)
+            array.put(o)
+        }
+        return array
+    }
+
+    private fun jsonToRolls(array: JSONArray?): List<RollRecord> {
+        if (array == null) return emptyList()
+        val list = ArrayList<RollRecord>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val day = o.optString("day")
+            if (day.isBlank()) continue
+            val faces = ArrayList<Int>()
+            val facesArray = o.optJSONArray("faces")
+            if (facesArray != null) {
+                for (j in 0 until facesArray.length()) faces.add(facesArray.optInt(j, -1))
+            }
+            while (faces.size < DiceKind.values().size) faces.add(-1)
+            list.add(
+                RollRecord(
+                    dayKey = day,
+                    faces = faces,
+                    newUsers = o.optLong("newUsers"),
+                    active = o.optLong("active"),
+                    premium = o.optLong("premium"),
+                    pro = o.optLong("pro"),
+                    renewed = o.optLong("renewed"),
+                    lapsed = o.optLong("lapsed"),
+                    subsNet = o.optLong("subsNet"),
+                    adsNet = o.optLong("adsNet"),
+                    campaign = o.optBoolean("campaign")
+                )
+            )
+        }
+        return list
+    }
+
+    private fun playTxToJson(list: List<PlayTx>): JSONArray {
+        val array = JSONArray()
+        for (t in list) {
+            val o = JSONObject()
+            o.put("id", t.id)
+            o.put("kind", t.kind.name)
+            o.put("label", t.label)
+            o.put("gross", t.gross)
+            o.put("fee", t.fee)
+            o.put("net", t.net)
+            o.put("date", t.dateMillis)
+            array.put(o)
+        }
+        return array
+    }
+
+    private fun jsonToPlayTx(array: JSONArray?): List<PlayTx> {
+        if (array == null) return emptyList()
+        val list = ArrayList<PlayTx>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val kind = runCatching { PlayTxKind.valueOf(o.optString("kind")) }.getOrNull() ?: continue
+            list.add(
+                PlayTx(
+                    id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    kind = kind,
+                    label = o.optString("label"),
+                    gross = o.optLong("gross"),
+                    fee = o.optLong("fee"),
+                    net = o.optLong("net"),
+                    dateMillis = o.optLong("date")
+                )
+            )
+        }
+        return list
+    }
+
+    private fun jsonToCampaign(o: JSONObject?): Campaign? {
+        if (o == null) return null
+        val start = o.optString("start")
+        val end = o.optString("end")
+        if (start.isBlank() || end.isBlank()) return null
+        return Campaign(
+            sizeName = o.optString("size"),
+            startDayKey = start,
+            endDayKey = end,
+            stoppedDayKey = o.optString("stopped")
+        )
     }
 
     private fun historyToJson(history: List<DayCount>): JSONArray {

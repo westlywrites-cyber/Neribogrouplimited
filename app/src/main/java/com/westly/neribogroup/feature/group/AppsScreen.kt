@@ -127,8 +127,8 @@ fun AppsScreen(
 
             item {
                 StatTile(
-                    label = "Subscription income today",
-                    value = formatNaira(shown.subscriptionIncomeToday(now)),
+                    label = "Play earnings today (after Google's cut)",
+                    value = formatNaira(shown.playEarningsToday(now)),
                     modifier = Modifier.fillMaxWidth(),
                     valueColor = MaterialTheme.colorScheme.primary
                 )
@@ -191,7 +191,13 @@ fun AppsScreen(
     appToDelete?.let { app ->
         ConfirmDialog(
             heading = "Delete ${app.name}?",
-            message = "The app and all its entries are removed when you tap Save.",
+            message = if (app.playBalance > 0L) {
+                "This app still has " + formatNaira(app.playBalance) +
+                    " in the Google Play Balance. Withdraw it first, or it is lost. " +
+                    "The app is removed when you tap Save."
+            } else {
+                "The app and all its entries are removed when you tap Save."
+            },
             confirmLabel = "Delete",
             onConfirm = {
                 draft = draft.copy(apps = draft.apps.filter { it.id != app.id })

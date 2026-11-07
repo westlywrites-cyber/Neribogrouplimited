@@ -27,19 +27,17 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,9 +45,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.AppUser
-import com.westly.neribogroup.data.Entry
+import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.Plan
-import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.EntryRow
 import com.westly.neribogroup.feature.common.NumberField
@@ -67,39 +64,27 @@ fun AppDashboardScreen(
     app: AppData,
     onBack: () -> Unit,
     onSave: (AppData) -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onRoll: () -> Unit,
+    onWithdraw: () -> Unit,
+    onStartCampaign: (CampaignSize, Int, Int) -> Unit,
+    onStopCampaign: () -> Unit
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(app) }
     var menuOpen by remember { mutableStateOf(false) }
-    var addIncome by remember { mutableStateOf(false) }
-    var addExpense by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var addUser by remember { mutableStateOf(false) }
     var editUserId by remember { mutableStateOf<String?>(null) }
-    // The user whose plan end date was tapped, to say if they renewed.
+    // The user (added by you) whose plan end date was tapped, to say if they renewed.
     var expiryUserId by remember { mutableStateOf<String?>(null) }
-    // Goes up when a user change moves the Premium or Pro numbers, so those boxes refresh.
-    var countsVersion by remember { mutableStateOf(0) }
-    // The "new users today" pop-up sequence: 0 means not running.
-    var seqTotal by rememberSaveable { mutableStateOf(0) }
-    var seqIndex by rememberSaveable { mutableStateOf(1) }
-    val latestApp by rememberUpdatedState(app)
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else app
     val activeDays = activeUsersWeek(shown, now)
 
-    // What this save would add automatically, shown live while editing.
-    val premiumAdded = (draft.premiumUsers - app.premiumUsers).coerceAtLeast(0L)
-    val proAdded = (draft.proUsers - app.proUsers).coerceAtLeast(0L)
-    val autoIncome = premiumAdded * draft.premiumPrice + proAdded * draft.proPrice
-
     BackHandler {
         if (editing) editing = false else onBack()
-    }
-    BackHandler(enabled = seqTotal > 0) {
-        seqTotal = 0
     }
 
     Scaffold(
@@ -142,7 +127,7 @@ fun AppDashboardScreen(
                                     text = { Text("Edit") },
                                     onClick = {
                                         menuOpen = false
-                                        draft = app.forEditing(now)
+                                        draft = app
                                         addUser = false
                                         editUserId = null
                                         editing = true
@@ -159,14 +144,8 @@ fun AppDashboardScreen(
                 SaveBar(
                     onCancel = { editing = false },
                     onSave = {
-                        val saveNow = System.currentTimeMillis()
-                        val newUsers = draft.dailyNewUsers - app.newUsersToday(saveNow)
                         onSave(draft.copy(name = draft.name.trim().ifBlank { app.name }))
                         editing = false
-                        if (newUsers > 0L) {
-                            seqTotal = minOf(newUsers, 100L).toInt()
-                            seqIndex = 1
-                        }
                     }
                 )
             }
@@ -179,9 +158,11 @@ fun AppDashboardScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item { SectionTitle("Users") }
-
             if (editing) {
+                // -------------------------------------------------------------------------
+                // Edit mode: only settings and the users you add yourself.
+                // -------------------------------------------------------------------------
+                item { SectionTitle("App settings") }
                 item {
                     OutlinedTextField(
                         value = draft.name,
@@ -191,60 +172,7 @@ fun AppDashboardScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                item {
-                    key(countsVersion) {
-                        NumberField("Total users", draft.totalUsers, {
-                            draft = draft.copy(totalUsers = it)
-                        })
-                    }
-                }
-                item {
-                    key(countsVersion) {
-                        NumberField("Premium users", draft.premiumUsers, {
-                            draft = draft.copy(premiumUsers = it)
-                        })
-                    }
-                }
-                item {
-                    key(countsVersion) {
-                        NumberField("Pro users", draft.proUsers, {
-                            draft = draft.copy(proUsers = it)
-                        })
-                    }
-                }
-                item {
-                    NumberField("New users today", draft.dailyNewUsers, { value ->
-                        // New users also raise Total users by the same amount.
-                        val change = value - draft.dailyNewUsers
-                        draft = draft.copy(
-                            dailyNewUsers = value,
-                            totalUsers = (draft.totalUsers + change).coerceAtLeast(0L)
-                        )
-                        countsVersion++
-                    })
-                }
-                item {
-                    Text(
-                        text = "New users today are added to Total users for you. " +
-                            "After saving you can pick Free, Premium or Pro for each one. " +
-                            "New users today goes back to 0 at 12 am.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                item {
-                    NumberField("Active users today", draft.activeUsers, {
-                        draft = draft.copy(activeUsers = it)
-                    })
-                }
-                item {
-                    Text(
-                        text = "Active users today goes back to 0 at 12 am. " +
-                            "Each day is kept in the last 7 days chart.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+
                 item { SectionTitle("Subscription prices") }
                 item {
                     NumberField("Premium price (₦ per subscription)", draft.premiumPrice, {
@@ -258,115 +186,40 @@ fun AppDashboardScreen(
                 }
                 item {
                     Text(
-                        text = if (autoIncome > 0L) {
-                            "Saving now adds " + formatNaira(autoIncome) + " income: " +
-                                formatCount(premiumAdded) + " Premium and " +
-                                formatCount(proAdded) + " Pro new subscriptions."
-                        } else {
-                            "Raise Premium or Pro users and the app adds the income for you when you save. " +
-                                "Premium today and Pro today are counted for you."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "Leave a price empty if that plan does not exist in this app. " +
+                            "A plan with no price is hidden, cannot be given to users and is not rolled.",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            } else {
+
+                item { SectionTitle("Google Ads") }
                 item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StatTile("Total users", formatCount(shown.totalUsers), Modifier.weight(1f))
-                        StatTile("New today", formatCount(shown.newUsersToday(now)), Modifier.weight(1f))
-                    }
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StatTile("Premium", formatCount(shown.premiumUsers), Modifier.weight(1f))
-                        StatTile("Pro", formatCount(shown.proUsers), Modifier.weight(1f))
-                    }
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StatTile("Premium today", formatCount(shown.premiumTodayAt(now)), Modifier.weight(1f))
-                        StatTile("Pro today", formatCount(shown.proTodayAt(now)), Modifier.weight(1f))
-                    }
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StatTile("Premium price", formatNaira(shown.premiumPrice), Modifier.weight(1f))
-                        StatTile("Pro price", formatNaira(shown.proPrice), Modifier.weight(1f))
-                    }
-                }
-                item {
-                    StatTile(
-                        label = "Subscription income today",
-                        value = formatNaira(shown.subscriptionIncomeToday(now)),
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        valueColor = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-
-            if (!editing) {
-                item { SectionTitle("Activity") }
-                item {
-                    ActiveUsersCard(
-                        activeToday = shown.activeUsersAt(now),
-                        totalUsers = shown.totalUsers,
-                        days = activeDays
-                    )
-                }
-
-                item { SectionTitle("Plan expiry") }
-
-                val paying = shown.users
-                    .filter { it.plan != Plan.FREE }
-                    .sortedWith(
-                        compareBy<AppUser> { it.planDaysLeft(now) == null }
-                            .thenBy { it.planExpiryMillis }
-                    )
-                val endingSoon = paying.count { user ->
-                    val left = user.planDaysLeft(now)
-                    left != null && left <= 7L
-                }
-
-                item {
-                    Text(
-                        text = when {
-                            paying.isEmpty() ->
-                                "No Premium or Pro users yet. Their plan end dates show here."
-                            endingSoon == 0 ->
-                                "No plans end in the next 7 days. Tap a user to say if they renewed."
-                            endingSoon == 1 ->
-                                "1 plan ends in the next 7 days. Tap a user to say if they renewed."
-                            else ->
-                                "$endingSoon plans end in the next 7 days. Tap a user to say if they renewed."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                items(paying.take(15), key = { "expiry-" + it.id }) { user ->
-                    ExpiryRow(
-                        user = user,
-                        now = now,
-                        onClick = { expiryUserId = user.id }
-                    )
-                }
-
-                if (paying.size > 15) {
-                    item {
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text(
-                            text = "Showing the 15 soonest of " + paying.size + ".",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "Show Google Ads in this app",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Switch(
+                            checked = draft.adsEnabled,
+                            onCheckedChange = { draft = draft.copy(adsEnabled = it) }
                         )
                     }
                 }
-            }
+                item {
+                    Text(
+                        text = "When on, the daily roll adds ad money based on how many Free users " +
+                            "the app has. Google keeps part of it and the rest goes to the Google Play Balance.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-            item { SectionTitle("Plan benefits") }
-
-            if (editing) {
+                item { SectionTitle("Plan benefits") }
                 item {
                     OutlinedTextField(
                         value = draft.freeBenefits,
@@ -376,114 +229,71 @@ fun AppDashboardScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+                if (draft.premiumPrice > 0L) {
+                    item {
+                        OutlinedTextField(
+                            value = draft.premiumBenefits,
+                            onValueChange = { draft = draft.copy(premiumBenefits = it.take(500)) },
+                            label = { Text("What Premium includes") },
+                            minLines = 3,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+                if (draft.proPrice > 0L) {
+                    item {
+                        OutlinedTextField(
+                            value = draft.proBenefits,
+                            onValueChange = { draft = draft.copy(proBenefits = it.take(500)) },
+                            label = { Text("What Pro includes") },
+                            minLines = 3,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                item { SectionTitle("Users you added") }
                 item {
-                    OutlinedTextField(
-                        value = draft.premiumBenefits,
-                        onValueChange = { draft = draft.copy(premiumBenefits = it.take(500)) },
-                        label = { Text("What Premium includes") },
-                        minLines = 3,
-                        modifier = Modifier.fillMaxWidth()
+                    val diceUsers = draft.users.count { it.simulated }
+                    Text(
+                        text = if (diceUsers > 0) {
+                            formatCount(diceUsers.toLong()) +
+                                " users were made by the dice. They cannot be edited. " +
+                                "Users you add yourself record no money."
+                        } else {
+                            "Users you add yourself record no money. " +
+                                "They are for your own accounts."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                item {
-                    OutlinedTextField(
-                        value = draft.proBenefits,
-                        onValueChange = { draft = draft.copy(proBenefits = it.take(500)) },
-                        label = { Text("What Pro includes") },
-                        minLines = 3,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                items(
+                    draft.users.filter { !it.simulated }.sortedByDescending { it.addedMillis },
+                    key = { "mine-" + it.id }
+                ) { user ->
+                    UserRow(user = user, clickable = true, onClick = { editUserId = user.id })
                 }
-            } else {
-                item { BenefitsBlock("Free includes", shown.freeBenefits) }
-                item { BenefitsBlock("Premium includes", shown.premiumBenefits) }
-                item { BenefitsBlock("Pro includes", shown.proBenefits) }
-            }
-
-            item { SectionTitle("App users") }
-
-            item {
-                val count = shown.users.size
-                Text(
-                    text = when (count) {
-                        0 -> "No users recorded yet."
-                        1 -> "1 user recorded"
-                        else -> formatCount(count.toLong()) + " users recorded"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            items(shown.users.reversed().sortedByDescending { it.addedMillis }, key = { it.id }) { user ->
-                UserRow(
-                    user = user,
-                    editing = editing,
-                    onClick = { editUserId = user.id }
-                )
-            }
-
-            if (editing) {
                 item {
                     Button(
                         onClick = { addUser = true },
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("Add user") }
                 }
-            }
 
-            item { SectionTitle("Money") }
-
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatTile("Income", formatNaira(shown.income), Modifier.weight(1f))
-                    StatTile("Expenses", formatNaira(shown.expenses), Modifier.weight(1f))
-                }
-            }
-            item {
-                StatTile(
-                    label = "Profit",
-                    value = formatNaira(shown.profit),
-                    modifier = Modifier.fillMaxWidth(),
-                    valueColor = profitColor(shown.profit)
-                )
-            }
-
-            item { SectionTitle("Income and expenses") }
-
-            if (shown.entries.isEmpty()) {
-                item {
-                    Text(
-                        text = "Nothing recorded yet. Tap the three dots, choose Edit, then add income or expenses.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            items(shown.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
-                EntryRow(
-                    entry = entry,
-                    editing = editing,
-                    onDelete = {
-                        draft = draft.copy(entries = draft.entries.filter { it.id != entry.id })
-                    }
-                )
-            }
-
-            if (editing) {
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(
-                            onClick = { addIncome = true },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Add income") }
-                        OutlinedButton(
-                            onClick = { addExpense = true },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Add expense") }
+                if (draft.entries.isNotEmpty()) {
+                    item { SectionTitle("Income and expenses") }
+                    items(draft.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
+                        EntryRow(
+                            entry = entry,
+                            editing = true,
+                            onDelete = {
+                                draft = draft.copy(entries = draft.entries.filter { it.id != entry.id })
+                            }
+                        )
                     }
                 }
+
                 item {
                     TextButton(
                         onClick = { confirmDelete = true },
@@ -492,46 +302,225 @@ fun AppDashboardScreen(
                         Text("Delete this app", color = MaterialTheme.colorScheme.error)
                     }
                 }
+            } else {
+                // -------------------------------------------------------------------------
+                // View mode.
+                // -------------------------------------------------------------------------
+                item { SectionTitle("Daily dice") }
+                item { DicePanel(app = app, now = now, onRoll = onRoll) }
+
+                item { SectionTitle("Campaign") }
+                item {
+                    CampaignCard(
+                        app = app,
+                        now = now,
+                        onStart = onStartCampaign,
+                        onStop = onStopCampaign
+                    )
+                }
+
+                item { SectionTitle("Users") }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        StatTile("Total users", formatCount(app.totalUsers), Modifier.weight(1f))
+                        StatTile("Free", formatCount(app.freeUsers), Modifier.weight(1f))
+                        StatTile("New today", formatCount(app.newUsersToday(now)), Modifier.weight(1f))
+                    }
+                }
+                if (app.premiumPrice > 0L || app.proPrice > 0L) {
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            if (app.premiumPrice > 0L) {
+                                StatTile("Premium", formatCount(app.premiumUsers), Modifier.weight(1f))
+                            }
+                            if (app.proPrice > 0L) {
+                                StatTile("Pro", formatCount(app.proUsers), Modifier.weight(1f))
+                            }
+                        }
+                    }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            if (app.premiumPrice > 0L) {
+                                StatTile(
+                                    "Premium today",
+                                    formatCount(app.premiumTodayAt(now)),
+                                    Modifier.weight(1f)
+                                )
+                            }
+                            if (app.proPrice > 0L) {
+                                StatTile(
+                                    "Pro today",
+                                    formatCount(app.proTodayAt(now)),
+                                    Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            if (app.premiumPrice > 0L) {
+                                StatTile("Premium price", formatNaira(app.premiumPrice), Modifier.weight(1f))
+                            }
+                            if (app.proPrice > 0L) {
+                                StatTile("Pro price", formatNaira(app.proPrice), Modifier.weight(1f))
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        Text(
+                            text = "This app has no paid plans. Set a Premium or Pro price in Edit to add them.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                item { SectionTitle("Activity") }
+                item {
+                    ActiveUsersCard(
+                        activeToday = app.activeUsersAt(now),
+                        totalUsers = app.totalUsers,
+                        days = activeDays
+                    )
+                }
+
+                item { SectionTitle("Google Play Balance") }
+                item {
+                    StatTile(
+                        label = "Earned today (after Google's cut)",
+                        value = formatNaira(app.playEarningsToday(now)),
+                        modifier = Modifier.fillMaxWidth(),
+                        valueColor = MaterialTheme.colorScheme.primary
+                    )
+                }
+                item { PlayAppCard(app = app, onWithdraw = onWithdraw, showName = false) }
+
+                val paying = app.users
+                    .filter { it.plan != Plan.FREE }
+                    .sortedWith(
+                        compareBy<AppUser> { it.planDaysLeft(now) == null }
+                            .thenBy { it.planExpiryMillis }
+                    )
+                if (paying.isNotEmpty()) {
+                    item { SectionTitle("Plan expiry") }
+
+                    val endingSoon = paying.count { user ->
+                        val left = user.planDaysLeft(now)
+                        left != null && left <= 7L
+                    }
+                    item {
+                        val soonText = when (endingSoon) {
+                            0 -> "No plans end in the next 7 days."
+                            1 -> "1 plan ends in the next 7 days."
+                            else -> "$endingSoon plans end in the next 7 days."
+                        }
+                        Text(
+                            text = soonText + " Tap a user you added to say if they renewed. " +
+                                "Users made by the dice renew or leave by themselves.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    items(paying.take(15), key = { "expiry-" + it.id }) { user ->
+                        ExpiryRow(
+                            user = user,
+                            now = now,
+                            onClick = { expiryUserId = user.id }
+                        )
+                    }
+
+                    if (paying.size > 15) {
+                        item {
+                            Text(
+                                text = "Showing the 15 soonest of " + paying.size + ".",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                item { SectionTitle("Plan benefits") }
+                item { BenefitsBlock("Free includes", app.freeBenefits) }
+                if (app.premiumPrice > 0L) {
+                    item { BenefitsBlock("Premium includes", app.premiumBenefits) }
+                }
+                if (app.proPrice > 0L) {
+                    item { BenefitsBlock("Pro includes", app.proBenefits) }
+                }
+
+                item { SectionTitle("App users") }
+                item {
+                    val count = app.users.size
+                    Text(
+                        text = when (count) {
+                            0 -> "No users yet. Roll the dice, or add your own in Edit."
+                            1 -> "1 user"
+                            else -> formatCount(count.toLong()) + " users (showing the latest 50)"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                items(
+                    app.users.sortedByDescending { it.addedMillis }.take(50),
+                    key = { it.id }
+                ) { user ->
+                    UserRow(user = user, clickable = false, onClick = {})
+                }
+
+                item { SectionTitle("Money") }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        StatTile("Income", formatNaira(app.income), Modifier.weight(1f))
+                        StatTile("Expenses", formatNaira(app.expenses), Modifier.weight(1f))
+                    }
+                }
+                item {
+                    StatTile(
+                        label = "Profit",
+                        value = formatNaira(app.profit),
+                        modifier = Modifier.fillMaxWidth(),
+                        valueColor = profitColor(app.profit)
+                    )
+                }
+                item {
+                    Text(
+                        text = "Google Play Balance money is not in profit until you withdraw it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (app.entries.isNotEmpty()) {
+                    items(app.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
+                        EntryRow(entry = entry, editing = false, onDelete = {})
+                    }
+                }
+
+                item { SectionTitle("Roll history") }
+                val recent = app.rolls.takeLast(10).reversed()
+                if (recent.isEmpty()) {
+                    item {
+                        Text(
+                            text = "No rolls yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                items(recent, key = { "roll-" + it.dayKey }) { record ->
+                    RollHistoryRow(record)
+                    HorizontalDivider(
+                        modifier = Modifier.padding(top = 8.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+                }
             }
 
             item { Spacer(modifier = Modifier.height(8.dp)) }
         }
-    }
-
-    if (addIncome) {
-        AddEntryDialog(
-            heading = "Add income",
-            onDismiss = { addIncome = false },
-            onAdd = { title, amount ->
-                draft = draft.copy(
-                    entries = draft.entries + Entry(
-                        title = title,
-                        amount = amount,
-                        isIncome = true,
-                        dateMillis = System.currentTimeMillis()
-                    )
-                )
-                addIncome = false
-            }
-        )
-    }
-
-    if (addExpense) {
-        AddEntryDialog(
-            heading = "Add expense",
-            onDismiss = { addExpense = false },
-            onAdd = { title, amount ->
-                draft = draft.copy(
-                    entries = draft.entries + Entry(
-                        title = title,
-                        amount = amount,
-                        isIncome = false,
-                        dateMillis = System.currentTimeMillis()
-                    )
-                )
-                addExpense = false
-            }
-        )
     }
 
     if (addUser) {
@@ -539,6 +528,8 @@ fun AppDashboardScreen(
             heading = "Add user",
             initial = null,
             otherUsers = draft.users,
+            premiumAvailable = draft.premiumPrice > 0L,
+            proAvailable = draft.proPrice > 0L,
             onSave = { name, email, phone, plan ->
                 draft = draft.withUserAdded(
                     AppUser(
@@ -549,7 +540,6 @@ fun AppDashboardScreen(
                         addedMillis = System.currentTimeMillis()
                     )
                 )
-                countsVersion++
                 addUser = false
             },
             onDismiss = { addUser = false }
@@ -557,12 +547,14 @@ fun AppDashboardScreen(
     }
 
     val userBeingEdited = editUserId?.let { id -> draft.users.firstOrNull { it.id == id } }
-    if (editing && userBeingEdited != null) {
+    if (editing && userBeingEdited != null && !userBeingEdited.simulated) {
         key(userBeingEdited.id) {
             UserDialog(
                 heading = "Edit user",
                 initial = userBeingEdited,
                 otherUsers = draft.users.filter { it.id != userBeingEdited.id },
+                premiumAvailable = draft.premiumPrice > 0L,
+                proAvailable = draft.proPrice > 0L,
                 onSave = { name, email, phone, plan ->
                     draft = draft.withUserUpdated(
                         userBeingEdited.copy(
@@ -572,75 +564,29 @@ fun AppDashboardScreen(
                             plan = plan
                         )
                     )
-                    countsVersion++
                     editUserId = null
                 },
                 onDismiss = { editUserId = null },
                 onDelete = {
                     draft = draft.withUserRemoved(userBeingEdited.id)
-                    countsVersion++
                     editUserId = null
                 }
             )
         }
     }
 
-    if (seqTotal > 0) {
-        val isLast = seqIndex >= seqTotal
-        val next: () -> Unit = {
-            if (seqIndex >= seqTotal) {
-                seqTotal = 0
-            } else {
-                seqIndex += 1
-            }
-        }
-        key(seqIndex) {
-            UserDialog(
-                heading = "Add user $seqIndex of $seqTotal",
-                initial = null,
-                otherUsers = latestApp.users,
-                saveLabel = if (isLast) "Save and finish" else "Save and next",
-                onSave = { name, email, phone, plan ->
-                    // Built from the latest saved app so no earlier user or count is lost.
-                    onSave(
-                        latestApp.withUserAdded(
-                            AppUser(
-                                name = name,
-                                email = email,
-                                phone = phone,
-                                plan = plan,
-                                addedMillis = System.currentTimeMillis()
-                            )
-                        )
-                    )
-                    next()
-                },
-                onDismiss = { seqTotal = 0 },
-                onSkip = { next() },
-                onStop = { seqTotal = 0 }
-            )
-        }
-    }
-
     val expiryUser = expiryUserId?.let { id -> app.users.firstOrNull { it.id == id } }
-    if (!editing && expiryUser != null) {
+    if (!editing && expiryUser != null && !expiryUser.simulated) {
         key(expiryUser.id) {
             RenewPlanDialog(
                 user = expiryUser,
-                price = if (expiryUser.plan == Plan.PRO) app.proPrice else app.premiumPrice,
                 now = now,
                 onRenewed = {
-                    onSave(
-                        app.forEditing(System.currentTimeMillis())
-                            .withUserRenewed(expiryUser.id, System.currentTimeMillis())
-                    )
+                    onSave(app.withUserRenewed(expiryUser.id, System.currentTimeMillis()))
                     expiryUserId = null
                 },
                 onNotRenewed = {
-                    onSave(
-                        app.forEditing(System.currentTimeMillis())
-                            .withPlanLapsed(expiryUser.id)
-                    )
+                    onSave(app.withPlanLapsed(expiryUser.id))
                     expiryUserId = null
                 },
                 onDismiss = { expiryUserId = null }
@@ -651,7 +597,13 @@ fun AppDashboardScreen(
     if (confirmDelete) {
         ConfirmDialog(
             heading = "Delete ${app.name}?",
-            message = "This removes the app and all its entries right away.",
+            message = if (app.playBalance > 0L) {
+                "This app still has " + formatNaira(app.playBalance) +
+                    " in the Google Play Balance. Withdraw it first, or it is lost. " +
+                    "Deleting removes the app right away."
+            } else {
+                "This removes the app and all its entries right away."
+            },
             confirmLabel = "Delete",
             onConfirm = {
                 confirmDelete = false
@@ -693,13 +645,13 @@ private fun BenefitsBlock(label: String, text: String) {
     }
 }
 
-/** One user: name, email, phone (if given) and a small plan label. Tappable only while editing. */
+/** One user: name, email, phone (if given) and a small plan label. Tappable only when [clickable]. */
 @Composable
-private fun UserRow(user: AppUser, editing: Boolean, onClick: () -> Unit) {
+private fun UserRow(user: AppUser, clickable: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (editing) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (clickable) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

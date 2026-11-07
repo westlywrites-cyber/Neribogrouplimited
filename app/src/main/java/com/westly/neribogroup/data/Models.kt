@@ -49,7 +49,7 @@ data class Entry(
 /** The plan a user of an app is on. */
 enum class Plan { FREE, PREMIUM, PRO }
 
-/** One real user of an app, with the plan they are on. */
+/** One user of an app, with the plan they are on. */
 data class AppUser(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -58,8 +58,12 @@ data class AppUser(
     val phone: String = "",
     val plan: Plan = Plan.FREE,
     val addedMillis: Long,
-    /** When the paid plan ends. 0 means no date was set (Free users, or users added before this existed). */
-    val planExpiryMillis: Long = 0
+    /** When the paid plan ends. 0 for Free users. */
+    val planExpiryMillis: Long = 0,
+    /** When the current paid plan started. 0 for Free users. */
+    val planStartMillis: Long = 0,
+    /** True for users made by the dice. Users you add yourself are false. */
+    val simulated: Boolean = false
 ) {
     /** Whole days until the paid plan ends. Null for Free users and users with no end date. */
     fun planDaysLeft(now: Long): Long? =
@@ -71,53 +75,77 @@ data class AppUser(
 data class AppData(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
-    val totalUsers: Long = 0,
-    val premiumUsers: Long = 0,
-    val proUsers: Long = 0,
-    val dailyNewUsers: Long = 0,
-    /** Price of one Premium subscription, in naira. */
+    /** Price of one Premium subscription, in naira. 0 means Premium does not exist in this app. */
     val premiumPrice: Long = 0,
-    /** Price of one Pro subscription, in naira. */
+    /** Price of one Pro subscription, in naira. 0 means Pro does not exist in this app. */
     val proPrice: Long = 0,
-    /** New Premium subscriptions counted on the day named by [todayKey]. */
-    val premiumToday: Long = 0,
-    /** New Pro subscriptions counted on the day named by [todayKey]. */
-    val proToday: Long = 0,
-    val todayKey: String = "",
-    /** The day [dailyNewUsers] was last typed in. Older days count as zero. */
-    val newUsersDayKey: String = "",
     val entries: List<Entry> = emptyList(),
     val users: List<AppUser> = emptyList(),
     val premiumBenefits: String = "",
     val proBenefits: String = "",
     val freeBenefits: String = "",
-    /** Active users typed in for the day named by [activeUsersDayKey]. */
+    /** Active users of the day named by [activeUsersDayKey]. Set by the daily roll. */
     val activeUsers: Long = 0,
     val activeUsersDayKey: String = "",
     /** Active users of earlier days (the last 30 are kept). */
-    val activeHistory: List<DayCount> = emptyList()
+    val activeHistory: List<DayCount> = emptyList(),
+    /** True when Google Ads is switched on for this app. */
+    val adsEnabled: Boolean = false,
+    /** The last day the dice were rolled, "yyyy-MM-dd". Empty when never rolled. */
+    val lastRollDayKey: String = "",
+    /** What the last rolls did (the last 30 are kept). */
+    val rolls: List<RollRecord> = emptyList(),
+    /** The latest Google Play Balance lines (the last 200 are kept). */
+    val playTx: List<PlayTx> = emptyList(),
+    /** Subscription and renewal money in the Google Play Balance, after Google's 15%. */
+    val playSubsBalance: Long = 0,
+    /** Ad money in the Google Play Balance, after Google's share. */
+    val playAdsBalance: Long = 0,
+    val campaign: Campaign? = null
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
     val profit: Long get() = income - expenses
 
-    fun newUsersToday(now: Long): Long =
-        if (newUsersDayKey == dayKey(now)) dailyNewUsers else 0L
+    /** Users, Premium and Pro are counted from the user list. */
+    val totalUsers: Long get() = users.size.toLong()
+    val premiumUsers: Long get() = users.count { it.plan == Plan.PREMIUM }.toLong()
+    val proUsers: Long get() = users.count { it.plan == Plan.PRO }.toLong()
+    val freeUsers: Long get() = users.count { it.plan == Plan.FREE }.toLong()
 
-    fun premiumTodayAt(now: Long): Long =
-        if (todayKey == dayKey(now)) premiumToday else 0L
+    /** Everything waiting in the Google Play Balance. It is not profit until it is withdrawn. */
+    val playBalance: Long get() = playSubsBalance + playAdsBalance
 
-    fun proTodayAt(now: Long): Long =
-        if (todayKey == dayKey(now)) proToday else 0L
+    fun newUsersToday(now: Long): Long {
+        val start = dayStartMillis(now)
+        val end = start + DAY_MILLIS
+        return users.count { it.addedMillis >= start && it.addedMillis < end }.toLong()
+    }
 
-    fun subscriptionIncomeToday(now: Long): Long =
-        premiumTodayAt(now) * premiumPrice + proTodayAt(now) * proPrice
+    fun premiumTodayAt(now: Long): Long {
+        val start = dayStartMillis(now)
+        val end = start + DAY_MILLIS
+        return users.count {
+            it.plan == Plan.PREMIUM && it.planStartMillis >= start && it.planStartMillis < end
+        }.toLong()
+    }
 
-    /** The copy used while editing, so the "new users today" box shows today's real value. */
-    fun forEditing(now: Long): AppData =
-        copy(dailyNewUsers = newUsersToday(now), activeUsers = activeUsersAt(now))
+    fun proTodayAt(now: Long): Long {
+        val start = dayStartMillis(now)
+        val end = start + DAY_MILLIS
+        return users.count {
+            it.plan == Plan.PRO && it.planStartMillis >= start && it.planStartMillis < end
+        }.toLong()
+    }
 
-    /** Active users typed in today. Goes back to 0 on a new day. */
+    /** What reached the Google Play Balance today (subscriptions, renewals and ads), after Google's cut. */
+    fun playEarningsToday(now: Long): Long {
+        val start = dayStartMillis(now)
+        val end = start + DAY_MILLIS
+        return playTx.filter { it.dateMillis >= start && it.dateMillis < end }.sumOf { it.net }
+    }
+
+    /** Active users of today. Goes back to 0 on a new day. */
     fun activeUsersAt(now: Long): Long =
         if (activeUsersDayKey == dayKey(now)) activeUsers else 0L
 
@@ -128,140 +156,111 @@ data class AppData(
         return activeHistory.firstOrNull { it.dayKey == key }?.count ?: 0L
     }
 
-    /** Moves the Premium or Pro count by [delta] (never below 0). FREE changes nothing. */
-    private fun withPlanCount(plan: Plan, delta: Long): AppData = when (plan) {
-        Plan.PREMIUM -> copy(premiumUsers = (premiumUsers + delta).coerceAtLeast(0L))
-        Plan.PRO -> copy(proUsers = (proUsers + delta).coerceAtLeast(0L))
-        Plan.FREE -> this
-    }
-
-    /** Adds a user and raises the Premium or Pro count if the user is on that plan. */
+    /** Adds a user you typed in. A Premium or Pro user gets a start time and an end date PLAN_DAYS later. */
     fun withUserAdded(user: AppUser): AppData {
-        // A Premium or Pro user gets a plan end date PLAN_DAYS after they were added.
-        val fixed = if (user.plan != Plan.FREE && user.planExpiryMillis <= 0L) {
-            user.copy(planExpiryMillis = user.addedMillis + PLAN_DAYS * DAY_MILLIS)
+        val fixed = if (user.plan != Plan.FREE) {
+            val start = if (user.planStartMillis > 0L) user.planStartMillis else user.addedMillis
+            user.copy(
+                planStartMillis = start,
+                planExpiryMillis = start + PLAN_DAYS * DAY_MILLIS
+            )
         } else {
-            user
+            user.copy(planStartMillis = 0L, planExpiryMillis = 0L)
         }
-        return copy(users = users + fixed).withPlanCount(fixed.plan, 1L)
+        return copy(users = users + fixed)
     }
 
-    /** Replaces a user (matched by id). If the plan changed, the counts move with it. */
+    /** Replaces a user you added (matched by id). Users made by the dice cannot be edited. */
     fun withUserUpdated(updated: AppUser, now: Long = System.currentTimeMillis()): AppData {
         val old = users.firstOrNull { it.id == updated.id } ?: return this
-        // A new paid plan starts a new period. Free has no end date.
+        if (old.simulated) return this
+        // A new paid plan starts a new period. Free has no dates.
         val fixed = when {
-            updated.plan == Plan.FREE -> updated.copy(planExpiryMillis = 0L)
-            old.plan != updated.plan -> updated.copy(planExpiryMillis = now + PLAN_DAYS * DAY_MILLIS)
-            else -> updated
+            updated.plan == Plan.FREE ->
+                updated.copy(planStartMillis = 0L, planExpiryMillis = 0L, simulated = false)
+            old.plan != updated.plan ->
+                updated.copy(
+                    planStartMillis = now,
+                    planExpiryMillis = now + PLAN_DAYS * DAY_MILLIS,
+                    simulated = false
+                )
+            else -> updated.copy(simulated = false)
         }
-        val replaced = copy(users = users.map { if (it.id == fixed.id) fixed else it })
-        return if (old.plan == fixed.plan) {
-            replaced
-        } else {
-            replaced.withPlanCount(old.plan, -1L).withPlanCount(fixed.plan, 1L)
-        }
+        return copy(users = users.map { if (it.id == fixed.id) fixed else it })
     }
 
     /**
-     * The user renewed: adds PLAN_DAYS to the plan end date (from today if it already ended)
-     * and records the plan price as income.
+     * A user you added renewed: adds PLAN_DAYS to the plan end date (from today if it already ended).
+     * No money is recorded, because users you add yourself do not earn money.
      */
     fun withUserRenewed(userId: String, now: Long): AppData {
         val user = users.firstOrNull { it.id == userId } ?: return this
-        if (user.plan == Plan.FREE) return this
+        if (user.plan == Plan.FREE || user.simulated) return this
         val base = maxOf(now, user.planExpiryMillis)
         val renewed = user.copy(planExpiryMillis = base + PLAN_DAYS * DAY_MILLIS)
-        val price = if (user.plan == Plan.PRO) proPrice else premiumPrice
-        val planName = if (user.plan == Plan.PRO) "Pro" else "Premium"
-        val newEntries = if (price > 0L) {
-            listOf(
-                Entry(
-                    title = user.name + " renewed " + planName,
-                    amount = price,
-                    isIncome = true,
-                    dateMillis = now,
-                    auto = true
-                )
-            )
-        } else {
-            emptyList()
-        }
+        return copy(users = users.map { if (it.id == userId) renewed else it })
+    }
+
+    /** A user you added did not renew: moves them to Free. */
+    fun withPlanLapsed(userId: String): AppData {
+        val user = users.firstOrNull { it.id == userId } ?: return this
+        if (user.plan == Plan.FREE || user.simulated) return this
         return copy(
-            users = users.map { if (it.id == userId) renewed else it },
-            entries = entries + newEntries
+            users = users.map {
+                if (it.id == userId) it.copy(plan = Plan.FREE, planStartMillis = 0L, planExpiryMillis = 0L)
+                else it
+            }
         )
     }
 
-    /** The user did not renew: moves them to Free and lowers the Premium or Pro count. */
-    fun withPlanLapsed(userId: String): AppData {
-        val user = users.firstOrNull { it.id == userId } ?: return this
-        if (user.plan == Plan.FREE) return this
-        return withUserUpdated(user.copy(plan = Plan.FREE, planExpiryMillis = 0L))
-    }
-
-    /** Removes a user and lowers the count of their plan. Income already recorded stays. */
+    /** Removes a user you added. Users made by the dice cannot be removed. */
     fun withUserRemoved(userId: String): AppData {
         val old = users.firstOrNull { it.id == userId } ?: return this
-        return copy(users = users.filter { it.id != userId }).withPlanCount(old.plan, -1L)
+        if (old.simulated) return this
+        return copy(users = users.filter { it.id != userId })
     }
 
     /**
-     * Called when saving an edit. [previous] is the saved version before the edit.
-     * If Premium or Pro users went up, adds income for the new subscriptions
-     * (increase x price) and adds them to today's counters.
+     * Used when saving an edit: keeps everything the dice own (their users, roll history, Play Balance,
+     * active users and campaign) exactly as it is in [current], and takes only the settings and the
+     * users you added from this copy.
      */
-    fun finalizeSave(previous: AppData, now: Long): AppData {
-        val today = dayKey(now)
-        var result = this
+    fun keepingDiceData(current: AppData): AppData = copy(
+        users = current.users.filter { it.simulated } + users.filter { !it.simulated },
+        activeUsers = current.activeUsers,
+        activeUsersDayKey = current.activeUsersDayKey,
+        activeHistory = current.activeHistory,
+        lastRollDayKey = current.lastRollDayKey,
+        rolls = current.rolls,
+        playTx = current.playTx,
+        playSubsBalance = current.playSubsBalance,
+        playAdsBalance = current.playAdsBalance,
+        campaign = current.campaign
+    )
 
-        if (dailyNewUsers != previous.newUsersToday(now)) {
-            result = result.copy(newUsersDayKey = today)
-        }
-
-        if (activeUsers != previous.activeUsersAt(now)) {
-            val kept = (result.activeHistory.filter { it.dayKey != today } +
-                DayCount(today, activeUsers)).sortedBy { it.dayKey }.takeLast(30)
-            result = result.copy(activeUsersDayKey = today, activeHistory = kept)
-        }
-
-        val premiumAdded = (premiumUsers - previous.premiumUsers).coerceAtLeast(0L)
-        val proAdded = (proUsers - previous.proUsers).coerceAtLeast(0L)
-        if (premiumAdded == 0L && proAdded == 0L) return result
-
-        val newEntries = ArrayList<Entry>()
-        if (premiumAdded > 0L && premiumPrice > 0L) {
-            newEntries.add(
-                Entry(
-                    title = "$premiumAdded new Premium subscription" +
-                        if (premiumAdded == 1L) "" else "s",
-                    amount = premiumAdded * premiumPrice,
-                    isIncome = true,
-                    dateMillis = now,
-                    auto = true
-                )
+    /** Moves the whole Google Play Balance into this app's income. */
+    fun withdrawn(now: Long): AppData {
+        val amount = playBalance
+        if (amount <= 0L) return this
+        return copy(
+            playSubsBalance = 0L,
+            playAdsBalance = 0L,
+            entries = entries + Entry(
+                title = "Google Play withdrawal",
+                amount = amount,
+                isIncome = true,
+                dateMillis = now,
+                auto = true
             )
-        }
-        if (proAdded > 0L && proPrice > 0L) {
-            newEntries.add(
-                Entry(
-                    title = "$proAdded new Pro subscription" +
-                        if (proAdded == 1L) "" else "s",
-                    amount = proAdded * proPrice,
-                    isIncome = true,
-                    dateMillis = now,
-                    auto = true
-                )
-            )
-        }
-
-        return result.copy(
-            entries = result.entries + newEntries,
-            premiumToday = result.premiumTodayAt(now) + premiumAdded,
-            proToday = result.proTodayAt(now) + proAdded,
-            todayKey = today
         )
     }
+}
+
+/** The start of the day (12 am) that contains [millis], in the phone's time zone. */
+fun dayStartMillis(millis: Long): Long {
+    val zone = ZoneId.systemDefault()
+    return Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
+        .atStartOfDay(zone).toInstant().toEpochMilli()
 }
 
 /** Extra monthly money for a staff member, for example Transport or Housing. */
@@ -426,7 +425,9 @@ data class Ledger(
     val company: Company = Company(),
     val apps: List<AppData> = emptyList(),
     val staff: List<Staff> = emptyList(),
-    val renewals: List<Renewal> = emptyList()
+    val renewals: List<Renewal> = emptyList(),
+    /** Every withdrawal from the Google Play Balance, newest first (the last 200 are kept). */
+    val withdrawals: List<Withdrawal> = emptyList()
 ) {
     /** Renewals that are inside a reminder stage or expired, soonest first. */
     fun renewalsNeedingAttention(now: Long): List<Renewal> =
@@ -464,7 +465,10 @@ data class Ledger(
     fun newUsersToday(now: Long): Long = apps.sumOf { it.newUsersToday(now) }
     fun premiumToday(now: Long): Long = apps.sumOf { it.premiumTodayAt(now) }
     fun proToday(now: Long): Long = apps.sumOf { it.proTodayAt(now) }
-    fun subscriptionIncomeToday(now: Long): Long = apps.sumOf { it.subscriptionIncomeToday(now) }
+    /** Money waiting in every app's Google Play Balance. It is not in profit until it is withdrawn. */
+    val playBalanceTotal: Long get() = apps.sumOf { it.playBalance }
+
+    fun playEarningsToday(now: Long): Long = apps.sumOf { it.playEarningsToday(now) }
 
     fun activeUsersToday(now: Long): Long = apps.sumOf { it.activeUsersAt(now) }
 

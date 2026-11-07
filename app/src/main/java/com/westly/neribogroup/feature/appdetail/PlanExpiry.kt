@@ -21,7 +21,6 @@ import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.StatusDot
 import com.westly.neribogroup.feature.common.TintedButton
 import com.westly.neribogroup.ui.formatDate
-import com.westly.neribogroup.ui.formatNaira
 
 /** "12 days left", "Expires today", "Expired 3 days ago" or "No date set". */
 internal fun planStatusText(left: Long?): String {
@@ -34,7 +33,10 @@ internal fun planStatusText(left: Long?): String {
     }
 }
 
-/** One Premium or Pro user with the day their plan ends. Tap it to say if they renewed. */
+/**
+ * One Premium or Pro user with the day their plan ends. Tap a user you added yourself to say if they
+ * renewed. Users made by the dice renew or leave by themselves, so they are not tappable.
+ */
 @Composable
 internal fun ExpiryRow(user: AppUser, now: Long, onClick: () -> Unit) {
     val left = user.planDaysLeft(now)
@@ -49,7 +51,7 @@ internal fun ExpiryRow(user: AppUser, now: Long, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .then(if (user.simulated) Modifier else Modifier.clickable(onClick = onClick))
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -57,6 +59,7 @@ internal fun ExpiryRow(user: AppUser, now: Long, onClick: () -> Unit) {
             Text(text = user.name, style = MaterialTheme.typography.bodyLarge)
             Text(
                 text = planText(user.plan) +
+                    (if (user.simulated) " · auto" else "") +
                     (if (user.planExpiryMillis > 0L) " · ends " + formatDate(user.planExpiryMillis) else ""),
                 style = MaterialTheme.typography.bodySmall,
                 color = cs.onSurfaceVariant
@@ -67,11 +70,13 @@ internal fun ExpiryRow(user: AppUser, now: Long, onClick: () -> Unit) {
     HorizontalDivider(color = cs.outlineVariant)
 }
 
-/** Asks if the user renewed. Renewed adds the next period, Not renewed moves them to Free. */
+/**
+ * Asks if a user you added renewed. Renewed adds the next period, Not renewed moves them to Free.
+ * No money is recorded, because users you add yourself do not earn money.
+ */
 @Composable
 internal fun RenewPlanDialog(
     user: AppUser,
-    price: Long,
     now: Long,
     onRenewed: () -> Unit,
     onNotRenewed: () -> Unit,
@@ -83,9 +88,8 @@ internal fun RenewPlanDialog(
         subtitle = planText(user.plan) + " · " + planStatusText(user.planDaysLeft(now))
     ) {
         Text(
-            text = "Renewed adds " + PLAN_DAYS + " more days" +
-                (if (price > 0L) " and records " + formatNaira(price) + " as income." else ".") +
-                " Not renewed moves them to Free.",
+            text = "Renewed adds " + PLAN_DAYS + " more days. Not renewed moves them to Free. " +
+                "No money is recorded for users you add yourself.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

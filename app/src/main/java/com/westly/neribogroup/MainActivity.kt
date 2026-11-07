@@ -15,6 +15,7 @@ import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
 import com.westly.neribogroup.feature.group.AppsScreen
 import com.westly.neribogroup.feature.group.CompanyCostsScreen
 import com.westly.neribogroup.feature.group.GroupDashboardScreen
+import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.group.StaffListScreen
 import com.westly.neribogroup.feature.staff.StaffDetailScreen
@@ -79,7 +80,13 @@ private fun NeriboRoot(vm: AppViewModel = viewModel()) {
             app = openApp,
             onBack = { vm.openAppId = null },
             onSave = { vm.saveApp(it) },
-            onDelete = { vm.deleteApp(openApp.id) }
+            onDelete = { vm.deleteApp(openApp.id) },
+            onRoll = { vm.rollApp(openApp.id) },
+            onWithdraw = { vm.withdrawApp(openApp.id) },
+            onStartCampaign = { size, startIn, lasts ->
+                vm.startCampaign(openApp.id, size, startIn, lasts)
+            },
+            onStopCampaign = { vm.stopCampaign(openApp.id) }
         )
     } else if (openStaff != null) {
         StaffDetailScreen(
@@ -114,6 +121,12 @@ private fun NeriboRoot(vm: AppViewModel = viewModel()) {
                 ledger = vm.ledger,
                 onBack = { vm.openSection = null },
                 onSave = { vm.saveLedger(it) }
+            )
+            Section.PLAY -> PlayBalanceScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null },
+                onWithdrawApp = { vm.withdrawApp(it) },
+                onWithdrawAll = { vm.withdrawAll() }
             )
             null -> GroupDashboardScreen(
                 ledger = vm.ledger,
