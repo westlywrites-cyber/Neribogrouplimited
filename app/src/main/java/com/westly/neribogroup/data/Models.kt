@@ -47,7 +47,9 @@ data class Entry(
     /** Links an expense to a legal case (Customer Service & Complaints). Empty when not linked. */
     val caseId: String = "",
     /** Links a company expense to the Google Play app that charged it. Empty when not linked. */
-    val appId: String = ""
+    val appId: String = "",
+    /** Links a company expense to a software client project. Empty when not linked. */
+    val projectId: String = ""
 )
 
 /** The plan a user of an app is on. */
@@ -595,7 +597,9 @@ data class Ledger(
     val cases: List<ComplaintCase> = emptyList(),
     val nextCaseNumber: Int = 1,
     /** The highest "now" ever seen by the Cases screens. Protects against setting the phone clock back. */
-    val casesClockMillis: Long = 0
+    val casesClockMillis: Long = 0,
+    /** Software Development Clients: proposals, projects, clients, the $ account and exchange rates. */
+    val software: SoftwareData = SoftwareData()
 ) {
     /** Renewals that are inside a reminder stage or expired, soonest first. */
     fun renewalsNeedingAttention(now: Long): List<Renewal> =

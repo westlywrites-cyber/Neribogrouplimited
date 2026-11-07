@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
+import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.feature.group.AppsScreen
 import com.westly.neribogroup.feature.group.CaseDetailScreen
 import com.westly.neribogroup.feature.group.CasesScreen
@@ -21,6 +22,9 @@ import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
 import com.westly.neribogroup.feature.group.StaffListScreen
+import com.westly.neribogroup.feature.software.SoftwareClientsScreen
+import com.westly.neribogroup.feature.software.SoftwareOfferScreen
+import com.westly.neribogroup.feature.software.SoftwareProjectScreen
 import com.westly.neribogroup.feature.staff.StaffDetailScreen
 import com.westly.neribogroup.ui.theme.NeriboTheme
 
@@ -84,6 +88,8 @@ private fun NeriboRoot(vm: AppViewModel) {
     val openApp = vm.openAppId?.let { id -> vm.ledger.apps.firstOrNull { it.id == id } }
     val openStaff = vm.openStaffId?.let { id -> vm.ledger.staff.firstOrNull { it.id == id } }
     val openCase = vm.openCaseId?.let { id -> vm.ledger.cases.firstOrNull { it.id == id } }
+    val openOffer = vm.openOfferId?.let { id -> vm.ledger.software.offers.firstOrNull { it.id == id } }
+    val openProject = vm.openProjectId?.let { id -> vm.ledger.software.projects.firstOrNull { it.id == id } }
 
     if (openCase != null) {
         CaseDetailScreen(
@@ -105,6 +111,45 @@ private fun NeriboRoot(vm: AppViewModel) {
             onBack = { vm.showSettings = false },
             onDarkTheme = { vm.updateDarkTheme(it) },
             onFontStep = { vm.updateFontStep(it) }
+        )
+    } else if (openOffer != null) {
+        SoftwareOfferScreen(
+            ledger = vm.ledger,
+            offer = openOffer,
+            onBack = { vm.openOfferId = null },
+            onClock = { vm.updateSoftwareClock(it) },
+            onAccept = { vm.acceptSoftwareOffer(openOffer.id) },
+            onDecline = { vm.declineSoftwareOffer(openOffer.id) },
+            onOpenProject = { projectId ->
+                vm.openOfferId = null
+                vm.openProjectId = projectId
+            }
+        )
+    } else if (openProject != null) {
+        SoftwareProjectScreen(
+            ledger = vm.ledger,
+            project = openProject,
+            onBack = { vm.openProjectId = null },
+            onClock = { vm.updateSoftwareClock(it) },
+            onStage = { vm.changeProjectStage(openProject.id, it) },
+            onRecordMaintenance = { vm.recordMaintenancePayment(openProject.id) },
+            onStopMaintenance = { vm.stopProjectMaintenance(openProject.id) },
+            onAddExpense = { title, amount -> vm.addProjectExpense(openProject.id, title, amount) }
+        )
+    } else if (openApp != null && openApp.id == SOFTWARE_APP_ID) {
+        SoftwareClientsScreen(
+            ledger = vm.ledger,
+            ratesLoading = vm.ratesLoading,
+            ratesMessage = vm.ratesMessage,
+            onBack = { vm.openAppId = null },
+            onClock = { vm.updateSoftwareClock(it) },
+            onRoll = { vm.rollSoftware() },
+            onOpenOffer = { vm.openOfferId = it },
+            onOpenProject = { vm.openProjectId = it },
+            onConvert = { cents, rate, requestId -> vm.convertUsdToNaira(cents, rate, requestId) },
+            onRefreshRates = { vm.refreshRates() },
+            onSaveRate = { code, value -> vm.saveRate(code, value) },
+            onUseLiveRate = { vm.useLiveRate(it) }
         )
     } else if (openApp != null) {
         AppDashboardScreen(

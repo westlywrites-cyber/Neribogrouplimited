@@ -13,13 +13,13 @@ object LedgerStorage {
 
     fun load(context: Context): Ledger {
         val file = File(context.filesDir, FILE_NAME)
-        if (!file.exists()) return Ledger()
+        if (!file.exists()) return Ledger().withSoftwareApp()
         return try {
             fromJson(file.readText())
         } catch (e: Exception) {
             // Keep the unreadable file instead of overwriting it.
             runCatching { file.renameTo(File(context.filesDir, "ledger.corrupt.json")) }
-            Ledger()
+            Ledger().withSoftwareApp()
         }
     }
 
@@ -37,7 +37,7 @@ object LedgerStorage {
 
     fun toJson(ledger: Ledger): String {
         val root = JSONObject()
-        root.put("version", 5)
+        root.put("version", 6)
         root.put("companyName", ledger.company.name)
         root.put("companyExpenses", entriesToJson(ledger.company.expenses))
 
@@ -156,6 +156,7 @@ object LedgerStorage {
         root.put("cases", casesArray)
         root.put("nextCaseNumber", ledger.nextCaseNumber)
         root.put("casesClockMillis", ledger.casesClockMillis)
+        root.put("software", SoftwareJson.toJson(ledger.software))
 
         return root.toString(2)
     }
@@ -281,8 +282,9 @@ object LedgerStorage {
             withdrawals = withdrawals,
             cases = cases,
             nextCaseNumber = maxOf(root.optInt("nextCaseNumber", 1), cases.size + 1, 1),
-            casesClockMillis = root.optLong("casesClockMillis")
-        ).withoutDuplicateLegalExpenses()
+            casesClockMillis = root.optLong("casesClockMillis"),
+            software = SoftwareJson.fromJson(root.optJSONObject("software"))
+        ).withSoftwareApp().withoutDuplicateLegalExpenses()
     }
 
     /**
@@ -641,6 +643,7 @@ object LedgerStorage {
             o.put("auto", e.auto)
             o.put("caseId", e.caseId)
             o.put("appId", e.appId)
+            o.put("projectId", e.projectId)
             array.put(o)
         }
         return array
@@ -660,7 +663,8 @@ object LedgerStorage {
                     dateMillis = o.optLong("date"),
                     auto = o.optBoolean("auto"),
                     caseId = o.optString("caseId"),
-                    appId = o.optString("appId")
+                    appId = o.optString("appId"),
+                    projectId = o.optString("projectId")
                 )
             )
         }
