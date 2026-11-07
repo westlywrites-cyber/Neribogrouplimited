@@ -138,16 +138,17 @@ fun PlayBalanceScreen(
             }
 
             item { SectionTitle("Each app") }
-            if (ledger.apps.isEmpty()) {
+            val playApps = ledger.apps.filter { it.googlePlayEnabled }
+            if (playApps.isEmpty()) {
                 item {
                     Text(
-                        text = "No apps yet.",
+                        text = "No Google Play apps yet.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            items(ledger.apps, key = { "play-" + it.id }) { app ->
+            items(playApps, key = { "play-" + it.id }) { app ->
                 PlayAppCard(app = app, onWithdraw = { onWithdrawApp(app.id) })
             }
 

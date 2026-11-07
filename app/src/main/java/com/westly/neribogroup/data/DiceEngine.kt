@@ -141,6 +141,7 @@ object DiceEngine {
      */
     fun roll(ledger: Ledger, appId: String, now: Long, random: Random = Random.Default): Ledger {
         val app = ledger.apps.firstOrNull { it.id == appId } ?: return ledger
+        if (!app.googlePlayEnabled) return ledger
         if (rollBlock(app, now) != RollBlock.OK) return ledger
 
         val today = dayKey(now)
@@ -312,7 +313,17 @@ object DiceEngine {
             playSubsBalance = app.playSubsBalance + subsNet,
             playAdsBalance = app.playAdsBalance + adsNet
         )
-        return ledger.copy(apps = ledger.apps.map { if (it.id == appId) updated else it })
+        val rolled = ledger.copy(apps = ledger.apps.map { if (it.id == appId) updated else it })
+
+        // A customer case can only be born from something real that this roll did.
+        val facts = RollFacts(
+            renewedUsers = renewedUsers,
+            lapsedUsers = lostUsers,
+            upgradedUsers = (premiumPicked + proPicked).mapNotNull { changed[it.id] },
+            newUserCount = newCount,
+            adsEarned = adsGross > 0L
+        )
+        return CaseGenerator.maybeCreate(rolled, appId, facts, now, random)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -322,6 +333,7 @@ object DiceEngine {
     /** Moves one app's whole Google Play Balance into that app's income and writes it in the history. */
     fun withdrawApp(ledger: Ledger, appId: String, now: Long): Ledger {
         val app = ledger.apps.firstOrNull { it.id == appId } ?: return ledger
+        if (!app.googlePlayEnabled) return ledger
         val amount = app.playBalance
         if (amount <= 0L) return ledger
         val record = Withdrawal(dateMillis = now, amount = amount, label = app.name)
@@ -333,7 +345,7 @@ object DiceEngine {
 
     /** Moves every app's Google Play Balance into profit at once and writes one line in the history. */
     fun withdrawAll(ledger: Ledger, now: Long): Ledger {
-        val paying = ledger.apps.filter { it.playBalance > 0L }
+        val paying = ledger.apps.filter { it.googlePlayEnabled && it.playBalance > 0L }
         if (paying.isEmpty()) return ledger
         val total = paying.sumOf { it.playBalance }
         val ids = paying.map { it.id }.toSet()
@@ -351,6 +363,7 @@ object DiceEngine {
 
     /** Null when the campaign is allowed, otherwise the reason it is not. */
     fun campaignError(app: AppData, startInDays: Int, lastsDays: Int, now: Long): String? {
+        if (!app.googlePlayEnabled) return "Campaigns are only for Google Play apps."
         if (startInDays < 0) return "A campaign cannot start in the past."
         if (startInDays > 30) return "A campaign must start within the next 30 days."
         if (lastsDays < 1) return "A campaign lasts at least 1 day."
@@ -374,6 +387,7 @@ object DiceEngine {
         lastsDays: Int,
         now: Long
     ): AppData {
+        if (!app.googlePlayEnabled) return app
         if (campaignError(app, startInDays, lastsDays, now) != null) return app
         val today = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).toLocalDate()
         val start = today.plusDays(startInDays.toLong())
@@ -389,6 +403,7 @@ object DiceEngine {
 
     /** Stops a campaign early. It can never be made longer. */
     fun stopCampaign(app: AppData, now: Long): AppData {
+        if (!app.googlePlayEnabled) return app
         val campaign = app.campaign ?: return app
         if (campaign.stoppedDayKey.isNotEmpty() || campaign.endDayKey < dayKey(now)) return app
         return app.copy(campaign = campaign.copy(stoppedDayKey = dayKey(now)))

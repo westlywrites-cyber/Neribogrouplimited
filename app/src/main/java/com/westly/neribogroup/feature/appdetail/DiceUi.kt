@@ -30,7 +30,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.DiceKind
@@ -177,8 +178,10 @@ fun DicePanel(app: AppData, now: Long, onRoll: () -> Unit) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = diceLabel(kind),
-                        fontSize = 10.sp,
+                        // The cubes have a fixed size, so this label keeps a fixed 10dp size at every font step.
+                        fontSize = with(LocalDensity.current) { 10.dp.toSp() },
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }

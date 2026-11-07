@@ -46,13 +46,17 @@ import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.CampaignSize
+import com.westly.neribogroup.data.Entry
 import com.westly.neribogroup.data.Plan
+import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
+import com.westly.neribogroup.feature.common.FlatCard
 import com.westly.neribogroup.feature.common.EntryRow
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.SaveBar
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.StatTile
+import com.westly.neribogroup.feature.common.TintedButton
 import com.westly.neribogroup.feature.common.profitColor
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
@@ -68,7 +72,11 @@ fun AppDashboardScreen(
     onRoll: () -> Unit,
     onWithdraw: () -> Unit,
     onStartCampaign: (CampaignSize, Int, Int) -> Unit,
-    onStopCampaign: () -> Unit
+    onStopCampaign: () -> Unit,
+    /** Company expenses charged by this (Google Play) app, newest first is applied here. */
+    chargedToCompany: List<Entry>,
+    onEnableGooglePlay: () -> Unit,
+    onAddCompanyExpense: (String, Long) -> Unit
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(app) }
@@ -78,6 +86,17 @@ fun AppDashboardScreen(
     var editUserId by remember { mutableStateOf<String?>(null) }
     // The user (added by you) whose plan end date was tapped, to say if they renewed.
     var expiryUserId by remember { mutableStateOf<String?>(null) }
+    // Manual apps: the number boxes are redrawn when a button (not typing) changes their values.
+    var fieldsKey by remember { mutableStateOf(0) }
+    // Only the Total users box is redrawn while you type in "New users today" (the other box keeps its cursor).
+    var totalKey by remember { mutableStateOf(0) }
+    var showAddIncome by remember { mutableStateOf(false) }
+    var showAddExpense by remember { mutableStateOf(false) }
+    var showCompanyExpense by remember { mutableStateOf(false) }
+    var confirmGooglePlay by remember { mutableStateOf(false) }
+    // The "Add user i of N" sequence after Save in a Manual app. 0 = not running.
+    var queueTotal by remember { mutableStateOf(0) }
+    var queueIndex by remember { mutableStateOf(0) }
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else app
@@ -127,7 +146,8 @@ fun AppDashboardScreen(
                                     text = { Text("Edit") },
                                     onClick = {
                                         menuOpen = false
-                                        draft = app
+                                        draft = app.forEditing(now)
+                                        fieldsKey += 1
                                         addUser = false
                                         editUserId = null
                                         editing = true
@@ -144,8 +164,14 @@ fun AppDashboardScreen(
                 SaveBar(
                     onCancel = { editing = false },
                     onSave = {
+                        val increase = if (app.googlePlayEnabled) 0L
+                        else draft.manualDailyNewUsers - app.newUsersToday(now)
                         onSave(draft.copy(name = draft.name.trim().ifBlank { app.name }))
                         editing = false
+                        if (increase > 0L) {
+                            queueTotal = minOf(increase, 100L).toInt()
+                            queueIndex = 1
+                        }
                     }
                 )
             }
@@ -173,6 +199,66 @@ fun AppDashboardScreen(
                     )
                 }
 
+                if (!draft.googlePlayEnabled) {
+                    item { SectionTitle("Users") }
+                    item {
+                        key(fieldsKey, totalKey) {
+                            NumberField("Total users", draft.manualTotalUsers, {
+                                draft = draft.copy(manualTotalUsers = it)
+                            })
+                        }
+                    }
+                    item {
+                        key(fieldsKey) {
+                            NumberField("Premium users", draft.manualPremiumUsers, {
+                                draft = draft.copy(manualPremiumUsers = it)
+                            })
+                        }
+                    }
+                    item {
+                        key(fieldsKey) {
+                            NumberField("Pro users", draft.manualProUsers, {
+                                draft = draft.copy(manualProUsers = it)
+                            })
+                        }
+                    }
+                    item {
+                        NumberField("New users today", draft.manualDailyNewUsers, { typed ->
+                            val diff = typed - draft.manualDailyNewUsers
+                            val newTotal = maxOf(0L, draft.manualTotalUsers + diff)
+                            val totalChanged = newTotal != draft.manualTotalUsers
+                            draft = draft.copy(
+                                manualDailyNewUsers = typed,
+                                manualTotalUsers = newTotal
+                            )
+                            if (totalChanged) totalKey += 1
+                        })
+                    }
+                    item {
+                        Text(
+                            text = "New users today are added to Total users for you. After saving you " +
+                                "can pick Free, Premium or Pro for each one. It goes back to 0 at 12 am.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    item {
+                        key(fieldsKey) {
+                            NumberField("Active users today", draft.activeUsers, {
+                                draft = draft.copy(activeUsers = it)
+                            })
+                        }
+                    }
+                    item {
+                        Text(
+                            text = "Active users goes back to 0 at 12 am. Each saved day is kept in the " +
+                                "last 7 days chart.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 item { SectionTitle("Subscription prices") }
                 item {
                     NumberField("Premium price (₦ per subscription)", draft.premiumPrice, {
@@ -193,6 +279,21 @@ fun AppDashboardScreen(
                     )
                 }
 
+                if (!draft.googlePlayEnabled) {
+                    item {
+                        val premiumNew = maxOf(0L, draft.manualPremiumUsers - app.manualPremiumUsers)
+                        val proNew = maxOf(0L, draft.manualProUsers - app.manualProUsers)
+                        val income = premiumNew * draft.premiumPrice + proNew * draft.proPrice
+                        Text(
+                            text = "Saving now adds " + formatNaira(income) + " income: " + premiumNew +
+                                " Premium and " + proNew + " Pro new subscriptions.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                if (draft.googlePlayEnabled) {
                 item { SectionTitle("Google Ads") }
                 item {
                     Row(
@@ -217,6 +318,7 @@ fun AppDashboardScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
                 }
 
                 item { SectionTitle("Plan benefits") }
@@ -252,11 +354,14 @@ fun AppDashboardScreen(
                     }
                 }
 
-                item { SectionTitle("Users you added") }
+                item { SectionTitle(if (draft.googlePlayEnabled) "Users you added" else "App users") }
                 item {
                     val diceUsers = draft.users.count { it.simulated }
                     Text(
-                        text = if (diceUsers > 0) {
+                        text = if (!draft.googlePlayEnabled) {
+                            "Tap a user to edit or delete. A Premium or Pro user raises that plan's " +
+                                "number by 1. Total users is not changed."
+                        } else if (diceUsers > 0) {
                             formatCount(diceUsers.toLong()) +
                                 " users were made by the dice. They cannot be edited. " +
                                 "Users you add yourself record no money."
@@ -281,12 +386,27 @@ fun AppDashboardScreen(
                     ) { Text("Add user") }
                 }
 
+                if (!draft.googlePlayEnabled) {
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(
+                                onClick = { showAddIncome = true },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Add income", maxLines = 1) }
+                            Button(
+                                onClick = { showAddExpense = true },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Add expense", maxLines = 1) }
+                        }
+                    }
+                }
                 if (draft.entries.isNotEmpty()) {
                     item { SectionTitle("Income and expenses") }
                     items(draft.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
                         EntryRow(
                             entry = entry,
                             editing = true,
+                            tag = manualTag(draft, entry),
                             onDelete = {
                                 draft = draft.copy(entries = draft.entries.filter { it.id != entry.id })
                             }
@@ -306,17 +426,19 @@ fun AppDashboardScreen(
                 // -------------------------------------------------------------------------
                 // View mode.
                 // -------------------------------------------------------------------------
-                item { SectionTitle("Daily dice") }
-                item { DicePanel(app = app, now = now, onRoll = onRoll) }
+                if (app.googlePlayEnabled) {
+                    item { SectionTitle("Daily dice") }
+                    item { DicePanel(app = app, now = now, onRoll = onRoll) }
 
-                item { SectionTitle("Campaign") }
-                item {
-                    CampaignCard(
-                        app = app,
-                        now = now,
-                        onStart = onStartCampaign,
-                        onStop = onStopCampaign
-                    )
+                    item { SectionTitle("Campaign") }
+                    item {
+                        CampaignCard(
+                            app = app,
+                            now = now,
+                            onStart = onStartCampaign,
+                            onStop = onStopCampaign
+                        )
+                    }
                 }
 
                 item { SectionTitle("Users") }
@@ -385,16 +507,43 @@ fun AppDashboardScreen(
                     )
                 }
 
-                item { SectionTitle("Google Play Balance") }
+                item { SectionTitle("Google Play") }
                 item {
-                    StatTile(
-                        label = "Earned today (after Google's cut)",
-                        value = formatNaira(app.playEarningsToday(now)),
-                        modifier = Modifier.fillMaxWidth(),
-                        valueColor = MaterialTheme.colorScheme.primary
-                    )
+                    FlatCard {
+                        if (app.googlePlayEnabled) {
+                            Text(
+                                text = "Google Play is on. It cannot be turned off.",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        } else {
+                            Text(
+                                text = "Google Play apps use the daily dice, the Play Balance and Ads. " +
+                                    "This cannot be turned off later.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            TintedButton(
+                                text = "Turn on Google Play",
+                                onClick = { confirmGooglePlay = true },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
                 }
-                item { PlayAppCard(app = app, onWithdraw = onWithdraw, showName = false) }
+
+                if (app.googlePlayEnabled) {
+                    item { SectionTitle("Google Play Balance") }
+                    item {
+                        StatTile(
+                            label = "Earned today (after Google's cut)",
+                            value = formatNaira(app.playEarningsToday(now)),
+                            modifier = Modifier.fillMaxWidth(),
+                            valueColor = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    item { PlayAppCard(app = app, onWithdraw = onWithdraw, showName = false) }
+                }
 
                 val paying = app.users
                     .filter { it.plan != Plan.FREE }
@@ -416,8 +565,12 @@ fun AppDashboardScreen(
                             else -> "$endingSoon plans end in the next 7 days."
                         }
                         Text(
-                            text = soonText + " Tap a user you added to say if they renewed. " +
-                                "Users made by the dice renew or leave by themselves.",
+                            text = soonText + (if (app.googlePlayEnabled) {
+                                " Tap a user you added to say if they renewed. " +
+                                    "Users made by the dice renew or leave by themselves."
+                            } else {
+                                " Tap a user to say if they renewed."
+                            }),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -456,7 +609,8 @@ fun AppDashboardScreen(
                     val count = app.users.size
                     Text(
                         text = when (count) {
-                            0 -> "No users yet. Roll the dice, or add your own in Edit."
+                            0 -> if (app.googlePlayEnabled) "No users yet. Roll the dice, or add your own in Edit."
+                            else "No users yet. Add users in Edit."
                             1 -> "1 user"
                             else -> formatCount(count.toLong()) + " users (showing the latest 50)"
                         },
@@ -486,36 +640,67 @@ fun AppDashboardScreen(
                         valueColor = profitColor(app.profit)
                     )
                 }
-                item {
-                    Text(
-                        text = "Google Play Balance money is not in profit until you withdraw it.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (app.entries.isNotEmpty()) {
-                    items(app.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
-                        EntryRow(entry = entry, editing = false, onDelete = {})
-                    }
-                }
-
-                item { SectionTitle("Roll history") }
-                val recent = app.rolls.takeLast(10).reversed()
-                if (recent.isEmpty()) {
+                if (app.googlePlayEnabled) {
                     item {
                         Text(
-                            text = "No rolls yet.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Google Play Balance money is not in profit until you withdraw it.",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-                items(recent, key = { "roll-" + it.dayKey }) { record ->
-                    RollHistoryRow(record)
-                    HorizontalDivider(
-                        modifier = Modifier.padding(top = 8.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant
-                    )
+                if (app.entries.isNotEmpty()) {
+                    items(app.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
+                        EntryRow(entry = entry, editing = false, onDelete = {}, tag = manualTag(app, entry))
+                    }
+                }
+
+                if (app.googlePlayEnabled) {
+                    val charged = chargedToCompany.sortedByDescending { it.dateMillis }
+                    item { SectionTitle("Expenses charged to company") }
+                    item {
+                        Text(
+                            text = "Charged to company: " + formatNaira(charged.sumOf { it.amount }),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    items(charged, key = { "charged-" + it.id }) { entry ->
+                        EntryRow(entry = entry, editing = false, onDelete = {})
+                    }
+                    item {
+                        Button(
+                            onClick = { showCompanyExpense = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Add expense to company costs") }
+                    }
+                    item {
+                        Text(
+                            text = "These expenses are kept in Company costs, so they are counted once. " +
+                                "To remove one, delete it on the Company costs page.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    item { SectionTitle("Roll history") }
+                    val recent = app.rolls.takeLast(10).reversed()
+                    if (recent.isEmpty()) {
+                        item {
+                            Text(
+                                text = "No rolls yet.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    items(recent, key = { "roll-" + it.dayKey }) { record ->
+                        RollHistoryRow(record)
+                        HorizontalDivider(
+                            modifier = Modifier.padding(top = 8.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    }
                 }
             }
 
@@ -540,6 +725,7 @@ fun AppDashboardScreen(
                         addedMillis = System.currentTimeMillis()
                     )
                 )
+                fieldsKey += 1
                 addUser = false
             },
             onDismiss = { addUser = false }
@@ -564,11 +750,13 @@ fun AppDashboardScreen(
                             plan = plan
                         )
                     )
+                    fieldsKey += 1
                     editUserId = null
                 },
                 onDismiss = { editUserId = null },
                 onDelete = {
                     draft = draft.withUserRemoved(userBeingEdited.id)
+                    fieldsKey += 1
                     editUserId = null
                 }
             )
@@ -589,7 +777,102 @@ fun AppDashboardScreen(
                     onSave(app.withPlanLapsed(expiryUser.id))
                     expiryUserId = null
                 },
-                onDismiss = { expiryUserId = null }
+                onDismiss = { expiryUserId = null },
+                recordsMoney = !app.googlePlayEnabled
+            )
+        }
+    }
+
+    if (showAddIncome) {
+        AddEntryDialog(
+            heading = "Add income",
+            onDismiss = { showAddIncome = false },
+            onAdd = { title, amount ->
+                draft = draft.copy(
+                    entries = draft.entries + Entry(
+                        title = title,
+                        amount = amount,
+                        isIncome = true,
+                        dateMillis = System.currentTimeMillis()
+                    )
+                )
+                showAddIncome = false
+            }
+        )
+    }
+
+    if (showAddExpense) {
+        AddEntryDialog(
+            heading = "Add expense",
+            onDismiss = { showAddExpense = false },
+            onAdd = { title, amount ->
+                draft = draft.copy(
+                    entries = draft.entries + Entry(
+                        title = title,
+                        amount = amount,
+                        isIncome = false,
+                        dateMillis = System.currentTimeMillis()
+                    )
+                )
+                showAddExpense = false
+            }
+        )
+    }
+
+    if (showCompanyExpense) {
+        AddEntryDialog(
+            heading = "Add expense to company costs",
+            onDismiss = { showCompanyExpense = false },
+            onAdd = { title, amount ->
+                showCompanyExpense = false
+                onAddCompanyExpense(title, amount)
+            }
+        )
+    }
+
+    if (confirmGooglePlay) {
+        ConfirmDialog(
+            heading = "Turn on Google Play?",
+            message = "This cannot be undone. Your typed user numbers (Total, Premium, Pro, new and " +
+                "active users) are replaced by the user list. Your income, expenses and users you " +
+                "added stay.",
+            confirmLabel = "Turn on",
+            onConfirm = {
+                confirmGooglePlay = false
+                onEnableGooglePlay()
+            },
+            onDismiss = { confirmGooglePlay = false }
+        )
+    }
+
+    if (!editing && !app.googlePlayEnabled && queueIndex in 1..queueTotal) {
+        key(queueIndex) {
+            val last = queueIndex >= queueTotal
+            UserDialog(
+                heading = "Add user $queueIndex of $queueTotal",
+                initial = null,
+                otherUsers = app.users,
+                saveLabel = if (last) "Save and finish" else "Save and next",
+                premiumAvailable = app.premiumPrice > 0L,
+                proAvailable = app.proPrice > 0L,
+                onSave = { name, email, phone, plan ->
+                    // Added to the latest saved app, so earlier users are never lost.
+                    onSave(
+                        app.withUserAdded(
+                            AppUser(
+                                name = name,
+                                email = email,
+                                phone = phone,
+                                plan = plan,
+                                addedMillis = System.currentTimeMillis()
+                            )
+                        )
+                    )
+                    if (last) queueIndex = 0 else queueIndex += 1
+                },
+                onDismiss = { queueIndex = 0 },
+                onSkip = { if (last) queueIndex = 0 else queueIndex += 1 },
+                onStop = { queueIndex = 0 }
             )
         }
     }
@@ -680,3 +963,9 @@ private fun UserRow(user: AppUser, clickable: Boolean, onClick: () -> Unit) {
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
+
+/** A small "Manual" tag for entries made before Google Play was turned on. */
+private fun manualTag(app: AppData, entry: Entry): String? =
+    if (app.googlePlayEnabled && app.googlePlaySinceMillis > 0L && entry.dateMillis < app.googlePlaySinceMillis)
+        "Manual"
+    else null

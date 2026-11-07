@@ -45,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -120,13 +121,17 @@ fun StatColumn(
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = value,
             style = MaterialTheme.typography.titleLarge,
-            color = valueColor
+            color = valueColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -307,7 +312,15 @@ private fun RemoveButton(onClick: () -> Unit) {
 }
 
 @Composable
-fun EntryRow(entry: Entry, editing: Boolean, onDelete: () -> Unit) {
+fun EntryRow(
+    entry: Entry,
+    editing: Boolean,
+    onDelete: () -> Unit,
+    /** A small tag after the date, for example "Manual", "Legal" or an app's name. */
+    tag: String? = null,
+    /** False hides the Remove button (used for legal expenses, which cannot be deleted). */
+    canDelete: Boolean = true
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -317,7 +330,8 @@ fun EntryRow(entry: Entry, editing: Boolean, onDelete: () -> Unit) {
         Column(modifier = Modifier.weight(1f)) {
             Text(text = entry.title, style = MaterialTheme.typography.titleSmall)
             Text(
-                text = (if (entry.auto) "Auto · " else "") + formatDate(entry.dateMillis),
+                text = (if (entry.auto) "Auto · " else "") + formatDate(entry.dateMillis) +
+                    (if (!tag.isNullOrBlank()) " · " + tag else ""),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -328,7 +342,7 @@ fun EntryRow(entry: Entry, editing: Boolean, onDelete: () -> Unit) {
             color = if (entry.isIncome) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.error
         )
-        if (editing) {
+        if (editing && canDelete) {
             Spacer(modifier = Modifier.width(4.dp))
             RemoveButton(onClick = onDelete)
         }
@@ -424,23 +438,23 @@ fun SaveBar(onCancel: () -> Unit, onSave: () -> Unit) {
                 onClick = onCancel,
                 modifier = Modifier
                     .weight(1f)
-                    .height(52.dp),
+                    .heightIn(min = 52.dp),
                 shape = RoundedCornerShape(ButtonRadius)
             ) {
-                Text("Cancel", fontWeight = FontWeight.SemiBold)
+                Text("Cancel", fontWeight = FontWeight.SemiBold, maxLines = 1)
             }
             Button(
                 onClick = onSave,
                 modifier = Modifier
                     .weight(1.6f)
-                    .height(52.dp),
+                    .heightIn(min = 52.dp),
                 shape = RoundedCornerShape(ButtonRadius),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary
                 )
             ) {
-                Text("Save", fontWeight = FontWeight.SemiBold)
+                Text("Save", fontWeight = FontWeight.SemiBold, maxLines = 1)
             }
         }
     }

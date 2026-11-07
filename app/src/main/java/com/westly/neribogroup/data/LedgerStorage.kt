@@ -37,7 +37,7 @@ object LedgerStorage {
 
     fun toJson(ledger: Ledger): String {
         val root = JSONObject()
-        root.put("version", 4)
+        root.put("version", 5)
         root.put("companyName", ledger.company.name)
         root.put("companyExpenses", entriesToJson(ledger.company.expenses))
 
@@ -62,6 +62,16 @@ object LedgerStorage {
             o.put("playAdsBalance", app.playAdsBalance)
             o.put("rolls", rollsToJson(app.rolls))
             o.put("playTx", playTxToJson(app.playTx))
+            o.put("googlePlayEnabled", app.googlePlayEnabled)
+            o.put("googlePlaySinceMillis", app.googlePlaySinceMillis)
+            o.put("manualTotalUsers", app.manualTotalUsers)
+            o.put("manualPremiumUsers", app.manualPremiumUsers)
+            o.put("manualProUsers", app.manualProUsers)
+            o.put("manualDailyNewUsers", app.manualDailyNewUsers)
+            o.put("manualNewUsersDayKey", app.manualNewUsersDayKey)
+            o.put("manualPremiumToday", app.manualPremiumToday)
+            o.put("manualProToday", app.manualProToday)
+            o.put("manualTodayKey", app.manualTodayKey)
             val campaign = app.campaign
             if (campaign != null) {
                 val co = JSONObject()
@@ -141,6 +151,12 @@ object LedgerStorage {
         }
         root.put("withdrawals", withdrawalsArray)
 
+        val casesArray = JSONArray()
+        for (c in ledger.cases) casesArray.put(caseToJson(c))
+        root.put("cases", casesArray)
+        root.put("nextCaseNumber", ledger.nextCaseNumber)
+        root.put("casesClockMillis", ledger.casesClockMillis)
+
         return root.toString(2)
     }
 
@@ -160,29 +176,7 @@ object LedgerStorage {
         val apps = ArrayList<AppData>()
         for (i in 0 until appsArray.length()) {
             val o = appsArray.getJSONObject(i)
-            apps.add(
-                AppData(
-                    id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
-                    name = o.optString("name"),
-                    premiumPrice = o.optLong("premiumPrice"),
-                    proPrice = o.optLong("proPrice"),
-                    entries = jsonToEntries(o.optJSONArray("entries")),
-                    users = jsonToUsers(o.optJSONArray("users")),
-                    premiumBenefits = o.optString("premiumBenefits"),
-                    proBenefits = o.optString("proBenefits"),
-                    freeBenefits = o.optString("freeBenefits"),
-                    activeUsers = o.optLong("activeUsers"),
-                    activeUsersDayKey = o.optString("activeUsersDayKey"),
-                    activeHistory = jsonToHistory(o.optJSONArray("activeHistory")),
-                    adsEnabled = o.optBoolean("adsEnabled"),
-                    lastRollDayKey = o.optString("lastRollDayKey"),
-                    rolls = jsonToRolls(o.optJSONArray("rolls")),
-                    playTx = jsonToPlayTx(o.optJSONArray("playTx")),
-                    playSubsBalance = o.optLong("playSubsBalance"),
-                    playAdsBalance = o.optLong("playAdsBalance"),
-                    campaign = jsonToCampaign(o.optJSONObject("campaign"))
-                )
-            )
+            apps.add(appFromJson(o))
         }
 
         val staffArray = root.optJSONArray("staff") ?: JSONArray()
@@ -271,12 +265,196 @@ object LedgerStorage {
             )
         }
 
+        val cases = ArrayList<ComplaintCase>()
+        val casesArray = root.optJSONArray("cases") ?: JSONArray()
+        for (i in 0 until casesArray.length()) {
+            val o = casesArray.optJSONObject(i) ?: continue
+            val parsed = runCatching { jsonToCase(o) }.getOrNull() ?: continue
+            cases.add(parsed)
+        }
+
         return Ledger(
             company = company,
             apps = apps,
             staff = staff,
             renewals = renewals,
-            withdrawals = withdrawals
+            withdrawals = withdrawals,
+            cases = cases,
+            nextCaseNumber = maxOf(root.optInt("nextCaseNumber", 1), cases.size + 1, 1),
+            casesClockMillis = root.optLong("casesClockMillis")
+        ).withoutDuplicateLegalExpenses()
+    }
+
+    /**
+     * Reads one app. Older files have no googlePlayEnabled: an app that has any sign of the dice
+     * (a roll, Play Balance money, dice users, ads or a campaign) stays a Google Play app. Every other
+     * app becomes a Manual app and keeps its users counted. A saved true is never lowered.
+     */
+    private fun appFromJson(o: JSONObject): AppData {
+        val users = jsonToUsers(o.optJSONArray("users"))
+        val rolls = jsonToRolls(o.optJSONArray("rolls"))
+        val playTx = jsonToPlayTx(o.optJSONArray("playTx"))
+        val campaign = jsonToCampaign(o.optJSONObject("campaign"))
+        val lastRoll = o.optString("lastRollDayKey")
+        val subs = o.optLong("playSubsBalance")
+        val ads = o.optLong("playAdsBalance")
+        val adsOn = o.optBoolean("adsEnabled")
+
+        val gp = if (o.has("googlePlayEnabled")) {
+            o.optBoolean("googlePlayEnabled")
+        } else {
+            lastRoll.isNotBlank() || rolls.isNotEmpty() || playTx.isNotEmpty() || subs > 0L || ads > 0L ||
+                users.any { it.simulated } || adsOn || campaign != null
+        }
+
+        val hasManual = o.has("manualTotalUsers")
+        val manualTotal = if (hasManual) o.optLong("manualTotalUsers") else users.size.toLong()
+        val manualPremium = if (hasManual) o.optLong("manualPremiumUsers")
+        else users.count { it.plan == Plan.PREMIUM }.toLong()
+        val manualPro = if (hasManual) o.optLong("manualProUsers")
+        else users.count { it.plan == Plan.PRO }.toLong()
+
+        return AppData(
+            id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+            name = o.optString("name"),
+            premiumPrice = o.optLong("premiumPrice"),
+            proPrice = o.optLong("proPrice"),
+            entries = jsonToEntries(o.optJSONArray("entries")),
+            users = users,
+            premiumBenefits = o.optString("premiumBenefits"),
+            proBenefits = o.optString("proBenefits"),
+            freeBenefits = o.optString("freeBenefits"),
+            activeUsers = o.optLong("activeUsers"),
+            activeUsersDayKey = o.optString("activeUsersDayKey"),
+            activeHistory = jsonToHistory(o.optJSONArray("activeHistory")),
+            adsEnabled = adsOn,
+            lastRollDayKey = lastRoll,
+            rolls = rolls,
+            playTx = playTx,
+            playSubsBalance = subs,
+            playAdsBalance = ads,
+            campaign = campaign,
+            googlePlayEnabled = gp,
+            googlePlaySinceMillis = o.optLong("googlePlaySinceMillis"),
+            manualTotalUsers = if (gp) 0L else manualTotal,
+            manualPremiumUsers = if (gp) 0L else manualPremium,
+            manualProUsers = if (gp) 0L else manualPro,
+            manualDailyNewUsers = o.optLong("manualDailyNewUsers"),
+            manualNewUsersDayKey = o.optString("manualNewUsersDayKey"),
+            manualPremiumToday = o.optLong("manualPremiumToday"),
+            manualProToday = o.optLong("manualProToday"),
+            manualTodayKey = o.optString("manualTodayKey")
+        )
+    }
+
+    // ---- Cases ----
+
+    private fun eventToJson(e: CaseEvent): JSONObject {
+        val o = JSONObject()
+        o.put("id", e.id)
+        o.put("due", e.dueMillis)
+        o.put("kind", e.kind.name)
+        o.put("actor", e.actor.name)
+        o.put("title", e.title)
+        o.put("body", e.body)
+        o.put("statusAfter", e.statusAfter?.name ?: "")
+        return o
+    }
+
+    private fun jsonToEvent(o: JSONObject): CaseEvent? {
+        val kind = runCatching { CaseEventKind.valueOf(o.optString("kind")) }.getOrNull() ?: return null
+        val actor = runCatching { CaseActor.valueOf(o.optString("actor")) }.getOrDefault(CaseActor.SYSTEM)
+        val status = runCatching { CaseStatus.valueOf(o.optString("statusAfter")) }.getOrNull()
+        return CaseEvent(
+            id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+            dueMillis = o.optLong("due"),
+            kind = kind,
+            actor = actor,
+            title = o.optString("title"),
+            body = o.optString("body"),
+            statusAfter = status
+        )
+    }
+
+    private fun eventsToJson(list: List<CaseEvent>): JSONArray {
+        val array = JSONArray()
+        for (e in list) array.put(eventToJson(e))
+        return array
+    }
+
+    private fun jsonToEvents(array: JSONArray?): List<CaseEvent> {
+        if (array == null) return emptyList()
+        val list = ArrayList<CaseEvent>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val e = jsonToEvent(o) ?: continue
+            list.add(e)
+        }
+        return list
+    }
+
+    private fun caseToJson(c: ComplaintCase): JSONObject {
+        val o = JSONObject()
+        o.put("id", c.id)
+        o.put("ref", c.ref)
+        o.put("appId", c.appId)
+        o.put("appName", c.appName)
+        o.put("userId", c.userId)
+        o.put("customerName", c.customerName)
+        o.put("customerEmail", c.customerEmail)
+        o.put("customerPhone", c.customerPhone)
+        o.put("plan", c.plan.name)
+        o.put("category", c.category.name)
+        o.put("subject", c.subject)
+        o.put("created", c.createdMillis)
+        o.put("events", eventsToJson(c.events))
+        o.put("outcome", c.outcome.name)
+        o.put("regulator", c.regulator)
+        o.put("regulatorRef", c.regulatorRef)
+        o.put("court", c.court)
+        o.put("suitNo", c.suitNo)
+        o.put("claimAmount", c.claimAmount)
+        o.put("amountDue", c.amountDue)
+        o.put("dueReason", c.dueReason)
+        o.put("payBy", c.payByMillis)
+        o.put("paid", c.paidMillis)
+        o.put("expenseId", c.expenseId)
+        o.put("notes", eventsToJson(c.notes))
+        return o
+    }
+
+    private fun jsonToCase(o: JSONObject): ComplaintCase? {
+        val category = runCatching { CaseCategory.valueOf(o.optString("category")) }.getOrNull() ?: return null
+        val outcome = runCatching { CaseOutcome.valueOf(o.optString("outcome")) }.getOrDefault(CaseOutcome.NONE)
+        val plan = runCatching { Plan.valueOf(o.optString("plan")) }.getOrDefault(Plan.FREE)
+        val ref = o.optString("ref")
+        if (ref.isBlank()) return null
+        return ComplaintCase(
+            id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+            ref = ref,
+            appId = o.optString("appId"),
+            appName = o.optString("appName"),
+            userId = o.optString("userId"),
+            customerName = o.optString("customerName"),
+            customerEmail = o.optString("customerEmail"),
+            customerPhone = o.optString("customerPhone"),
+            plan = plan,
+            category = category,
+            subject = o.optString("subject"),
+            createdMillis = o.optLong("created"),
+            events = jsonToEvents(o.optJSONArray("events")),
+            outcome = outcome,
+            regulator = o.optString("regulator"),
+            regulatorRef = o.optString("regulatorRef"),
+            court = o.optString("court"),
+            suitNo = o.optString("suitNo"),
+            claimAmount = o.optLong("claimAmount"),
+            amountDue = o.optLong("amountDue"),
+            dueReason = o.optString("dueReason"),
+            payByMillis = o.optLong("payBy"),
+            paidMillis = o.optLong("paid"),
+            expenseId = o.optString("expenseId"),
+            notes = jsonToEvents(o.optJSONArray("notes"))
         )
     }
 
@@ -461,6 +639,8 @@ object LedgerStorage {
             o.put("isIncome", e.isIncome)
             o.put("date", e.dateMillis)
             o.put("auto", e.auto)
+            o.put("caseId", e.caseId)
+            o.put("appId", e.appId)
             array.put(o)
         }
         return array
@@ -478,7 +658,9 @@ object LedgerStorage {
                     amount = o.optLong("amount"),
                     isIncome = o.optBoolean("isIncome"),
                     dateMillis = o.optLong("date"),
-                    auto = o.optBoolean("auto")
+                    auto = o.optBoolean("auto"),
+                    caseId = o.optString("caseId"),
+                    appId = o.optString("appId")
                 )
             )
         }

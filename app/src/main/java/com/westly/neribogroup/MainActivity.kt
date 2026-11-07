@@ -13,10 +13,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
 import com.westly.neribogroup.feature.group.AppsScreen
+import com.westly.neribogroup.feature.group.CaseDetailScreen
+import com.westly.neribogroup.feature.group.CasesScreen
 import com.westly.neribogroup.feature.group.CompanyCostsScreen
 import com.westly.neribogroup.feature.group.GroupDashboardScreen
 import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
+import com.westly.neribogroup.feature.group.SettingsScreen
 import com.westly.neribogroup.feature.group.StaffListScreen
 import com.westly.neribogroup.feature.staff.StaffDetailScreen
 import com.westly.neribogroup.ui.theme.NeriboTheme
@@ -25,16 +28,22 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // The app uses its own theme, so the window behind the first frame follows the saved choice.
+        val dark = getSharedPreferences("neribo_settings", MODE_PRIVATE).getBoolean("theme_dark", true)
+        window.setBackgroundDrawable(
+            android.graphics.drawable.ColorDrawable(if (dark) 0xFF101414.toInt() else 0xFFF6F8F7.toInt())
+        )
         setContent {
-            NeriboTheme {
-                NeriboRoot()
+            val vm: AppViewModel = viewModel()
+            NeriboTheme(darkTheme = vm.darkTheme, fontStep = vm.fontStep) {
+                NeriboRoot(vm)
             }
         }
     }
 }
 
 @Composable
-private fun NeriboRoot(vm: AppViewModel = viewModel()) {
+private fun NeriboRoot(vm: AppViewModel) {
     val context = LocalContext.current
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -74,8 +83,30 @@ private fun NeriboRoot(vm: AppViewModel = viewModel()) {
 
     val openApp = vm.openAppId?.let { id -> vm.ledger.apps.firstOrNull { it.id == id } }
     val openStaff = vm.openStaffId?.let { id -> vm.ledger.staff.firstOrNull { it.id == id } }
+    val openCase = vm.openCaseId?.let { id -> vm.ledger.cases.firstOrNull { it.id == id } }
 
-    if (openApp != null) {
+    if (openCase != null) {
+        CaseDetailScreen(
+            ledger = vm.ledger,
+            case = openCase,
+            onBack = { vm.openCaseId = null },
+            onClock = { vm.updateCasesClock(it) },
+            onMarkPaid = { vm.markCasePaid(openCase.id) },
+            onAddNote = { vm.addCaseNote(openCase.id, it) },
+            onOpenApp = { id ->
+                vm.openCaseId = null
+                vm.openAppId = id
+            }
+        )
+    } else if (vm.showSettings && vm.openSection == null && openApp == null && openStaff == null) {
+        SettingsScreen(
+            darkTheme = vm.darkTheme,
+            fontStep = vm.fontStep,
+            onBack = { vm.showSettings = false },
+            onDarkTheme = { vm.setDarkTheme(it) },
+            onFontStep = { vm.setFontStep(it) }
+        )
+    } else if (openApp != null) {
         AppDashboardScreen(
             app = openApp,
             onBack = { vm.openAppId = null },
@@ -86,7 +117,10 @@ private fun NeriboRoot(vm: AppViewModel = viewModel()) {
             onStartCampaign = { size, startIn, lasts ->
                 vm.startCampaign(openApp.id, size, startIn, lasts)
             },
-            onStopCampaign = { vm.stopCampaign(openApp.id) }
+            onStopCampaign = { vm.stopCampaign(openApp.id) },
+            chargedToCompany = vm.ledger.company.expenses.filter { it.appId == openApp.id },
+            onEnableGooglePlay = { vm.enableGooglePlay(openApp.id) },
+            onAddCompanyExpense = { title, amount -> vm.addAppExpense(openApp.id, title, amount) }
         )
     } else if (openStaff != null) {
         StaffDetailScreen(
@@ -128,9 +162,26 @@ private fun NeriboRoot(vm: AppViewModel = viewModel()) {
                 onWithdrawApp = { vm.withdrawApp(it) },
                 onWithdrawAll = { vm.withdrawAll() }
             )
+            Section.CASES -> CasesScreen(
+                ledger = vm.ledger,
+                initialTab = vm.casesStartTab,
+                onBack = { vm.openSection = null },
+                onClock = { vm.updateCasesClock(it) },
+                onOpenCase = { vm.openCaseId = it }
+            )
             null -> GroupDashboardScreen(
                 ledger = vm.ledger,
-                onOpenSection = { vm.openSection = it },
+                onOpenSection = {
+                    vm.casesStartTab = 0
+                    vm.openSection = it
+                },
+                onOpenLegal = {
+                    vm.casesStartTab = 3
+                    vm.openSection = Section.CASES
+                },
+                onOpenCase = { vm.openCaseId = it },
+                onClock = { vm.updateCasesClock(it) },
+                onOpenSettings = { vm.showSettings = true },
                 onOpenApp = { vm.openAppId = it },
                 onOpenStaff = { vm.openStaffId = it },
                 onSave = { vm.saveLedger(it) },

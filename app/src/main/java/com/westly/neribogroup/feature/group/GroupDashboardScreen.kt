@@ -28,15 +28,21 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.Section
+import com.westly.neribogroup.data.CaseEngine
 import com.westly.neribogroup.data.DEFAULT_COMPANY_NAME
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.feature.common.ConfirmDialog
@@ -52,8 +58,9 @@ import com.westly.neribogroup.ui.formatNaira
 
 /**
  * The home page. It stays short however many apps there are: search, the money summary,
- * a renewals alert and five tiles (Apps, Renewals, Staff, Company costs, Google Play Balance)
- * that open their own pages.
+ * a renewals alert, a red alert when a legal payment is due, and six tiles (Apps, Renewals, Staff,
+ * Company costs, Google Play Balance, Customer Service & Complaints) that open their own pages.
+ * The three-dot menu has Edit, Settings, Export backup and Import backup.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,6 +69,10 @@ fun GroupDashboardScreen(
     onOpenSection: (Section) -> Unit,
     onOpenApp: (String) -> Unit,
     onOpenStaff: (String) -> Unit,
+    onOpenLegal: () -> Unit,
+    onOpenCase: (String) -> Unit,
+    onClock: (Long) -> Unit,
+    onOpenSettings: () -> Unit,
     onSave: (Ledger) -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit
@@ -73,6 +84,8 @@ fun GroupDashboardScreen(
     var query by remember { mutableStateOf("") }
 
     val now = rememberNowMillis()
+    LaunchedEffect(now) { onClock(now) }
+    val effectiveNow = maxOf(now, ledger.casesClockMillis)
     val shown = if (editing) draft else ledger
     val companyName = shown.company.name.ifBlank { DEFAULT_COMPANY_NAME }
     val searching = query.isNotBlank()
@@ -110,6 +123,13 @@ fun GroupDashboardScreen(
                                         menuOpen = false
                                         draft = ledger
                                         editing = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Settings") },
+                                    onClick = {
+                                        menuOpen = false
+                                        onOpenSettings()
                                     }
                                 )
                                 DropdownMenuItem(
@@ -176,7 +196,7 @@ fun GroupDashboardScreen(
                     SearchField(
                         query = query,
                         onQueryChange = { query = it },
-                        placeholder = "Search apps, staff, renewals, costs"
+                        placeholder = "Search apps, staff, renewals, costs, cases"
                     )
                 }
             }
@@ -193,9 +213,18 @@ fun GroupDashboardScreen(
                     .filter { matchesQuery(query, it.title, it.amount.toString()) }
                     .sortedByDescending { it.dateMillis }
                     .take(20)
+                val caseHits = shown.cases
+                    .filter {
+                        matchesQuery(
+                            query, it.ref, it.customerName, it.subject, it.customerEmail,
+                            it.appName, it.regulatorRef, it.suitNo
+                        )
+                    }
+                    .sortedByDescending { it.createdMillis }
+                    .take(20)
 
                 if (appHits.isEmpty() && staffHits.isEmpty() &&
-                    renewalHits.isEmpty() && costHits.isEmpty()
+                    renewalHits.isEmpty() && costHits.isEmpty() && caseHits.isEmpty()
                 ) {
                     item {
                         Text(
@@ -241,6 +270,17 @@ fun GroupDashboardScreen(
                     }
                 }
 
+                if (caseHits.isNotEmpty()) {
+                    item { SectionTitle("Cases") }
+                    items(caseHits, key = { "case-" + it.id }) { c ->
+                        ResultRow(
+                            title = c.ref,
+                            subtitle = c.customerName + " · " + c.subject,
+                            onClick = { onOpenCase(c.id) }
+                        )
+                    }
+                }
+
                 if (costHits.isNotEmpty()) {
                     item { SectionTitle("Company costs") }
                     items(costHits, key = { "cost-" + it.id }) { entry ->
@@ -262,6 +302,17 @@ fun GroupDashboardScreen(
                             else attention.size.toString() + " renewals need attention",
                             lines = attention.take(3).map { it.name + " · " + renewalStatus(it.daysLeft(now)) },
                             onClick = { onOpenSection(Section.RENEWALS) }
+                        )
+                    }
+                }
+
+                val legalDue = if (editing) 0L else shown.cases.sumOf { CaseEngine.amountDueAt(it, effectiveNow) }
+                if (legalDue > 0L) {
+                    item {
+                        AttentionCard(
+                            text = "Legal payment due: " + formatNaira(legalDue),
+                            lines = listOf("Tap to see the cases"),
+                            onClick = onOpenLegal
                         )
                     }
                 }
@@ -313,6 +364,18 @@ fun GroupDashboardScreen(
                             subtitle = formatNaira(shown.playBalanceTotal) + " waiting to withdraw",
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenSection(Section.PLAY) }
+                        )
+                    }
+                    item {
+                        val openCases = shown.cases.count {
+                            !CaseEngine.isFinal(CaseEngine.statusAt(it, effectiveNow))
+                        }
+                        SectionTile(
+                            title = "Customer Service & Complaints",
+                            subtitle = if (shown.cases.isEmpty()) "No complaints" else "$openCases open",
+                            extra = if (legalDue > 0L) " · " + formatNaira(legalDue) + " due" else null,
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.CASES) }
                         )
                     }
                 }
@@ -434,7 +497,9 @@ private fun SectionTile(
     subtitle: String,
     modifier: Modifier,
     onClick: () -> Unit,
-    highlight: Boolean = false
+    highlight: Boolean = false,
+    /** Extra text after the subtitle, shown in the error colour (for example money that is due). */
+    extra: String? = null
 ) {
     val subtitleColor: Color =
         if (highlight) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
@@ -450,14 +515,22 @@ private fun SectionTile(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 1
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(4.dp))
+            val errorColor = MaterialTheme.colorScheme.error
             Text(
-                text = subtitle,
+                text = buildAnnotatedString {
+                    append(subtitle)
+                    if (extra != null) {
+                        withStyle(SpanStyle(color = errorColor)) { append(extra) }
+                    }
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = subtitleColor,
-                maxLines = 1
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

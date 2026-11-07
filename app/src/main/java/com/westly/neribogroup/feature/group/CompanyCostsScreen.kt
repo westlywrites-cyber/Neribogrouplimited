@@ -109,6 +109,15 @@ fun CompanyCostsScreen(
             EntryRow(
                 entry = entry,
                 editing = editing,
+                // Legal expenses (paid cases) cannot be deleted, so the books always match the cases.
+                canDelete = entry.caseId.isEmpty(),
+                tag = if (entry.caseId.isNotEmpty()) {
+                    "Legal"
+                } else if (entry.appId.isNotEmpty()) {
+                    ledger.apps.firstOrNull { it.id == entry.appId }?.name ?: "Deleted app"
+                } else {
+                    null
+                },
                 onDelete = {
                     draft = draft.copy(
                         company = draft.company.copy(

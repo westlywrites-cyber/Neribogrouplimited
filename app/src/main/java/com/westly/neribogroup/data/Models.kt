@@ -43,7 +43,11 @@ data class Entry(
     val isIncome: Boolean,
     val dateMillis: Long,
     /** True when the app created this line itself from a Premium or Pro subscription change. */
-    val auto: Boolean = false
+    val auto: Boolean = false,
+    /** Links an expense to a legal case (Customer Service & Complaints). Empty when not linked. */
+    val caseId: String = "",
+    /** Links a company expense to the Google Play app that charged it. Empty when not linked. */
+    val appId: String = ""
 )
 
 /** The plan a user of an app is on. */
@@ -101,28 +105,51 @@ data class AppData(
     val playSubsBalance: Long = 0,
     /** Ad money in the Google Play Balance, after Google's share. */
     val playAdsBalance: Long = 0,
-    val campaign: Campaign? = null
+    val campaign: Campaign? = null,
+    /** False = Manual app (typed numbers). True = Google Play app (dice). Once true it never goes back. */
+    val googlePlayEnabled: Boolean = false,
+    /** When Google Play was turned on. 0 for a Manual app. */
+    val googlePlaySinceMillis: Long = 0,
+    // Stored values used ONLY while googlePlayEnabled == false.
+    val manualTotalUsers: Long = 0,
+    val manualPremiumUsers: Long = 0,
+    val manualProUsers: Long = 0,
+    val manualDailyNewUsers: Long = 0,
+    val manualNewUsersDayKey: String = "",
+    val manualPremiumToday: Long = 0,
+    val manualProToday: Long = 0,
+    val manualTodayKey: String = ""
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
     val profit: Long get() = income - expenses
 
-    /** Users, Premium and Pro are counted from the user list. */
-    val totalUsers: Long get() = users.size.toLong()
-    val premiumUsers: Long get() = users.count { it.plan == Plan.PREMIUM }.toLong()
-    val proUsers: Long get() = users.count { it.plan == Plan.PRO }.toLong()
-    val freeUsers: Long get() = users.count { it.plan == Plan.FREE }.toLong()
+    /** Google Play apps count from the user list. Manual apps use the numbers typed in Edit. */
+    val totalUsers: Long get() = if (googlePlayEnabled) users.size.toLong() else manualTotalUsers
+    val premiumUsers: Long
+        get() = if (googlePlayEnabled) users.count { it.plan == Plan.PREMIUM }.toLong() else manualPremiumUsers
+    val proUsers: Long
+        get() = if (googlePlayEnabled) users.count { it.plan == Plan.PRO }.toLong() else manualProUsers
+    val freeUsers: Long
+        get() = if (googlePlayEnabled) users.count { it.plan == Plan.FREE }.toLong()
+        else maxOf(0L, manualTotalUsers - manualPremiumUsers - manualProUsers)
 
     /** Everything waiting in the Google Play Balance. It is not profit until it is withdrawn. */
     val playBalance: Long get() = playSubsBalance + playAdsBalance
 
     fun newUsersToday(now: Long): Long {
+        if (!googlePlayEnabled) {
+            return if (manualNewUsersDayKey == dayKey(now)) manualDailyNewUsers else 0L
+        }
         val start = dayStartMillis(now)
         val end = start + DAY_MILLIS
         return users.count { it.addedMillis >= start && it.addedMillis < end }.toLong()
     }
 
     fun premiumTodayAt(now: Long): Long {
+        if (!googlePlayEnabled) {
+            return if (manualTodayKey == dayKey(now)) manualPremiumToday else 0L
+        }
         val start = dayStartMillis(now)
         val end = start + DAY_MILLIS
         return users.count {
@@ -131,6 +158,9 @@ data class AppData(
     }
 
     fun proTodayAt(now: Long): Long {
+        if (!googlePlayEnabled) {
+            return if (manualTodayKey == dayKey(now)) manualProToday else 0L
+        }
         val start = dayStartMillis(now)
         val end = start + DAY_MILLIS
         return users.count {
@@ -156,7 +186,19 @@ data class AppData(
         return activeHistory.firstOrNull { it.dayKey == key }?.count ?: 0L
     }
 
-    /** Adds a user you typed in. A Premium or Pro user gets a start time and an end date PLAN_DAYS later. */
+    private fun withPlanCount(plan: Plan, delta: Long): AppData {
+        if (googlePlayEnabled) return this
+        return when (plan) {
+            Plan.PREMIUM -> copy(manualPremiumUsers = maxOf(0L, manualPremiumUsers + delta))
+            Plan.PRO -> copy(manualProUsers = maxOf(0L, manualProUsers + delta))
+            Plan.FREE -> this
+        }
+    }
+
+    /**
+     * Adds a user you typed in. A Premium or Pro user gets a start time and an end date PLAN_DAYS later.
+     * In a Manual app a Premium or Pro user also raises that plan's count by 1 (Total users is not changed).
+     */
     fun withUserAdded(user: AppUser): AppData {
         val fixed = if (user.plan != Plan.FREE) {
             val start = if (user.planStartMillis > 0L) user.planStartMillis else user.addedMillis
@@ -167,7 +209,7 @@ data class AppData(
         } else {
             user.copy(planStartMillis = 0L, planExpiryMillis = 0L)
         }
-        return copy(users = users + fixed)
+        return copy(users = users + fixed).withPlanCount(fixed.plan, 1L)
     }
 
     /** Replaces a user you added (matched by id). Users made by the dice cannot be edited. */
@@ -186,22 +228,43 @@ data class AppData(
                 )
             else -> updated.copy(simulated = false)
         }
-        return copy(users = users.map { if (it.id == fixed.id) fixed else it })
+        var result = copy(users = users.map { if (it.id == fixed.id) fixed else it })
+        if (old.plan != fixed.plan) {
+            result = result.withPlanCount(old.plan, -1L).withPlanCount(fixed.plan, 1L)
+        }
+        return result
     }
 
     /**
      * A user you added renewed: adds PLAN_DAYS to the plan end date (from today if it already ended).
-     * No money is recorded, because users you add yourself do not earn money.
+     * In a Manual app the plan price is recorded as app income. In a Google Play app no money is
+     * recorded, because users you add yourself do not earn money.
      */
     fun withUserRenewed(userId: String, now: Long): AppData {
         val user = users.firstOrNull { it.id == userId } ?: return this
         if (user.plan == Plan.FREE || user.simulated) return this
         val base = maxOf(now, user.planExpiryMillis)
         val renewed = user.copy(planExpiryMillis = base + PLAN_DAYS * DAY_MILLIS)
-        return copy(users = users.map { if (it.id == userId) renewed else it })
+        var result = copy(users = users.map { if (it.id == userId) renewed else it })
+        if (!googlePlayEnabled) {
+            val price = if (user.plan == Plan.PREMIUM) premiumPrice else proPrice
+            if (price > 0L) {
+                val label = if (user.plan == Plan.PREMIUM) "Premium" else "Pro"
+                result = result.copy(
+                    entries = result.entries + Entry(
+                        title = user.name + " renewed " + label,
+                        amount = price,
+                        isIncome = true,
+                        dateMillis = now,
+                        auto = true
+                    )
+                )
+            }
+        }
+        return result
     }
 
-    /** A user you added did not renew: moves them to Free. */
+    /** A user you added did not renew: moves them to Free (and lowers that plan's count in a Manual app). */
     fun withPlanLapsed(userId: String): AppData {
         val user = users.firstOrNull { it.id == userId } ?: return this
         if (user.plan == Plan.FREE || user.simulated) return this
@@ -210,20 +273,20 @@ data class AppData(
                 if (it.id == userId) it.copy(plan = Plan.FREE, planStartMillis = 0L, planExpiryMillis = 0L)
                 else it
             }
-        )
+        ).withPlanCount(user.plan, -1L)
     }
 
     /** Removes a user you added. Users made by the dice cannot be removed. */
     fun withUserRemoved(userId: String): AppData {
         val old = users.firstOrNull { it.id == userId } ?: return this
         if (old.simulated) return this
-        return copy(users = users.filter { it.id != userId })
+        return copy(users = users.filter { it.id != userId }).withPlanCount(old.plan, -1L)
     }
 
     /**
-     * Used when saving an edit: keeps everything the dice own (their users, roll history, Play Balance,
-     * active users and campaign) exactly as it is in [current], and takes only the settings and the
-     * users you added from this copy.
+     * Used when saving an edit of a Google Play app: keeps everything the dice own (their users, roll
+     * history, Play Balance, active users and campaign) exactly as it is in [current], and takes only
+     * the settings and the users you added from this copy.
      */
     fun keepingDiceData(current: AppData): AppData = copy(
         users = current.users.filter { it.simulated } + users.filter { !it.simulated },
@@ -237,6 +300,106 @@ data class AppData(
         playAdsBalance = current.playAdsBalance,
         campaign = current.campaign
     )
+
+    /** The copy used while editing a Manual app: today's typed numbers shown as they are right now. */
+    fun forEditing(now: Long): AppData =
+        if (googlePlayEnabled) this
+        else copy(
+            manualDailyNewUsers = newUsersToday(now),
+            manualNewUsersDayKey = dayKey(now),
+            activeUsers = activeUsersAt(now),
+            activeUsersDayKey = dayKey(now)
+        )
+
+    /**
+     * Saves an edit of a Manual app. Compares with [previous] (the saved app) to date today's numbers
+     * and to record income for new Premium and Pro subscriptions (once, at Save).
+     */
+    fun finalizeSave(previous: AppData, now: Long): AppData {
+        val today = dayKey(now)
+        var result = copy(
+            googlePlayEnabled = previous.googlePlayEnabled,
+            googlePlaySinceMillis = previous.googlePlaySinceMillis
+        )
+        if (result.googlePlayEnabled) return result
+
+        if (result.manualDailyNewUsers != previous.newUsersToday(now)) {
+            result = result.copy(manualNewUsersDayKey = today)
+        } else {
+            result = result.copy(
+                manualDailyNewUsers = previous.manualDailyNewUsers,
+                manualNewUsersDayKey = previous.manualNewUsersDayKey
+            )
+        }
+
+        if (result.activeUsers != previous.activeUsersAt(now)) {
+            val history = (result.activeHistory.filter { it.dayKey != today } +
+                DayCount(today, result.activeUsers))
+                .sortedBy { it.dayKey }
+                .takeLast(30)
+            result = result.copy(activeUsersDayKey = today, activeHistory = history)
+        } else {
+            result = result.copy(
+                activeUsers = previous.activeUsers,
+                activeUsersDayKey = previous.activeUsersDayKey,
+                activeHistory = previous.activeHistory
+            )
+        }
+
+        val premiumAdded = maxOf(0L, result.manualPremiumUsers - previous.manualPremiumUsers)
+        val proAdded = maxOf(0L, result.manualProUsers - previous.manualProUsers)
+        if (premiumAdded == 0L && proAdded == 0L) return result
+
+        val newEntries = ArrayList<Entry>()
+        if (premiumAdded > 0L && result.premiumPrice > 0L) {
+            newEntries.add(
+                Entry(
+                    title = premiumAdded.toString() + " new Premium subscription" +
+                        (if (premiumAdded > 1L) "s" else ""),
+                    amount = premiumAdded * result.premiumPrice,
+                    isIncome = true,
+                    dateMillis = now,
+                    auto = true
+                )
+            )
+        }
+        if (proAdded > 0L && result.proPrice > 0L) {
+            newEntries.add(
+                Entry(
+                    title = proAdded.toString() + " new Pro subscription" +
+                        (if (proAdded > 1L) "s" else ""),
+                    amount = proAdded * result.proPrice,
+                    isIncome = true,
+                    dateMillis = now,
+                    auto = true
+                )
+            )
+        }
+        val sameDay = previous.manualTodayKey == today
+        return result.copy(
+            entries = result.entries + newEntries,
+            manualPremiumToday = (if (sameDay) previous.manualPremiumToday else 0L) + premiumAdded,
+            manualProToday = (if (sameDay) previous.manualProToday else 0L) + proAdded,
+            manualTodayKey = today
+        )
+    }
+
+    /** Turns Google Play on for good: the typed numbers are cleared and the user list takes over. */
+    fun withGooglePlayOn(now: Long): AppData {
+        if (googlePlayEnabled) return this
+        return copy(
+            googlePlayEnabled = true,
+            googlePlaySinceMillis = now,
+            manualTotalUsers = 0L,
+            manualPremiumUsers = 0L,
+            manualProUsers = 0L,
+            manualDailyNewUsers = 0L,
+            manualNewUsersDayKey = "",
+            manualPremiumToday = 0L,
+            manualProToday = 0L,
+            manualTodayKey = ""
+        )
+    }
 
     /** Moves the whole Google Play Balance into this app's income. */
     fun withdrawn(now: Long): AppData {
@@ -427,7 +590,12 @@ data class Ledger(
     val staff: List<Staff> = emptyList(),
     val renewals: List<Renewal> = emptyList(),
     /** Every withdrawal from the Google Play Balance, newest first (the last 200 are kept). */
-    val withdrawals: List<Withdrawal> = emptyList()
+    val withdrawals: List<Withdrawal> = emptyList(),
+    /** Customer Service & Complaints cases created by the daily roll of Google Play apps. */
+    val cases: List<ComplaintCase> = emptyList(),
+    val nextCaseNumber: Int = 1,
+    /** The highest "now" ever seen by the Cases screens. Protects against setting the phone clock back. */
+    val casesClockMillis: Long = 0
 ) {
     /** Renewals that are inside a reminder stage or expired, soonest first. */
     fun renewalsNeedingAttention(now: Long): List<Renewal> =

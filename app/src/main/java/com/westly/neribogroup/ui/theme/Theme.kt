@@ -1,6 +1,12 @@
 package com.westly.neribogroup.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import android.app.Activity
+import android.graphics.drawable.ColorDrawable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Density
+import androidx.core.view.WindowCompat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -9,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -97,12 +104,38 @@ private val NeriboTypography = Typography(
     labelSmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Normal)
 )
 
+/** The six font sizes of the Settings screen: name and the multiplier applied to all text. */
+val FontStepNames = listOf("Very small", "Small", "Normal", "Large", "Larger", "Largest")
+val FontStepScales = listOf(0.70f, 0.85f, 1.00f, 1.15f, 1.30f, 1.45f)
+
+fun fontScaleFor(step: Int): Float = FontStepScales[step.coerceIn(0, FontStepScales.size - 1)]
+
+/**
+ * The app's OWN theme and font size. It never reads the phone's dark/light setting or the phone's
+ * font size: [darkTheme] and [fontStep] come from the Settings screen.
+ */
 @Composable
-fun NeriboTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    CompositionLocalProvider(LocalNeriboExtras provides if (dark) DarkExtras else LightExtras) {
+fun NeriboTheme(darkTheme: Boolean, fontStep: Int, content: @Composable () -> Unit) {
+    val dark = darkTheme
+    val colors = if (dark) DarkColors else LightColors
+    val view = LocalView.current
+    SideEffect {
+        val activity = view.context as? Activity
+        val window = activity?.window
+        if (window != null) {
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = !dark
+            controller.isAppearanceLightNavigationBars = !dark
+            window.setBackgroundDrawable(ColorDrawable(colors.background.toArgb()))
+        }
+    }
+    val baseDensity = LocalDensity.current
+    CompositionLocalProvider(
+        LocalNeriboExtras provides if (dark) DarkExtras else LightExtras,
+        LocalDensity provides Density(baseDensity.density, fontScale = fontScaleFor(fontStep))
+    ) {
         MaterialTheme(
-            colorScheme = if (dark) DarkColors else LightColors,
+            colorScheme = colors,
             typography = NeriboTypography,
             content = content
         )

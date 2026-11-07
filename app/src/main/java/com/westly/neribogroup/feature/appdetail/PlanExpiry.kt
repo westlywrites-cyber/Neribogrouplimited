@@ -80,7 +80,9 @@ internal fun RenewPlanDialog(
     now: Long,
     onRenewed: () -> Unit,
     onNotRenewed: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** True in a Manual app: Renewed records the plan price as app income. */
+    recordsMoney: Boolean = false
 ) {
     NeriboDialog(
         onDismiss = onDismiss,
@@ -89,7 +91,8 @@ internal fun RenewPlanDialog(
     ) {
         Text(
             text = "Renewed adds " + PLAN_DAYS + " more days. Not renewed moves them to Free. " +
-                "No money is recorded for users you add yourself.",
+                (if (recordsMoney) "Renewed records the plan price as income."
+                else "No money is recorded for users you add yourself."),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
