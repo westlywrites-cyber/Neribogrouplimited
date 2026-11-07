@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -38,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -97,10 +99,21 @@ fun AppDashboardScreen(
     // The "Add user i of N" sequence after Save in a Manual app. 0 = not running.
     var queueTotal by remember { mutableStateOf(0) }
     var queueIndex by remember { mutableStateOf(0) }
+    // True while the full "App users" page (all users, with search) is showing.
+    var showUsers by rememberSaveable { mutableStateOf(false) }
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else app
     val activeDays = activeUsersWeek(shown, now)
+
+    if (showUsers) {
+        AppUsersScreen(
+            appName = app.name,
+            users = app.users,
+            onBack = { showUsers = false }
+        )
+        return
+    }
 
     BackHandler {
         if (editing) editing = false else onBack()
@@ -607,22 +620,38 @@ fun AppDashboardScreen(
                 item { SectionTitle("App users") }
                 item {
                     val count = app.users.size
-                    Text(
-                        text = when (count) {
-                            0 -> if (app.googlePlayEnabled) "No users yet. Roll the dice, or add your own in Edit."
-                            else "No users yet. Add users in Edit."
-                            1 -> "1 user"
-                            else -> formatCount(count.toLong()) + " users (showing the latest 50)"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                items(
-                    app.users.sortedByDescending { it.addedMillis }.take(50),
-                    key = { it.id }
-                ) { user ->
-                    UserRow(user = user, clickable = false, onClick = {})
+                    if (count == 0) {
+                        Text(
+                            text = if (app.googlePlayEnabled) "No users yet. Roll the dice, or add your own in Edit."
+                            else "No users yet. Add users in Edit.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        // One tap opens the full list (every user, with search) on its own page.
+                        FlatCard(modifier = Modifier.clickable { showUsers = true }) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (count == 1) "1 user"
+                                        else formatCount(count.toLong()) + " users",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "Tap to see everyone and search",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
 
                 item { SectionTitle("Money") }
@@ -930,7 +959,7 @@ private fun BenefitsBlock(label: String, text: String) {
 
 /** One user: name, email, phone (if given) and a small plan label. Tappable only when [clickable]. */
 @Composable
-private fun UserRow(user: AppUser, clickable: Boolean, onClick: () -> Unit) {
+internal fun UserRow(user: AppUser, clickable: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
