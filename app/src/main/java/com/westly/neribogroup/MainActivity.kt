@@ -16,6 +16,7 @@ import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
 import com.westly.neribogroup.feature.cloud.CloudCard
 import com.westly.neribogroup.feature.cloud.CloudCardState
 import com.westly.neribogroup.feature.cloud.ConflictDialog
+import com.westly.neribogroup.feature.cloud.cloudDotFor
 import com.westly.neribogroup.feature.cloud.LoginScreen
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.feature.group.AppsScreen
@@ -186,7 +187,9 @@ private fun NeriboRoot(vm: AppViewModel) {
                         syncMessage = vm.cloudSyncMessage,
                         status = vm.cloudStatus,
                         pendingChanges = vm.cloudPendingChanges,
-                        unsyncedDocs = vm.cloudUnsyncedDocs
+                        unsyncedDocs = vm.cloudUnsyncedDocs,
+                        backupBusy = vm.cloudBackupBusy,
+                        backupMessage = vm.cloudBackupMessage
                     ),
                     selfCheckLines = vm.selfCheckLines,
                     onConnect = { vm.openLogin() },
@@ -194,7 +197,14 @@ private fun NeriboRoot(vm: AppViewModel) {
                     onSignOut = { vm.signOutCloud() },
                     onSelfCheck = { vm.runSelfCheck() },
                     onCloseSelfCheck = { vm.closeSelfCheck() },
-                    onSyncNow = { vm.syncNowAction() }
+                    onSyncNow = { vm.syncNowAction() },
+                    onBackUp = { vm.backUpNowAction() },
+                    history = vm.cloudHistory,
+                    onOpenHistory = { vm.openCloudHistory() },
+                    onPickHistoryDoc = { vm.pickHistoryDoc(it) },
+                    onHistoryBack = { vm.backToHistoryList() },
+                    onHistoryClose = { vm.closeCloudHistory() },
+                    onRestoreVersion = { vm.restoreHistoryVersion(it) }
                 )
             }
         )
@@ -328,6 +338,13 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onOpenCase = { vm.openCaseId = it },
                 onClock = { vm.updateCasesClock(it) },
                 onOpenSettings = { vm.showSettings = true },
+                cloudDot = cloudDotFor(
+                    vm.cloudMode,
+                    vm.cloudSignedIn,
+                    vm.cloudInitialized,
+                    vm.cloudStatus,
+                    maxOf(vm.cloudPendingChanges, vm.cloudUnsyncedDocs)
+                ),
                 onOpenApp = { vm.openAppId = it },
                 onOpenStaff = { vm.openStaffId = it },
                 onSave = { vm.saveLedger(it) },

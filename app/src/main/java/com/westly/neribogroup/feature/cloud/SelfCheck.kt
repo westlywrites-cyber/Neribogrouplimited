@@ -13,13 +13,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.cloud.ApiResult
+import com.westly.neribogroup.cloud.CloudStatus
+import com.westly.neribogroup.cloud.DocState
 import com.westly.neribogroup.cloud.LedgerSplitter
 import com.westly.neribogroup.cloud.PendingBatch
 import com.westly.neribogroup.cloud.PendingChange
 import com.westly.neribogroup.cloud.SplitDoc
 import com.westly.neribogroup.cloud.SupabaseApi
+import com.westly.neribogroup.cloud.SyncConflict
 import com.westly.neribogroup.cloud.SyncData
+import com.westly.neribogroup.cloud.SyncDecision
 import com.westly.neribogroup.cloud.SyncEngine
+import com.westly.neribogroup.cloud.SyncRules
 import com.westly.neribogroup.cloud.SyncStore
 import com.westly.neribogroup.cloud.sha256Hex
 import com.westly.neribogroup.data.Ledger
@@ -30,19 +35,31 @@ import com.westly.neribogroup.feature.common.TintedButton
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** One line of the self-check: what was tested, PASS or FAIL, and a short detail. */
-data class CheckLine(val name: String, val pass: Boolean, val detail: String)
+/**
+ * One line of the self-check: what was tested, PASS or FAIL, and a short detail.
+ * A [skipped] line (needs internet) counts as neither: it is shown as SKIPPED and is never a failure.
+ */
+data class CheckLine(val name: String, val pass: Boolean, val detail: String, val skipped: Boolean = false)
 
 data class SelfCheckResult(val lines: List<CheckLine>, val largestDocBytes: Int)
 
-/** Runs the 3A checks on the real ledger. Items 1 to 6 use no network; 7 and 8 only when [online]. */
+/**
+ * Runs the checks on the real ledger. Items 1 to 6 and 9 to 10 use no network; 7, 8 and 11 only when [online].
+ * [syncStatus] is how the Sync now that ran just before the check ended (null when none ran).
+ */
 object SelfCheck {
 
     /** SHA-256 of the UTF-8 bytes of "₦ test", computed with Python's hashlib (see the Decisions). */
     const val EXPECTED_NAIRA_TEST_SHA =
         "9fe2998e95bc699699bb9f53c2b746af8b5dc52da77c2c5c284224d64d25d8d2"
 
-    fun run(ledger: Ledger, api: SupabaseApi?, sync: SyncData?, online: Boolean): SelfCheckResult {
+    fun run(
+        ledger: Ledger,
+        api: SupabaseApi?,
+        sync: SyncData?,
+        online: Boolean,
+        syncStatus: CloudStatus? = null
+    ): SelfCheckResult {
         val lines = ArrayList<CheckLine>()
         var largest = 0
 
@@ -211,6 +228,119 @@ object SelfCheck {
                 )
             )
         }
+
+        // ---- Phase 3B items ----
+
+        // 9a, 9b, 9c: the conflict rule, on in-memory numbers
+        lines.add(
+            runCheck("9a. Phone changed and cloud newer: it asks you") {
+                val d = SyncRules.decide(true, 3, 4)
+                Pair(d == SyncDecision.CONFLICT, "Result: " + d.name)
+            }
+        )
+        lines.add(
+            runCheck("9b. Phone not changed and cloud newer: it takes the cloud") {
+                val d = SyncRules.decide(false, 3, 4)
+                Pair(d == SyncDecision.APPLY, "Result: " + d.name)
+            }
+        )
+        lines.add(
+            runCheck("9c. Phone not changed and same version: it does nothing") {
+                val d = SyncRules.decide(false, 4, 4)
+                Pair(d == SyncDecision.NOTHING, "Result: " + d.name)
+            }
+        )
+
+        // 10: unsent changes are still the same after the app is updated and restarted
+        lines.add(
+            runCheck("10. Unsent changes survive an app update") {
+                val p1 = "{\"a\":\"₦ 🎉 5000000000 12.5\"}"
+                val p2 = "{\"deleted\":true}"
+                val batch = PendingBatch(
+                    opId = "00000000-0000-0000-0000-0000000000a2",
+                    mode = "normal",
+                    changes = listOf(
+                        PendingChange("company", 4, p1, sha256Hex(p1), false),
+                        PendingChange("app:test", 2, p2, sha256Hex(p2), true)
+                    ),
+                    createdMillis = 2L
+                )
+                val data = SyncData(
+                    deviceId = "test",
+                    lastSeq = 7L,
+                    initialized = true,
+                    docs = mapOf("company" to DocState(4, sha256Hex(p1))),
+                    pending = batch,
+                    conflicts = listOf("{\"key\":\"cases\"}")
+                )
+                val written = SyncStore.toJson(data)
+                val read = SyncStore.fromJson(written)
+                val p = read.pending
+                val same = p != null && p.opId == batch.opId && p.mode == batch.mode &&
+                    p.changes.size == batch.changes.size &&
+                    p.changes.indices.all { i ->
+                        p.changes[i].docKey == batch.changes[i].docKey &&
+                            p.changes[i].baseVersion == batch.changes[i].baseVersion &&
+                            p.changes[i].deleted == batch.changes[i].deleted &&
+                            p.changes[i].payloadSha256 == batch.changes[i].payloadSha256 &&
+                            sha256Hex(p.changes[i].payload) == batch.changes[i].payloadSha256
+                    } &&
+                    read.lastSeq == 7L && SyncStore.toJson(read) == written
+                Pair(same, if (same) "Same opId, same payload hashes" else "Different after reload")
+            }
+        )
+
+        // 11: after Sync now, the cloud proves it holds every current document (internet needed)
+        val verifyName = "11. After Sync now, the cloud holds every document"
+        if (online && api != null && sync != null && syncStatus == CloudStatus.UP_TO_DATE) {
+            val open = HashSet<String>()
+            for (t in sync.conflicts) {
+                val c = SyncConflict.fromJsonText(t)
+                if (c != null && !c.handled) open.add(c.key)
+            }
+            val expect = JSONArray()
+            var count = 0
+            for (d in docsNow) {
+                if (open.contains(d.key)) continue
+                val state = sync.docs[d.key] ?: continue
+                // A document edited after the sync, or removed, is not compared.
+                if (state.deleted || state.sha256 != d.sha256) continue
+                val o = JSONObject()
+                o.put("doc_key", d.key)
+                o.put("version", state.version)
+                o.put("payload_sha256", d.sha256)
+                expect.put(o)
+                count++
+            }
+            if (count == 0) {
+                lines.add(CheckLine(verifyName, true, "(no synced documents to compare yet)", skipped = true))
+            } else {
+                lines.add(
+                    runCheck(verifyName) {
+                        val body = JSONObject()
+                        body.put(SyncEngine.Contract.P_EXPECT, expect)
+                        when (val r = api.rpc(SyncEngine.Contract.RPC_VERIFY, body, true)) {
+                            is ApiResult.Ok -> {
+                                val ok = r.json.optBoolean("all_match", false)
+                                Pair(ok, if (ok) count.toString() + " documents match" else "Some documents do not match")
+                            }
+                            ApiResult.Offline -> Pair(false, "No internet")
+                            ApiResult.AuthExpired -> Pair(false, "Please sign in again")
+                            is ApiResult.Http -> Pair(false, "Cloud problem (code " + r.code + ")")
+                            is ApiResult.AppError -> Pair(false, "Cloud problem (" + r.code + ")")
+                        }
+                    }
+                )
+            }
+        } else {
+            val reason = if (online && syncStatus != null && syncStatus != CloudStatus.WAITING_INTERNET) {
+                "(the sync did not finish)"
+            } else {
+                "(needs internet)"
+            }
+            lines.add(CheckLine(verifyName, true, reason, skipped = true))
+        }
+
         return SelfCheckResult(lines, largest)
     }
 
@@ -234,17 +364,30 @@ object SelfCheck {
 @Composable
 fun SelfCheckDialog(lines: List<CheckLine>, onClose: () -> Unit) {
     val failures = lines.count { !it.pass }
+    val skipped = lines.count { it.skipped }
     NeriboDialog(
         onDismiss = onClose,
         title = "Self-check",
-        subtitle = if (failures == 0) "Everything passed." else "$failures check(s) failed."
+        subtitle = if (failures > 0) {
+            "$failures check(s) failed."
+        } else if (skipped > 0) {
+            "Everything that could run passed ($skipped skipped)."
+        } else {
+            "Everything passed."
+        }
     ) {
         for (line in lines) {
             Row(modifier = Modifier.padding(vertical = 4.dp)) {
                 Text(
-                    text = if (line.pass) "PASS" else "FAIL",
+                    text = if (line.skipped) "SKIPPED" else if (line.pass) "PASS" else "FAIL",
                     fontWeight = FontWeight.Bold,
-                    color = if (line.pass) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    color = if (line.skipped) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else if (line.pass) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
                     style = MaterialTheme.typography.labelLarge
                 )
                 Spacer(modifier = Modifier.width(10.dp))

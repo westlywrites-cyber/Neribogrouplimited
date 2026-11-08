@@ -10,12 +10,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import com.westly.neribogroup.cloud.AuthResult
+import com.westly.neribogroup.cloud.BackupOutcome
 import com.westly.neribogroup.cloud.CloudConfig
 import com.westly.neribogroup.cloud.CloudConflictInfo
 import com.westly.neribogroup.cloud.CloudMode
 import com.westly.neribogroup.cloud.CloudStatus
+import com.westly.neribogroup.cloud.HistoryDoc
+import com.westly.neribogroup.cloud.HistoryOutcome
 import com.westly.neribogroup.cloud.LinkOutcome
 import com.westly.neribogroup.cloud.LedgerSplitter
+import com.westly.neribogroup.cloud.RestoreOutcome
 import com.westly.neribogroup.cloud.SupabaseApi
 import com.westly.neribogroup.cloud.SyncHost
 import com.westly.neribogroup.cloud.SyncResult
@@ -38,6 +42,7 @@ import com.westly.neribogroup.data.withCaseNote
 import com.westly.neribogroup.data.withClockAtLeast
 import com.westly.neribogroup.data.withSoftwareApp
 import com.westly.neribogroup.feature.cloud.CheckLine
+import com.westly.neribogroup.feature.cloud.CloudHistoryUi
 import com.westly.neribogroup.feature.cloud.LinkDialog
 import com.westly.neribogroup.feature.cloud.SelfCheck
 import com.westly.neribogroup.ui.formatDate
@@ -405,19 +410,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Runs the self-check on the real ledger in the background and shows the PASS/FAIL lines. */
+    /**
+     * Runs the self-check on the real ledger in the background and shows the PASS/FAIL lines.
+     * When signed in, one normal Sync now runs first, so the cloud check compares the latest state.
+     */
     fun runSelfCheck() {
-        if (selfCheckRunning || cloudWorking) return
+        if (selfCheckRunning || cloudWorking || cloudHistory.restoring) return
         selfCheckRunning = true
-        val snapshot = ledger
         val online = cloudSignedIn && cloudInitialized
+        val canSync = online && cloudConfig.cloudMode == CloudMode.ON && !cloudSyncing
+        if (canSync) {
+            cloudSyncing = true
+            cloudStatus = CloudStatus.SYNCING
+            mainHandler.removeCallbacks(retryRunnable)
+            mainHandler.removeCallbacks(debounceRunnable)
+        }
         thread(start = true) {
+            var syncResult: SyncResult? = null
             val result = try {
+                if (canSync) syncResult = cloudEngine.syncNow(syncHost)
+                // Read after the sync: it may have put cloud data on the phone.
+                val snapshot = ledger
                 val sync = if (online) cloudEngine.loadSync() else null
-                SelfCheck.run(snapshot, cloudApi, sync, online)
+                val finishedSync = syncResult
+                val status: CloudStatus? = if (finishedSync != null && finishedSync.ran) finishedSync.status else null
+                SelfCheck.run(snapshot, cloudApi, sync, online, status)
             } catch (e: Throwable) {
                 null
             }
+            val syncDone = syncResult
             mainHandler.post {
                 selfCheckRunning = false
                 if (result == null) {
@@ -426,13 +447,210 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     selfCheckLines = result.lines
                     setWarningFor(result.largestDocBytes)
                 }
-                refreshCloudState()
+                if (canSync) {
+                    if (syncDone != null) {
+                        finishSync(syncDone)
+                    } else {
+                        cloudSyncing = false
+                        refreshCloudState()
+                    }
+                } else {
+                    refreshCloudState()
+                }
             }
         }
     }
 
     fun closeSelfCheck() {
         selfCheckLines = null
+    }
+
+    // ---- Cloud: Back up now, cloud history and Restore this version (Phase 3B-2) ----
+
+    /** True while "Back up now" runs. Ignores a second tap. */
+    var cloudBackupBusy by mutableStateOf(false)
+        private set
+
+    /** The short line after the last "Back up now" (the count, or a calm problem). */
+    var cloudBackupMessage by mutableStateOf("")
+        private set
+
+    /** The cloud history window: document list, version list, restore progress. */
+    var cloudHistory by mutableStateOf(CloudHistoryUi())
+        private set
+
+    /** "Back up now": the cloud keeps a full copy. Never touches the phone's data. */
+    fun backUpNowAction() {
+        if (cloudBackupBusy || cloudWorking || cloudHistory.restoring) return
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
+            cloudBackupMessage = "Connect to the cloud first."
+            return
+        }
+        if (cloudSyncing) {
+            cloudBackupMessage = "Please wait, syncing…"
+            return
+        }
+        cloudBackupBusy = true
+        cloudBackupMessage = ""
+        thread(start = true) {
+            val outcome = try {
+                cloudEngine.createBackup("manual")
+            } catch (e: Throwable) {
+                BackupOutcome(false, "The backup did not finish. Your data on the phone is safe.")
+            }
+            mainHandler.post {
+                cloudBackupBusy = false
+                cloudBackupMessage = outcome.message
+                refreshCloudState()
+            }
+        }
+    }
+
+    /** Opens the history window with the list of documents. */
+    fun openCloudHistory() {
+        if (cloudHistory.open || cloudBackupBusy || cloudWorking) return
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
+            cloudBackupMessage = "Connect to the cloud first."
+            return
+        }
+        cloudHistory = CloudHistoryUi(open = true, loadingDocs = true)
+        val snapshot = ledger
+        thread(start = true) {
+            val docs = try {
+                buildHistoryDocs(snapshot)
+            } catch (e: Throwable) {
+                emptyList<HistoryDoc>()
+            }
+            mainHandler.post {
+                if (cloudHistory.open) cloudHistory = cloudHistory.copy(docs = docs, loadingDocs = false)
+            }
+        }
+    }
+
+    /** The owner tapped one document: its latest 20 versions are loaded. */
+    fun pickHistoryDoc(doc: HistoryDoc) {
+        val h = cloudHistory
+        if (!h.open || h.restoring || h.loadingRows) return
+        cloudHistory = h.copy(selected = doc, rows = emptyList(), loadingRows = true, message = "")
+        loadHistoryRows(doc, "")
+    }
+
+    /** Back to the list of documents. Ignored while a restore runs. */
+    fun backToHistoryList() {
+        val h = cloudHistory
+        if (!h.open || h.restoring) return
+        cloudHistory = h.copy(selected = null, rows = emptyList(), loadingRows = false, message = "")
+    }
+
+    /** Closes the history window. Ignored while a restore runs. */
+    fun closeCloudHistory() {
+        if (cloudHistory.restoring) return
+        cloudHistory = CloudHistoryUi()
+    }
+
+    /** [note] is shown under the list when it loaded (for example the result of a restore). */
+    private fun loadHistoryRows(doc: HistoryDoc, note: String) {
+        thread(start = true) {
+            val result = try {
+                cloudEngine.listDocHistory(doc.key)
+            } catch (e: Throwable) {
+                HistoryOutcome(emptyList(), "Could not load the history. Try again later.")
+            }
+            mainHandler.post {
+                val now = cloudHistory
+                if (now.open && now.selected?.key == doc.key) {
+                    cloudHistory = now.copy(
+                        rows = result.rows,
+                        loadingRows = false,
+                        message = if (result.message.isNotEmpty()) result.message else note
+                    )
+                }
+                refreshCloudState()
+            }
+        }
+    }
+
+    /**
+     * "Restore this version" (already confirmed by the owner): the cloud makes that version the newest one,
+     * then one normal sync brings it to the phone through the safe apply path. Never runs beside a sync.
+     */
+    fun restoreHistoryVersion(version: Int) {
+        val h = cloudHistory
+        val doc = h.selected ?: return
+        if (!h.open || h.restoring || h.loadingRows) return
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
+            cloudHistory = h.copy(message = "Connect to the cloud first.")
+            return
+        }
+        if (cloudWorking || cloudSyncing || cloudBackupBusy) {
+            cloudHistory = h.copy(message = "Please wait, syncing…")
+            return
+        }
+        cloudHistory = h.copy(restoring = true, message = "")
+        cloudSyncing = true
+        cloudStatus = CloudStatus.SYNCING
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(debounceRunnable)
+        thread(start = true) {
+            val outcome = try {
+                cloudEngine.restoreDocVersion(doc.key, version, syncHost)
+            } catch (e: Throwable) {
+                RestoreOutcome(false, "The restore did not finish. Your data on the phone is safe.", false, 0, null)
+            }
+            val text = restoreText(doc.name, version, outcome)
+            mainHandler.post {
+                val after = outcome.sync
+                if (after != null) {
+                    finishSync(after)
+                } else {
+                    cloudSyncing = false
+                    refreshCloudState()
+                }
+                val now = cloudHistory
+                if (now.open) {
+                    cloudHistory = now.copy(restoring = false, loadingRows = outcome.ok, message = if (outcome.ok) "" else text)
+                    if (outcome.ok) loadHistoryRows(doc, text)
+                }
+            }
+        }
+    }
+
+    private fun restoreText(name: String, version: Int, o: RestoreOutcome): String {
+        if (!o.ok) return o.message
+        if (o.unchanged) return "That is already the current version of $name. Nothing was changed."
+        val after = o.sync
+        if (after != null && after.ran && after.newConflicts > 0) {
+            return "The cloud went back to version $version of $name. This phone has its own changes to it, " +
+                "so you will be asked which version to keep."
+        }
+        if (after != null && after.ran && after.status == CloudStatus.UP_TO_DATE) {
+            return "Done. The cloud and this phone went back to version $version of $name. " +
+                "The version before stays in history."
+        }
+        return "The cloud went back to version $version of $name. This phone will get it when the sync finishes."
+    }
+
+    /** Every document the owner can open the history of: the fixed ones, the apps, then any other known key. */
+    private fun buildHistoryDocs(snapshot: Ledger): List<HistoryDoc> {
+        val names = HashMap<String, String>()
+        for (a in snapshot.apps) names[LedgerSplitter.keyForApp(a.id)] = a.name
+        val fixed = listOf(
+            LedgerSplitter.DOC_COMPANY,
+            LedgerSplitter.DOC_STAFF,
+            LedgerSplitter.DOC_CASES,
+            LedgerSplitter.DOC_SOFTWARE
+        )
+        val keys = LinkedHashSet<String>()
+        keys.addAll(fixed)
+        runCatching {
+            for (d in LedgerSplitter.split(LedgerStorage.toJson(snapshot))) keys.add(d.key)
+        }
+        val known = cloudEngine.loadSync().docs.keys.filter { !keys.contains(it) }.sorted()
+        keys.addAll(known)
+        return keys.map { key ->
+            val name = if (fixed.contains(key)) SyncRules.friendlyDocName(key, names) else (names[key] ?: key)
+            HistoryDoc(key, name)
+        }
     }
 
     private fun runCloudTask(task: ((Int) -> Unit) -> LinkOutcome) {

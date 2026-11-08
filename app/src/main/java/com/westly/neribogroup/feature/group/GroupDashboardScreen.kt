@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
@@ -45,6 +46,8 @@ import com.westly.neribogroup.Section
 import com.westly.neribogroup.data.CaseEngine
 import com.westly.neribogroup.data.DEFAULT_COMPANY_NAME
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.feature.cloud.CloudDot
+import com.westly.neribogroup.feature.cloud.CloudStatusDot
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.TopSaveActions
 import com.westly.neribogroup.feature.common.SearchField
@@ -74,6 +77,8 @@ fun GroupDashboardScreen(
     onOpenCase: (String) -> Unit,
     onClock: (Long) -> Unit,
     onOpenSettings: () -> Unit,
+    /** The tiny cloud status dot over the three-dot button. Grey when the cloud is not connected. */
+    cloudDot: CloudDot = CloudDot.GREY,
     onSave: (Ledger) -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit
@@ -123,6 +128,11 @@ fun GroupDashboardScreen(
                             IconButton(onClick = { menuOpen = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = "More")
                             }
+                            CloudStatusDot(
+                                dot = cloudDot,
+                                onClick = onOpenSettings,
+                                modifier = Modifier.align(Alignment.TopEnd)
+                            )
                             DropdownMenu(
                                 expanded = menuOpen,
                                 onDismissRequest = { menuOpen = false }

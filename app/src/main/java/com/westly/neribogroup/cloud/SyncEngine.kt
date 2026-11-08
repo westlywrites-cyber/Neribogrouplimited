@@ -49,6 +49,27 @@ data class SyncResult(
     val unsyncedDocs: Int = 0
 )
 
+/** The answer of "Back up now". [message] is shown as it is. */
+data class BackupOutcome(val ok: Boolean, val message: String)
+
+/** One cloud document the owner can open the history of. */
+data class HistoryDoc(val key: String, val name: String)
+
+/** One saved version of a cloud document. [createdAt] is the server's time text. */
+data class HistoryRow(val version: Int, val createdAt: String, val sizeBytes: Long, val deleted: Boolean)
+
+/** The history list. [message] is empty when it worked (the list may still be empty). */
+data class HistoryOutcome(val rows: List<HistoryRow>, val message: String)
+
+/** The answer of "Restore this version". [sync] is the pull that followed a successful restore. */
+data class RestoreOutcome(
+    val ok: Boolean,
+    val message: String,
+    val unchanged: Boolean,
+    val newVersion: Int,
+    val sync: SyncResult?
+)
+
 /**
  * Phase 3A: only the first-link protocol and its helpers. Every function blocks: call it from a background
  * thread. It never changes ledger.json except in [useCloudData] (after the safety copies exist).
@@ -70,6 +91,8 @@ class SyncEngine(
         const val RPC_VERIFY = "verify_docs"
         const val RPC_BACKUP = "create_backup"
         const val RPC_GET_VERSION = "get_doc_version"
+        const val RPC_LIST_HISTORY = "list_doc_history"
+        const val RPC_RESTORE = "restore_doc_version"
 
         const val P_OP_ID = "p_op_id"
         const val P_DEVICE_ID = "p_device_id"
@@ -78,12 +101,13 @@ class SyncEngine(
         const val P_EXPECT = "p_expect"
         const val P_SINCE_SEQ = "p_since_seq"
         const val P_AFTER_KEY = "p_after_key"
-        const val P_BACKUP_KIND = "p_kind"
+        const val P_BACKUP_KIND = "p_reason"
         const val P_BACKUP_NOTE = "p_note"
         const val P_LABEL = "p_label"
         const val P_APP_VERSION = "p_app_version"
         const val P_DOC_KEY = "p_doc_key"
         const val P_VERSION = "p_version"
+        const val P_LIMIT = "p_limit"
 
         const val MODE_INITIAL = "initial"
         const val MODE_REPLACE_ALL = "replace_all"
@@ -582,6 +606,141 @@ class SyncEngine(
                 return problem("Could not copy the cloud version onto the phone right now. Your phone data is untouched. Try again.")
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Phase 3B-2: Back up now, cloud history and Restore this version
+    // ---------------------------------------------------------------------------------------------
+
+    /** A calm sentence for a failed call. An expired session is cleared (local data is never touched). */
+    private fun calmText(r: ApiResult): String {
+        return when (r) {
+            ApiResult.Offline -> "No internet. Try again later."
+            ApiResult.AuthExpired -> {
+                config.clearSession()
+                "Please sign in again. Your data on the phone is safe."
+            }
+            is ApiResult.Http -> {
+                if (r.code == 429 || r.code in 500..599) {
+                    "The cloud is busy. Try again later."
+                } else {
+                    "The cloud had a problem (code " + r.code + "). Try again later."
+                }
+            }
+            is ApiResult.AppError -> {
+                val code = if (r.code.isEmpty()) "error" else r.code
+                "The cloud had a problem ($code). Try again later."
+            }
+            is ApiResult.Ok -> "The cloud answered in a way this app did not expect. Try again later."
+        }
+    }
+
+    /** "Back up now": asks the cloud to keep a full copy of every document. Blocks: call from a background thread. */
+    fun createBackup(label: String): BackupOutcome {
+        return try {
+            if (config.cloudMode != CloudMode.ON || !loadSync().initialized) {
+                return BackupOutcome(false, "Connect to the cloud first.")
+            }
+            if (!config.signedIn) return BackupOutcome(false, "Please sign in again. Your data on the phone is safe.")
+            val body = JSONObject()
+            body.put(Contract.P_BACKUP_KIND, "manual")
+            val note = label.trim()
+            if (note.isNotEmpty() && note != "manual") body.put(Contract.P_BACKUP_NOTE, note.take(200))
+            val r = api.rpc(Contract.RPC_BACKUP, body, true)
+            if (r is ApiResult.Ok) {
+                val n = r.json.optInt("doc_count", 0)
+                BackupOutcome(true, "Backup saved: " + n + (if (n == 1) " document" else " documents"))
+            } else {
+                BackupOutcome(false, calmText(r))
+            }
+        } catch (e: Throwable) {
+            BackupOutcome(false, "The backup did not finish. Your data on the phone is safe.")
+        }
+    }
+
+    /** The latest [HISTORY_ROWS] versions of one document, newest first. Blocks: call from a background thread. */
+    fun listDocHistory(docKey: String): HistoryOutcome {
+        return try {
+            if (config.cloudMode != CloudMode.ON || !loadSync().initialized) {
+                return HistoryOutcome(emptyList(), "Connect to the cloud first.")
+            }
+            if (!config.signedIn) {
+                return HistoryOutcome(emptyList(), "Please sign in again. Your data on the phone is safe.")
+            }
+            val body = JSONObject()
+            body.put(Contract.P_DOC_KEY, docKey)
+            body.put(Contract.P_LIMIT, HISTORY_ROWS)
+            val r = api.rpc(Contract.RPC_LIST_HISTORY, body)
+            if (r is ApiResult.Ok) {
+                val array = r.json.optJSONArray("versions") ?: JSONArray()
+                val rows = ArrayList<HistoryRow>()
+                for (i in 0 until array.length()) {
+                    if (rows.size >= HISTORY_ROWS) break
+                    val o = array.optJSONObject(i) ?: continue
+                    rows.add(
+                        HistoryRow(
+                            version = o.optInt("version", 0),
+                            createdAt = o.optString("created_at", ""),
+                            sizeBytes = o.optLong("size_bytes", 0L),
+                            deleted = o.optBoolean("deleted", false)
+                        )
+                    )
+                }
+                HistoryOutcome(rows, "")
+            } else {
+                HistoryOutcome(emptyList(), calmText(r))
+            }
+        } catch (e: Throwable) {
+            HistoryOutcome(emptyList(), "Could not load the history. Try again later.")
+        }
+    }
+
+    /**
+     * Asks the cloud to make [version] of [docKey] the newest version (a new version is created; nothing is
+     * erased). Then runs one normal sync, so the phone gets the result only through the safe apply path
+     * (safety copy first; a phone document with unsynced edits becomes a conflict, never a silent overwrite).
+     * Refuses while a sync is running. Blocks: call from a background thread.
+     */
+    fun restoreDocVersion(docKey: String, version: Int, host: SyncHost): RestoreOutcome {
+        if (config.cloudMode != CloudMode.ON || !loadSync().initialized) {
+            return RestoreOutcome(false, "Connect to the cloud first.", false, 0, null)
+        }
+        if (!config.signedIn) {
+            return RestoreOutcome(false, "Please sign in again. Your data on the phone is safe.", false, 0, null)
+        }
+        if (!running.compareAndSet(false, true)) {
+            return RestoreOutcome(false, "Please wait, syncing…", false, 0, null)
+        }
+        // While this call runs no sync can start (they share the same flag).
+        val restored: ApiResult? = try {
+            val body = JSONObject()
+            body.put(Contract.P_OP_ID, UUID.randomUUID().toString())
+            body.put(Contract.P_DEVICE_ID, config.deviceId)
+            body.put(Contract.P_DOC_KEY, docKey)
+            body.put(Contract.P_VERSION, version)
+            api.rpc(Contract.RPC_RESTORE, body, true)
+        } catch (e: Throwable) {
+            null
+        } finally {
+            running.set(false)
+        }
+        if (restored == null) {
+            return RestoreOutcome(false, "The restore did not finish. Your data on the phone is safe.", false, 0, null)
+        }
+        if (restored is ApiResult.AppError && (restored.code == "version_not_found" || restored.code == "doc_not_found")) {
+            return RestoreOutcome(false, "That version could not be found in the cloud. Nothing was changed.", false, 0, null)
+        }
+        if (restored !is ApiResult.Ok) {
+            return RestoreOutcome(false, calmText(restored), false, 0, null)
+        }
+        val unchanged = restored.json.optString("outcome", "") == "unchanged"
+        val newVersion = restored.json.optInt("version", 0)
+        val after = try {
+            syncNow(host)
+        } catch (e: Throwable) {
+            null
+        }
+        return RestoreOutcome(true, "", unchanged, newVersion, after)
     }
 
     // ---- the cycle ----
@@ -1332,5 +1491,8 @@ class SyncEngine(
         const val STEP_DOWNLOAD = 5
 
         const val MAX_DOCS_PER_BATCH = 200
+
+        /** The history list shows at most this many versions. */
+        const val HISTORY_ROWS = 20
     }
 }
