@@ -254,21 +254,7 @@ class SyncEngine(
     /** Steps 4 (send), 5 (verify) and 6 (mark synced) of section 7, for a batch that is already saved. */
     private fun sendBatch(batch: PendingBatch, onStep: (Int) -> Unit, helperHint: Boolean): LinkOutcome {
         onStep(STEP_UPLOAD)
-        val body = JSONObject()
-        body.put(Contract.P_OP_ID, batch.opId)
-        body.put(Contract.P_DEVICE_ID, config.deviceId)
-        body.put(Contract.P_MODE, batch.mode)
-        val changes = JSONArray()
-        for (c in batch.changes) {
-            val o = JSONObject()
-            o.put("doc_key", c.docKey)
-            o.put("base_version", c.baseVersion)
-            o.put("payload", c.payload)
-            o.put("payload_sha256", c.payloadSha256)
-            o.put("deleted", c.deleted)
-            changes.put(o)
-        }
-        body.put(Contract.P_CHANGES, changes)
+        val body = pushBody(batch)
 
         val pushed = api.rpc(Contract.RPC_PUSH, body, true)
         val pushJson: JSONObject = when (pushed) {
