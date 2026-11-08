@@ -460,6 +460,25 @@ fun SaveBar(onCancel: () -> Unit, onSave: () -> Unit) {
     }
 }
 
+/** Cancel and Save for the top bar (use inside `TopAppBar(actions = { ... })`) while editing. */
+@Composable
+fun TopSaveActions(onCancel: () -> Unit, onSave: () -> Unit) {
+    TextButton(onClick = onCancel) {
+        Text("Cancel", fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+    Button(
+        onClick = onSave,
+        modifier = Modifier.padding(end = 8.dp),
+        shape = RoundedCornerShape(ButtonRadius),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        )
+    ) {
+        Text("Save", fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dialogs
 // ---------------------------------------------------------------------------

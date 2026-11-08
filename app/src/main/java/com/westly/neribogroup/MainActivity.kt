@@ -214,6 +214,21 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onClock = { vm.updateCasesClock(it) },
                 onOpenCase = { vm.openCaseId = it }
             )
+            Section.USD -> SoftwareClientsScreen(
+                ledger = vm.ledger,
+                ratesLoading = vm.ratesLoading,
+                ratesMessage = vm.ratesMessage,
+                onBack = { vm.openSection = null },
+                onClock = { vm.updateSoftwareClock(it) },
+                onRoll = { vm.rollSoftware() },
+                onOpenOffer = { vm.openOfferId = it },
+                onOpenProject = { vm.openProjectId = it },
+                onConvert = { cents, rate, requestId -> vm.convertUsdToNaira(cents, rate, requestId) },
+                onRefreshRates = { vm.refreshRates() },
+                onSaveRate = { code, value -> vm.saveRate(code, value) },
+                onUseLiveRate = { vm.useLiveRate(it) },
+                usdOnly = true
+            )
             null -> GroupDashboardScreen(
                 ledger = vm.ledger,
                 onOpenSection = {

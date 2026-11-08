@@ -46,7 +46,7 @@ import com.westly.neribogroup.data.CaseEngine
 import com.westly.neribogroup.data.DEFAULT_COMPANY_NAME
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.feature.common.ConfirmDialog
-import com.westly.neribogroup.feature.common.SaveBar
+import com.westly.neribogroup.feature.common.TopSaveActions
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.matchesQuery
@@ -55,6 +55,7 @@ import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import com.westly.neribogroup.ui.formatDate
 import com.westly.neribogroup.ui.formatNaira
+import com.westly.neribogroup.ui.formatUsd
 
 /**
  * The home page. It stays short however many apps there are: search, the money summary,
@@ -100,7 +101,7 @@ fun GroupDashboardScreen(
                         Text(companyName, fontWeight = FontWeight.SemiBold)
                         if (editing) {
                             Text(
-                                text = "Editing - tap Save when done",
+                                text = "Editing",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -108,7 +109,16 @@ fun GroupDashboardScreen(
                     }
                 },
                 actions = {
-                    if (!editing) {
+                    if (editing) {
+                        TopSaveActions(
+                            onCancel = { editing = false },
+                            onSave = {
+                                val cleanName = draft.company.name.trim().ifBlank { DEFAULT_COMPANY_NAME }
+                                onSave(draft.copy(company = draft.company.copy(name = cleanName)))
+                                editing = false
+                            }
+                        )
+                    } else {
                         Box {
                             IconButton(onClick = { menuOpen = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -151,18 +161,6 @@ fun GroupDashboardScreen(
                     }
                 }
             )
-        },
-        bottomBar = {
-            if (editing) {
-                SaveBar(
-                    onCancel = { editing = false },
-                    onSave = {
-                        val cleanName = draft.company.name.trim().ifBlank { DEFAULT_COMPANY_NAME }
-                        onSave(draft.copy(company = draft.company.copy(name = cleanName)))
-                        editing = false
-                    }
-                )
-            }
         }
     ) { inner ->
         LazyColumn(
@@ -376,6 +374,15 @@ fun GroupDashboardScreen(
                             extra = if (legalDue > 0L) " · " + formatNaira(legalDue) + " due" else null,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenSection(Section.CASES) }
+                        )
+                    }
+                    item {
+                        // The $ account is shown on its own. It is never added to the profit above.
+                        SectionTile(
+                            title = "\$ Account",
+                            subtitle = formatUsd(shown.software.usdBalanceCents) + " waiting to convert",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.USD) }
                         )
                     }
                 }

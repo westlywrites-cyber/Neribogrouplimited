@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.AppUser
@@ -55,7 +56,7 @@ import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.FlatCard
 import com.westly.neribogroup.feature.common.EntryRow
 import com.westly.neribogroup.feature.common.NumberField
-import com.westly.neribogroup.feature.common.SaveBar
+import com.westly.neribogroup.feature.common.TopSaveActions
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.StatTile
 import com.westly.neribogroup.feature.common.TintedButton
@@ -63,6 +64,14 @@ import com.westly.neribogroup.feature.common.profitColor
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import com.westly.neribogroup.ui.formatNaira
+
+// The pages of an app dashboard in view mode. PAGE_MAIN is the short main page; every other
+// page opens from a card on it (like "App users") and Back returns to the main page.
+private const val PAGE_MAIN = ""
+private const val PAGE_USERS_PLANS = "users-plans"
+private const val PAGE_MONEY = "money"
+private const val PAGE_PLAY = "google-play"
+private const val PAGE_BENEFITS = "plan-benefits"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,6 +110,8 @@ fun AppDashboardScreen(
     var queueIndex by remember { mutableStateOf(0) }
     // True while the full "App users" page (all users, with search) is showing.
     var showUsers by rememberSaveable { mutableStateOf(false) }
+    // Which page is showing in view mode (PAGE_MAIN = the short main page).
+    var page by rememberSaveable { mutableStateOf(PAGE_MAIN) }
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else app
@@ -115,8 +126,12 @@ fun AppDashboardScreen(
         return
     }
 
+    val subPage = !editing && page != PAGE_MAIN
+
     BackHandler {
-        if (editing) editing = false else onBack()
+        if (editing) editing = false
+        else if (subPage) page = PAGE_MAIN
+        else onBack()
     }
 
     Scaffold(
@@ -125,20 +140,38 @@ fun AppDashboardScreen(
                 title = {
                     Column {
                         Text(
-                            text = shown.name.ifBlank { app.name },
-                            fontWeight = FontWeight.SemiBold
+                            text = if (subPage) {
+                                when (page) {
+                                    PAGE_USERS_PLANS -> "Users & plans"
+                                    PAGE_MONEY -> "Money"
+                                    PAGE_PLAY -> "Google Play"
+                                    PAGE_BENEFITS -> "Plan benefits"
+                                    else -> app.name
+                                }
+                            } else {
+                                shown.name.ifBlank { app.name }
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        if (editing) {
+                        if (editing || subPage) {
                             Text(
-                                text = "Editing - tap Save when done",
+                                text = if (editing) "Editing" else app.name,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = { if (editing) editing = false else onBack() }) {
+                    IconButton(onClick = {
+                        if (editing) editing = false
+                        else if (subPage) page = PAGE_MAIN
+                        else onBack()
+                    }) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back"
@@ -146,7 +179,21 @@ fun AppDashboardScreen(
                     }
                 },
                 actions = {
-                    if (!editing) {
+                    if (editing) {
+                        TopSaveActions(
+                            onCancel = { editing = false },
+                            onSave = {
+                                val increase = if (app.googlePlayEnabled) 0L
+                                else draft.manualDailyNewUsers - app.newUsersToday(now)
+                                onSave(draft.copy(name = draft.name.trim().ifBlank { app.name }))
+                                editing = false
+                                if (increase > 0L) {
+                                    queueTotal = minOf(increase, 100L).toInt()
+                                    queueIndex = 1
+                                }
+                            }
+                        )
+                    } else {
                         Box {
                             IconButton(onClick = { menuOpen = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -171,23 +218,6 @@ fun AppDashboardScreen(
                     }
                 }
             )
-        },
-        bottomBar = {
-            if (editing) {
-                SaveBar(
-                    onCancel = { editing = false },
-                    onSave = {
-                        val increase = if (app.googlePlayEnabled) 0L
-                        else draft.manualDailyNewUsers - app.newUsersToday(now)
-                        onSave(draft.copy(name = draft.name.trim().ifBlank { app.name }))
-                        editing = false
-                        if (increase > 0L) {
-                            queueTotal = minOf(increase, 100L).toInt()
-                            queueIndex = 1
-                        }
-                    }
-                )
-            }
         }
     ) { inner ->
         LazyColumn(
@@ -437,298 +467,362 @@ fun AppDashboardScreen(
                 }
             } else {
                 // -------------------------------------------------------------------------
-                // View mode.
+                // View mode: a short main page, plus one page per topic (like "App users").
                 // -------------------------------------------------------------------------
-                if (app.googlePlayEnabled) {
-                    item { SectionTitle("Daily dice") }
-                    item { DicePanel(app = app, now = now, onRoll = onRoll) }
-
-                    item { SectionTitle("Campaign") }
-                    item {
-                        CampaignCard(
-                            app = app,
-                            now = now,
-                            onStart = onStartCampaign,
-                            onStop = onStopCampaign
-                        )
-                    }
-                }
-
-                item { SectionTitle("Users") }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StatTile("Total users", formatCount(app.totalUsers), Modifier.weight(1f))
-                        StatTile("Free", formatCount(app.freeUsers), Modifier.weight(1f))
-                        StatTile("New today", formatCount(app.newUsersToday(now)), Modifier.weight(1f))
-                    }
-                }
-                if (app.premiumPrice > 0L || app.proPrice > 0L) {
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            if (app.premiumPrice > 0L) {
-                                StatTile("Premium", formatCount(app.premiumUsers), Modifier.weight(1f))
-                            }
-                            if (app.proPrice > 0L) {
-                                StatTile("Pro", formatCount(app.proUsers), Modifier.weight(1f))
-                            }
-                        }
-                    }
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            if (app.premiumPrice > 0L) {
-                                StatTile(
-                                    "Premium today",
-                                    formatCount(app.premiumTodayAt(now)),
-                                    Modifier.weight(1f)
-                                )
-                            }
-                            if (app.proPrice > 0L) {
-                                StatTile(
-                                    "Pro today",
-                                    formatCount(app.proTodayAt(now)),
-                                    Modifier.weight(1f)
-                                )
-                            }
-                        }
-                    }
-                    item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            if (app.premiumPrice > 0L) {
-                                StatTile("Premium price", formatNaira(app.premiumPrice), Modifier.weight(1f))
-                            }
-                            if (app.proPrice > 0L) {
-                                StatTile("Pro price", formatNaira(app.proPrice), Modifier.weight(1f))
-                            }
-                        }
-                    }
-                } else {
-                    item {
-                        Text(
-                            text = "This app has no paid plans. Set a Premium or Pro price in Edit to add them.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                item { SectionTitle("Activity") }
-                item {
-                    ActiveUsersCard(
-                        activeToday = app.activeUsersAt(now),
-                        totalUsers = app.totalUsers,
-                        days = activeDays
-                    )
-                }
-
-                item { SectionTitle("Google Play") }
-                item {
-                    FlatCard {
-                        if (app.googlePlayEnabled) {
-                            Text(
-                                text = "Google Play is on. It cannot be turned off.",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        } else {
-                            Text(
-                                text = "Google Play apps use the daily dice, the Play Balance and Ads. " +
-                                    "This cannot be turned off later.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            TintedButton(
-                                text = "Turn on Google Play",
-                                onClick = { confirmGooglePlay = true },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
-                }
-
-                if (app.googlePlayEnabled) {
-                    item { SectionTitle("Google Play Balance") }
-                    item {
-                        StatTile(
-                            label = "Earned today (after Google's cut)",
-                            value = formatNaira(app.playEarningsToday(now)),
-                            modifier = Modifier.fillMaxWidth(),
-                            valueColor = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    item { PlayAppCard(app = app, onWithdraw = onWithdraw, showName = false) }
-                }
-
                 val paying = app.users
                     .filter { it.plan != Plan.FREE }
                     .sortedWith(
                         compareBy<AppUser> { it.planDaysLeft(now) == null }
                             .thenBy { it.planExpiryMillis }
                     )
-                if (paying.isNotEmpty()) {
-                    item { SectionTitle("Plan expiry") }
+                val endingSoon = paying.count { user ->
+                    val left = user.planDaysLeft(now)
+                    left != null && left <= 7L
+                }
 
-                    val endingSoon = paying.count { user ->
-                        val left = user.planDaysLeft(now)
-                        left != null && left <= 7L
-                    }
-                    item {
-                        val soonText = when (endingSoon) {
-                            0 -> "No plans end in the next 7 days."
-                            1 -> "1 plan ends in the next 7 days."
-                            else -> "$endingSoon plans end in the next 7 days."
-                        }
-                        Text(
-                            text = soonText + (if (app.googlePlayEnabled) {
-                                " Tap a user you added to say if they renewed. " +
-                                    "Users made by the dice renew or leave by themselves."
-                            } else {
-                                " Tap a user to say if they renewed."
-                            }),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    items(paying.take(15), key = { "expiry-" + it.id }) { user ->
-                        ExpiryRow(
-                            user = user,
-                            now = now,
-                            onClick = { expiryUserId = user.id }
-                        )
-                    }
-
-                    if (paying.size > 15) {
+                when (page) {
+                    // ---------------------------------------------------------------------
+                    // Users & plans: user numbers, the activity chart and plan expiry.
+                    // ---------------------------------------------------------------------
+                    PAGE_USERS_PLANS -> {
+                        item { SectionTitle("Users") }
                         item {
-                            Text(
-                                text = "Showing the 15 soonest of " + paying.size + ".",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                StatTile("Total users", formatCount(app.totalUsers), Modifier.weight(1f))
+                                StatTile("Free", formatCount(app.freeUsers), Modifier.weight(1f))
+                                StatTile("New today", formatCount(app.newUsersToday(now)), Modifier.weight(1f))
+                            }
+                        }
+                        if (app.premiumPrice > 0L || app.proPrice > 0L) {
+                            item {
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    if (app.premiumPrice > 0L) {
+                                        StatTile("Premium", formatCount(app.premiumUsers), Modifier.weight(1f))
+                                    }
+                                    if (app.proPrice > 0L) {
+                                        StatTile("Pro", formatCount(app.proUsers), Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                            item {
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    if (app.premiumPrice > 0L) {
+                                        StatTile(
+                                            "Premium today",
+                                            formatCount(app.premiumTodayAt(now)),
+                                            Modifier.weight(1f)
+                                        )
+                                    }
+                                    if (app.proPrice > 0L) {
+                                        StatTile(
+                                            "Pro today",
+                                            formatCount(app.proTodayAt(now)),
+                                            Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            }
+                            item {
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    if (app.premiumPrice > 0L) {
+                                        StatTile("Premium price", formatNaira(app.premiumPrice), Modifier.weight(1f))
+                                    }
+                                    if (app.proPrice > 0L) {
+                                        StatTile("Pro price", formatNaira(app.proPrice), Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        } else {
+                            item {
+                                Text(
+                                    text = "This app has no paid plans. Set a Premium or Pro price in Edit to add them.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        item { SectionTitle("Activity") }
+                        item {
+                            ActiveUsersCard(
+                                activeToday = app.activeUsersAt(now),
+                                totalUsers = app.totalUsers,
+                                days = activeDays
                             )
                         }
-                    }
-                }
 
-                item { SectionTitle("Plan benefits") }
-                item { BenefitsBlock("Free includes", app.freeBenefits) }
-                if (app.premiumPrice > 0L) {
-                    item { BenefitsBlock("Premium includes", app.premiumBenefits) }
-                }
-                if (app.proPrice > 0L) {
-                    item { BenefitsBlock("Pro includes", app.proBenefits) }
-                }
-
-                item { SectionTitle("App users") }
-                item {
-                    val count = app.users.size
-                    if (count == 0) {
-                        Text(
-                            text = if (app.googlePlayEnabled) "No users yet. Roll the dice, or add your own in Edit."
-                            else "No users yet. Add users in Edit.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    } else {
-                        // One tap opens the full list (every user, with search) on its own page.
-                        FlatCard(modifier = Modifier.clickable { showUsers = true }) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(modifier = Modifier.weight(1f)) {
+                        if (paying.isNotEmpty()) {
+                            item { SectionTitle("Plan expiry") }
+                            item {
+                                val soonText = when (endingSoon) {
+                                    0 -> "No plans end in the next 7 days."
+                                    1 -> "1 plan ends in the next 7 days."
+                                    else -> "$endingSoon plans end in the next 7 days."
+                                }
+                                Text(
+                                    text = soonText + (if (app.googlePlayEnabled) {
+                                        " Tap a user you added to say if they renewed. " +
+                                            "Users made by the dice renew or leave by themselves."
+                                    } else {
+                                        " Tap a user to say if they renewed."
+                                    }),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            items(paying.take(15), key = { "expiry-" + it.id }) { user ->
+                                ExpiryRow(
+                                    user = user,
+                                    now = now,
+                                    onClick = { expiryUserId = user.id }
+                                )
+                            }
+                            if (paying.size > 15) {
+                                item {
                                     Text(
-                                        text = if (count == 1) "1 user"
-                                        else formatCount(count.toLong()) + " users",
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    Text(
-                                        text = "Tap to see everyone and search",
+                                        text = "Showing the 15 soonest of " + paying.size + ".",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                Icon(
-                                    Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        }
+                    }
+
+                    // ---------------------------------------------------------------------
+                    // Money: income, expenses, profit, entries, and costs charged to company.
+                    // ---------------------------------------------------------------------
+                    PAGE_MONEY -> {
+                        item {
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                StatTile("Income", formatNaira(app.income), Modifier.weight(1f))
+                                StatTile("Expenses", formatNaira(app.expenses), Modifier.weight(1f))
+                            }
+                        }
+                        item {
+                            StatTile(
+                                label = "Profit",
+                                value = formatNaira(app.profit),
+                                modifier = Modifier.fillMaxWidth(),
+                                valueColor = profitColor(app.profit)
+                            )
+                        }
+                        if (app.googlePlayEnabled) {
+                            item {
+                                Text(
+                                    text = "Google Play Balance money is not in profit until you withdraw it.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        if (app.entries.isNotEmpty()) {
+                            items(app.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
+                                EntryRow(entry = entry, editing = false, onDelete = {}, tag = manualTag(app, entry))
+                            }
+                        }
+
+                        if (app.googlePlayEnabled) {
+                            val charged = chargedToCompany.sortedByDescending { it.dateMillis }
+                            item { SectionTitle("Expenses charged to company") }
+                            item {
+                                Text(
+                                    text = "Charged to company: " + formatNaira(charged.sumOf { it.amount }),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            items(charged, key = { "charged-" + it.id }) { entry ->
+                                EntryRow(entry = entry, editing = false, onDelete = {})
+                            }
+                            item {
+                                Button(
+                                    onClick = { showCompanyExpense = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Add expense to company costs") }
+                            }
+                            item {
+                                Text(
+                                    text = "These expenses are kept in Company costs, so they are counted once. " +
+                                        "To remove one, delete it on the Company costs page.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
                     }
-                }
 
-                item { SectionTitle("Money") }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        StatTile("Income", formatNaira(app.income), Modifier.weight(1f))
-                        StatTile("Expenses", formatNaira(app.expenses), Modifier.weight(1f))
-                    }
-                }
-                item {
-                    StatTile(
-                        label = "Profit",
-                        value = formatNaira(app.profit),
-                        modifier = Modifier.fillMaxWidth(),
-                        valueColor = profitColor(app.profit)
-                    )
-                }
-                if (app.googlePlayEnabled) {
-                    item {
-                        Text(
-                            text = "Google Play Balance money is not in profit until you withdraw it.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                if (app.entries.isNotEmpty()) {
-                    items(app.entries.sortedByDescending { it.dateMillis }, key = { it.id }) { entry ->
-                        EntryRow(entry = entry, editing = false, onDelete = {}, tag = manualTag(app, entry))
-                    }
-                }
-
-                if (app.googlePlayEnabled) {
-                    val charged = chargedToCompany.sortedByDescending { it.dateMillis }
-                    item { SectionTitle("Expenses charged to company") }
-                    item {
-                        Text(
-                            text = "Charged to company: " + formatNaira(charged.sumOf { it.amount }),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    items(charged, key = { "charged-" + it.id }) { entry ->
-                        EntryRow(entry = entry, editing = false, onDelete = {})
-                    }
-                    item {
-                        Button(
-                            onClick = { showCompanyExpense = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("Add expense to company costs") }
-                    }
-                    item {
-                        Text(
-                            text = "These expenses are kept in Company costs, so they are counted once. " +
-                                "To remove one, delete it on the Company costs page.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    item { SectionTitle("Roll history") }
-                    val recent = app.rolls.takeLast(10).reversed()
-                    if (recent.isEmpty()) {
+                    // ---------------------------------------------------------------------
+                    // Google Play: status, balance, campaign and roll history.
+                    // ---------------------------------------------------------------------
+                    PAGE_PLAY -> {
                         item {
-                            Text(
-                                text = "No rolls yet.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            FlatCard {
+                                if (app.googlePlayEnabled) {
+                                    Text(
+                                        text = "Google Play is on. It cannot be turned off.",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                } else {
+                                    Text(
+                                        text = "Google Play apps use the daily dice, the Play Balance and Ads. " +
+                                            "This cannot be turned off later.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    TintedButton(
+                                        text = "Turn on Google Play",
+                                        onClick = { confirmGooglePlay = true },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+
+                        if (app.googlePlayEnabled) {
+                            item { SectionTitle("Google Play Balance") }
+                            item {
+                                StatTile(
+                                    label = "Earned today (after Google's cut)",
+                                    value = formatNaira(app.playEarningsToday(now)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    valueColor = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            item { PlayAppCard(app = app, onWithdraw = onWithdraw, showName = false) }
+
+                            item { SectionTitle("Campaign") }
+                            item {
+                                CampaignCard(
+                                    app = app,
+                                    now = now,
+                                    onStart = onStartCampaign,
+                                    onStop = onStopCampaign
+                                )
+                            }
+
+                            item { SectionTitle("Roll history") }
+                            val recent = app.rolls.takeLast(10).reversed()
+                            if (recent.isEmpty()) {
+                                item {
+                                    Text(
+                                        text = "No rolls yet.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            items(recent, key = { "roll-" + it.dayKey }) { record ->
+                                RollHistoryRow(record)
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(top = 8.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant
+                                )
+                            }
                         }
                     }
-                    items(recent, key = { "roll-" + it.dayKey }) { record ->
-                        RollHistoryRow(record)
-                        HorizontalDivider(
-                            modifier = Modifier.padding(top = 8.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant
-                        )
+
+                    // ---------------------------------------------------------------------
+                    // Plan benefits: what Free, Premium and Pro include.
+                    // ---------------------------------------------------------------------
+                    PAGE_BENEFITS -> {
+                        item { BenefitsBlock("Free includes", app.freeBenefits) }
+                        if (app.premiumPrice > 0L) {
+                            item { BenefitsBlock("Premium includes", app.premiumBenefits) }
+                        }
+                        if (app.proPrice > 0L) {
+                            item { BenefitsBlock("Pro includes", app.proBenefits) }
+                        }
+                    }
+
+                    // ---------------------------------------------------------------------
+                    // The short main page: headline numbers, the daily dice, and one card per topic.
+                    // ---------------------------------------------------------------------
+                    else -> {
+                        item {
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                StatTile("Total users", formatCount(app.totalUsers), Modifier.weight(1f))
+                                StatTile(
+                                    label = "Profit",
+                                    value = formatNaira(app.profit),
+                                    modifier = Modifier.weight(1f),
+                                    valueColor = profitColor(app.profit)
+                                )
+                            }
+                        }
+
+                        if (app.googlePlayEnabled) {
+                            item { SectionTitle("Daily dice") }
+                            item { DicePanel(app = app, now = now, onRoll = onRoll) }
+                        }
+
+                        val userCount = app.users.size
+                        if (userCount == 0) {
+                            item {
+                                Text(
+                                    text = if (app.googlePlayEnabled) "No users yet. Roll the dice, or add your own in Edit."
+                                    else "No users yet. Add users in Edit.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            item {
+                                NavCard(
+                                    title = "App users",
+                                    summary = (if (userCount == 1) "1 user" else formatCount(userCount.toLong()) + " users") +
+                                        " · see everyone and search",
+                                    onClick = { showUsers = true }
+                                )
+                            }
+                        }
+
+                        item {
+                            val planParts = buildList {
+                                add("Free " + formatCount(app.freeUsers))
+                                if (app.premiumPrice > 0L) add("Premium " + formatCount(app.premiumUsers))
+                                if (app.proPrice > 0L) add("Pro " + formatCount(app.proUsers))
+                                if (endingSoon > 0) add("$endingSoon ending soon")
+                            }
+                            NavCard(
+                                title = "Users & plans",
+                                summary = planParts.joinToString(" · "),
+                                onClick = { page = PAGE_USERS_PLANS }
+                            )
+                        }
+                        item {
+                            NavCard(
+                                title = "Money",
+                                summary = "Income " + formatNaira(app.income) +
+                                    " · Expenses " + formatNaira(app.expenses),
+                                onClick = { page = PAGE_MONEY }
+                            )
+                        }
+                        item {
+                            NavCard(
+                                title = "Google Play",
+                                summary = if (app.googlePlayEnabled) {
+                                    "Balance " + formatNaira(app.playBalance) +
+                                        " · Ads " + (if (app.adsEnabled) "on" else "off")
+                                } else {
+                                    "Not turned on"
+                                },
+                                onClick = { page = PAGE_PLAY }
+                            )
+                        }
+                        item {
+                            val benefitNames = buildList {
+                                add("Free")
+                                if (app.premiumPrice > 0L) add("Premium")
+                                if (app.proPrice > 0L) add("Pro")
+                            }
+                            NavCard(
+                                title = "Plan benefits",
+                                summary = "What " + benefitNames.joinToString(", ") + " include",
+                                onClick = { page = PAGE_BENEFITS }
+                            )
+                        }
                     }
                 }
             }
@@ -926,7 +1020,33 @@ fun AppDashboardScreen(
     }
 }
 
-/** One block in the Plan benefits section (read-only view). */
+/** A tappable card on the main page: a title, a one-line summary and an arrow. Opens a page. */
+@Composable
+private fun NavCard(title: String, summary: String, onClick: () -> Unit) {
+    FlatCard(modifier = Modifier.clickable(onClick = onClick)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** One block on the Plan benefits page (read-only view). */
 @Composable
 private fun BenefitsBlock(label: String, text: String) {
     Card(

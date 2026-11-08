@@ -28,7 +28,7 @@ import kotlin.concurrent.thread
 import kotlin.random.Random
 
 /** The pages that open from the home screen tiles. */
-enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES }
+enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES, USD }
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 

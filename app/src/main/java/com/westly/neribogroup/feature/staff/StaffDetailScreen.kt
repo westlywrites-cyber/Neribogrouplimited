@@ -51,7 +51,7 @@ import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.MoneyRow
 import com.westly.neribogroup.feature.common.NumberField
-import com.westly.neribogroup.feature.common.SaveBar
+import com.westly.neribogroup.feature.common.TopSaveActions
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.StatColumn
 import com.westly.neribogroup.feature.common.StatTile
@@ -96,7 +96,7 @@ fun StaffDetailScreen(
                         )
                         if (editing) {
                             Text(
-                                text = "Editing - tap Save when done",
+                                text = "Editing",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -112,7 +112,15 @@ fun StaffDetailScreen(
                     }
                 },
                 actions = {
-                    if (!editing) {
+                    if (editing) {
+                        TopSaveActions(
+                            onCancel = { editing = false },
+                            onSave = {
+                                onSave(draft.copy(name = draft.name.trim().ifBlank { staff.name }))
+                                editing = false
+                            }
+                        )
+                    } else {
                         Box {
                             IconButton(onClick = { menuOpen = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -134,17 +142,6 @@ fun StaffDetailScreen(
                     }
                 }
             )
-        },
-        bottomBar = {
-            if (editing) {
-                SaveBar(
-                    onCancel = { editing = false },
-                    onSave = {
-                        onSave(draft.copy(name = draft.name.trim().ifBlank { staff.name }))
-                        editing = false
-                    }
-                )
-            }
         }
     ) { inner ->
         LazyColumn(

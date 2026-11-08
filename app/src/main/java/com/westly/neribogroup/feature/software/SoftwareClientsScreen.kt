@@ -155,7 +155,9 @@ fun SoftwareClientsScreen(
     onConvert: (Long, Double, String) -> Unit,
     onRefreshRates: () -> Unit,
     onSaveRate: (String, Double) -> Unit,
-    onUseLiveRate: (String) -> Unit
+    onUseLiveRate: (String) -> Unit,
+    /** True when opened from the "$ Account" tile on Home: shows only the $ account, rates and conversions. */
+    usdOnly: Boolean = false
 ) {
     val now = rememberNowMillis()
     val sw = ledger.software
@@ -201,7 +203,7 @@ fun SoftwareClientsScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "Software Development Clients",
+                        text = if (usdOnly) "\$ Account" else "Software Development Clients",
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -222,6 +224,7 @@ fun SoftwareClientsScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (!usdOnly) {
             // 1. Summary
             item(key = "summary") {
                 val stats = ArrayList<StatCardItem>()
@@ -344,6 +347,8 @@ fun SoftwareClientsScreen(
                     owed = SoftwareEngine.maintenanceOwed(project, eff),
                     onClick = { onOpenProject(project.id) }
                 )
+            }
+
             }
 
             // 6. $ account, rates, conversions
@@ -487,6 +492,7 @@ fun SoftwareClientsScreen(
                 }
             }
 
+            if (!usdOnly) {
             // 7. Clients
             item(key = "clients-title") { SectionTitle("Clients") }
             if (clients.isEmpty()) {
@@ -585,6 +591,8 @@ fun SoftwareClientsScreen(
                         color = MaterialTheme.colorScheme.outlineVariant
                     )
                 }
+            }
+
             }
 
             item(key = "end") { Spacer(modifier = Modifier.height(8.dp)) }

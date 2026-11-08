@@ -32,8 +32,8 @@ import androidx.compose.ui.unit.dp
 
 /**
  * The frame shared by the Apps, Renewals, Staff and Company costs pages:
- * a top bar with Back and a three-dot menu (Edit), a Save bar while editing,
- * and a scrolling list for the page content.
+ * a top bar with Back and a three-dot menu (Edit), Cancel and Save in the top bar while
+ * editing, and a scrolling list for the page content.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,7 +60,7 @@ fun SectionScaffold(
                         Text(text = title, fontWeight = FontWeight.SemiBold)
                         if (editing) {
                             Text(
-                                text = "Editing - tap Save when done",
+                                text = "Editing",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -76,7 +76,9 @@ fun SectionScaffold(
                     }
                 },
                 actions = {
-                    if (!editing) {
+                    if (editing) {
+                        TopSaveActions(onCancel = onCancelEdit, onSave = onSave)
+                    } else {
                         Box {
                             IconButton(onClick = { menuOpen = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -97,11 +99,6 @@ fun SectionScaffold(
                     }
                 }
             )
-        },
-        bottomBar = {
-            if (editing) {
-                SaveBar(onCancel = onCancelEdit, onSave = onSave)
-            }
         }
     ) { inner ->
         LazyColumn(
