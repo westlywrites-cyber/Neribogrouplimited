@@ -36,7 +36,13 @@ data class SyncData(
     val pending: PendingBatch? = null,
     val lastSyncMillis: Long = 0L,
     val lastError: String = "",
-    val conflicts: List<String> = emptyList()
+    val conflicts: List<String> = emptyList(),
+    /** Phase 4B: the day (yyyy-MM-dd) the dice jobs of each app were last published. Optional. */
+    val publishedDays: Map<String, String> = emptyMap(),
+    /** Phase 4B: jobs that were applied on the phone but not yet marked applied in the cloud. Optional. */
+    val appliedPendingMark: List<String> = emptyList(),
+    /** Phase 4B: per app, how its last AI-mode roll ended ("day|millis|C or B|jobs"). Optional. */
+    val aiDone: Map<String, String> = emptyMap()
 )
 
 /** Reads and writes cloud_sync.json. Writes are atomic (tmp file, then rename). */
@@ -159,6 +165,21 @@ object SyncStore {
             if (parsed != null) conflicts.put(parsed) else conflicts.put(text)
         }
         root.put("conflicts", conflicts)
+        if (data.publishedDays.isNotEmpty()) {
+            val o = JSONObject()
+            for ((k, v) in data.publishedDays) o.put(k, v)
+            root.put("publishedDays", o)
+        }
+        if (data.appliedPendingMark.isNotEmpty()) {
+            val a = JSONArray()
+            for (id in data.appliedPendingMark) a.put(id)
+            root.put("appliedPendingMark", a)
+        }
+        if (data.aiDone.isNotEmpty()) {
+            val o = JSONObject()
+            for ((k, v) in data.aiDone) o.put(k, v)
+            root.put("aiDone", o)
+        }
         return root.toString(2)
     }
 
@@ -204,6 +225,32 @@ object SyncStore {
         if (conflictsArray != null) {
             for (i in 0 until conflictsArray.length()) conflicts.add(conflictsArray.get(i).toString())
         }
+        val published = LinkedHashMap<String, String>()
+        val publishedObject = root.optJSONObject("publishedDays")
+        if (publishedObject != null) {
+            val keys = publishedObject.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                published[k] = publishedObject.optString(k, "")
+            }
+        }
+        val marks = ArrayList<String>()
+        val marksArray = root.optJSONArray("appliedPendingMark")
+        if (marksArray != null) {
+            for (i in 0 until marksArray.length()) {
+                val id = marksArray.optString(i, "")
+                if (id.isNotEmpty()) marks.add(id)
+            }
+        }
+        val done = LinkedHashMap<String, String>()
+        val doneObject = root.optJSONObject("aiDone")
+        if (doneObject != null) {
+            val keys = doneObject.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                done[k] = doneObject.optString(k, "")
+            }
+        }
         return SyncData(
             schema = root.optInt("schema", 1),
             deviceId = root.optString("deviceId", ""),
@@ -213,7 +260,10 @@ object SyncStore {
             pending = pending,
             lastSyncMillis = root.optLong("lastSyncMillis", 0L),
             lastError = root.optString("lastError", ""),
-            conflicts = conflicts
+            conflicts = conflicts,
+            publishedDays = published,
+            appliedPendingMark = marks,
+            aiDone = done
         )
     }
 }

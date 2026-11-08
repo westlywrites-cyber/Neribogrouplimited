@@ -10,9 +10,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
+import com.westly.neribogroup.cloud.CloudMode
+import com.westly.neribogroup.feature.cloud.AiCard
+import com.westly.neribogroup.feature.cloud.AiCardState
 import com.westly.neribogroup.feature.cloud.CloudCard
 import com.westly.neribogroup.feature.cloud.CloudCardState
 import com.westly.neribogroup.feature.cloud.ConflictDialog
@@ -111,6 +115,15 @@ private fun NeriboRoot(vm: AppViewModel) {
         }
     }
 
+    // Phase 4B: one toast when Claude rolled an app.
+    val aiNotice = vm.aiNotice
+    if (aiNotice.isNotEmpty()) {
+        LaunchedEffect(aiNotice) {
+            Toast.makeText(context, aiNotice, Toast.LENGTH_LONG).show()
+            vm.consumeAiNotice()
+        }
+    }
+
     // The conflict question: one at a time, never closes without a choice, never chooses by itself.
     val waitingConflict = vm.cloudConflicts.firstOrNull()
     if (waitingConflict != null && !vm.cloudSyncing && !vm.cloudWorking) {
@@ -206,6 +219,26 @@ private fun NeriboRoot(vm: AppViewModel) {
                     onHistoryClose = { vm.closeCloudHistory() },
                     onRestoreVersion = { vm.restoreHistoryVersion(it) }
                 )
+            },
+            ai = {
+                AiCard(
+                    state = AiCardState(
+                        cloudReady = vm.cloudMode == CloudMode.ON && vm.cloudSignedIn && vm.cloudInitialized,
+                        aiMode = vm.aiMode,
+                        running = vm.aiRunning,
+                        message = vm.aiMessage,
+                        waiting = vm.aiWaiting,
+                        answered = vm.aiAnswered,
+                        appliedToday = vm.aiAppliedToday(),
+                        settings = vm.aiSettings,
+                        settingsBusy = vm.aiSettingsBusy,
+                        settingsMessage = vm.aiSettingsMessage
+                    ),
+                    onToggle = { vm.updateAiMode(it) },
+                    onCheck = { vm.runAiJobs() },
+                    onReloadSettings = { vm.loadAiSettings() },
+                    onSaveSettings = { vm.saveAiSettings(it) }
+                )
             }
         )
     } else if (openOffer != null) {
@@ -261,7 +294,12 @@ private fun NeriboRoot(vm: AppViewModel) {
             onStopCampaign = { vm.stopCampaign(openApp.id) },
             chargedToCompany = vm.ledger.company.expenses.filter { it.appId == openApp.id },
             onEnableGooglePlay = { vm.enableGooglePlay(openApp.id) },
-            onAddCompanyExpense = { title, amount -> vm.addAppExpense(openApp.id, title, amount) }
+            onAddCompanyExpense = { title, amount -> vm.addAppExpense(openApp.id, title, amount) },
+            aiOn = vm.aiActive,
+            aiStateFor = { n -> vm.aiRollStateFor(openApp, n) },
+            aiChecking = vm.aiRunning,
+            onAiCheck = { vm.runAiJobs() },
+            onAiRollBuiltIn = { vm.aiRollBuiltIn(openApp.id) }
         )
     } else if (openStaff != null) {
         StaffDetailScreen(

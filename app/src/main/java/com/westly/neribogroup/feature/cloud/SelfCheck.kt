@@ -27,13 +27,25 @@ import com.westly.neribogroup.cloud.SyncEngine
 import com.westly.neribogroup.cloud.SyncRules
 import com.westly.neribogroup.cloud.SyncStore
 import com.westly.neribogroup.cloud.sha256Hex
+import com.westly.neribogroup.cloud.AiJobRules
+import com.westly.neribogroup.data.AppData
+import com.westly.neribogroup.data.AppUser
+import com.westly.neribogroup.data.DAY_MILLIS
+import com.westly.neribogroup.data.DiceEngine
+import com.westly.neribogroup.data.DiceKind
+import com.westly.neribogroup.data.IdentityGenerator
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.data.Plan
+import com.westly.neribogroup.data.PresetIdentity
+import com.westly.neribogroup.data.PresetRoll
+import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.TintedButton
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.random.Random
 
 /**
  * One line of the self-check: what was tested, PASS or FAIL, and a short detail.
@@ -341,7 +353,107 @@ object SelfCheck {
             lines.add(CheckLine(verifyName, true, reason, skipped = true))
         }
 
+        lines.addAll(aiChecks(ledger))
         return SelfCheckResult(lines, largest)
+    }
+
+    // ---- Phase 4B items (no network) ----
+
+    private val UUID_TEXT = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+    private fun aiChecks(ledger: Ledger): List<CheckLine> {
+        val lines = ArrayList<CheckLine>()
+        val now = System.currentTimeMillis()
+        val real = ledger.apps.firstOrNull { it.googlePlayEnabled && it.id != SOFTWARE_APP_ID }
+        val testApp: AppData = real?.copy(lastRollDayKey = "") ?: AppData(
+            id = "selfcheck-app",
+            name = "Test app",
+            premiumPrice = 1000L,
+            proPrice = 3000L,
+            adsEnabled = true,
+            googlePlayEnabled = true,
+            users = (1..40).map { i ->
+                AppUser(
+                    id = "t$i",
+                    name = "Test User $i",
+                    email = "test$i@example.com",
+                    plan = if (i > 30) Plan.PREMIUM else Plan.FREE,
+                    addedMillis = now - 10L * DAY_MILLIS,
+                    planExpiryMillis = if (i > 30) now - 2L * DAY_MILLIS else 0L,
+                    planStartMillis = if (i > 30) now - 32L * DAY_MILLIS else 0L,
+                    simulated = true
+                )
+            }
+        )
+        val base: Ledger = if (real != null) {
+            ledger.copy(apps = ledger.apps.map { if (it.id == real.id) testApp else it })
+        } else {
+            Ledger(apps = listOf(testApp))
+        }
+
+        lines.add(
+            runCheck("12. A roll with Claude's faces equals the normal roll") {
+                val visible = DiceEngine.visibleDice(testApp, now)
+                val plain = DiceEngine.roll(base, testApp.id, now, Random(42), null)
+                val drawn = DiceEngine.drawFaces(Random(42), visible)
+                val preset = PresetRoll(IntArray(DiceKind.values().size) { drawn[it] }, emptyList())
+                val withPreset = DiceEngine.roll(base, testApp.id, now, Random(42), preset)
+                val a = UUID_TEXT.replace(LedgerStorage.toJson(plain), "ID")
+                val b = UUID_TEXT.replace(LedgerStorage.toJson(withPreset), "ID")
+                val rolled = plain !== base
+                Pair(rolled && a == b, if (a == b) (if (rolled) "Identical" else "Roll was not possible") else "The texts differ")
+            }
+        )
+
+        lines.add(
+            runCheck("13. Names from Claude are checked") {
+                val domains = IdentityGenerator.DEFAULT_AI_DOMAINS
+                val none = emptySet<String>()
+                fun accept(n: String, e: String, p: String, names: Set<String> = none): PresetIdentity? =
+                    IdentityGenerator.acceptAiIdentity(PresetIdentity(n, e, p), names, none, none, domains)
+                val good = accept("Chinedu Okafor", "chinedu.okafor@example.com", "+2348031234567")
+                val goodOk = good != null && good.phone == "08031234567"
+                val digits = accept("Chinedu 2", "chinedu@example.com", "08031234567") == null
+                val upper = accept("Chinedu Okafor", "Chinedu@example.com", "08031234567") == null
+                val domain = accept("Chinedu Okafor", "chinedu@gmail.com", "08031234567") == null
+                val dup = accept("Chinedu Okafor", "chinedu@example.com", "08031234567", setOf("chinedu okafor")) == null
+                val badPhone = accept("Ngozi Eze", "ngozi@example.com", "12345")?.phone == ""
+                val longName = accept("A".repeat(70), "a@example.com", "") == null
+                val longEmail = accept("Ngozi Eze", "a".repeat(90) + "@example.com", "") == null
+                val all = goodOk && digits && upper && domain && dup && badPhone && longName && longEmail
+                Pair(all, if (all) "8 of 8 cases right" else "A case failed")
+            }
+        )
+
+        lines.add(
+            runCheck("14. A group of jobs is ready at the right time") {
+                val ok = AiJobRules.groupReady(listOf("submitted", "submitted")) &&
+                    !AiJobRules.groupReady(listOf("submitted", "pending")) &&
+                    AiJobRules.groupReady(listOf("submitted", "rejected")) &&
+                    !AiJobRules.groupReady(listOf("claimed"))
+                Pair(ok, if (ok) "All four cases right" else "A case failed")
+            }
+        )
+
+        lines.add(
+            runCheck("15. The dice jobs are well formed") {
+                val jobs = AiJobRules.buildJobs(testApp, 0, now)
+                var problems = 0
+                for (job in jobs) {
+                    val ctx = JSONObject(job.getJSONObject("context").toString())
+                    val schema = JSONObject(job.getJSONObject("result_schema").toString())
+                    if (ctx.toString().toByteArray(Charsets.UTF_8).size > 6000) problems++
+                    if (job.getString("dedupe_key").isEmpty()) problems++
+                    if (ctx.getJSONArray("faceTable").length() != 6) problems++
+                    if (job.getJSONObject("context").getJSONObject("dice").getString("kind") == "NEW") {
+                        val max = schema.getJSONObject("properties").getJSONObject("users").getInt("maxItems")
+                        if (max < 1 || max > 25) problems++
+                    }
+                }
+                Pair(problems == 0 && jobs.isNotEmpty(), jobs.size.toString() + " jobs checked")
+            }
+        )
+        return lines
     }
 
     private fun counts(l: Ledger): String {

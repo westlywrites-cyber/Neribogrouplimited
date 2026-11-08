@@ -410,6 +410,28 @@ class SyncEngine(
     // ---------------------------------------------------------------------------------------------
 
     private val running = AtomicBoolean(false)
+
+    /**
+     * Phase 4B: runs [block] while no sync is running and keeps syncs out until it ends (the same lock
+     * every sync uses). Waits up to [waitMillis] for a running sync to end. Returns null when it could
+     * not get the lock. Blocks: call it from a background thread.
+     */
+    fun <T> runExclusive(waitMillis: Long, block: () -> T): T? {
+        val deadline = System.currentTimeMillis() + waitMillis
+        while (!running.compareAndSet(false, true)) {
+            if (System.currentTimeMillis() >= deadline) return null
+            try {
+                Thread.sleep(200L)
+            } catch (e: InterruptedException) {
+                return null
+            }
+        }
+        try {
+            return block()
+        } finally {
+            running.set(false)
+        }
+    }
     private var consecutiveFailures = 0
 
     /** How long to wait before the next try after a network problem. 0 after a success. 3B-1b schedules it. */

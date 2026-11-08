@@ -70,6 +70,13 @@ class CloudConfig(context: Context) {
             prefs.edit().putString("cloudMode", value.name).commit()
         }
 
+    /** Phase 4B: when true, Claude rolls the Google Play dice. Off until the owner turns it on. */
+    var aiMode: Boolean
+        get() = prefs.getBoolean("aiMode", false)
+        set(value) {
+            prefs.edit().putBoolean("aiMode", value).commit()
+        }
+
     fun saveSession(access: String, refresh: String, expiresAtMillis: Long) {
         prefs.edit()
             .putString("accessToken", access)

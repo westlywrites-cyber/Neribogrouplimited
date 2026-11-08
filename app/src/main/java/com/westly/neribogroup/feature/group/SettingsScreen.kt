@@ -41,7 +41,9 @@ fun SettingsScreen(
     onDarkTheme: (Boolean) -> Unit,
     onFontStep: (Int) -> Unit,
     /** The Cloud card (Phase 3A). Shown first in the list; nothing when not given. */
-    cloud: @Composable () -> Unit = {}
+    cloud: @Composable () -> Unit = {},
+    /** The Claude (AI) card (Phase 4B). Shown under the Cloud card; nothing when not given. */
+    ai: @Composable () -> Unit = {}
 ) {
     BackHandler { onBack() }
 
@@ -66,6 +68,10 @@ fun SettingsScreen(
         ) {
             item(key = "cloud") {
                 cloud()
+            }
+
+            item(key = "ai") {
+                ai()
             }
 
             item(key = "theme") {

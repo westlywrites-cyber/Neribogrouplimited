@@ -14,6 +14,20 @@ enum class DiceKind { NEW, ACTIVE, PREMIUM, PRO, RENEW, LOST, ADS }
 
 enum class RollBlock { OK, ALREADY_ROLLED, DATE_WENT_BACK }
 
+/** One made-up person offered by Claude for the NEW dice. It is checked before it is used. */
+class PresetIdentity(val name: String, val email: String, val phone: String)
+
+/**
+ * Faces and identities chosen by the AI. [faces] is indexed by DiceKind.ordinal (size 7, each -1..5);
+ * -1 means "no answer for this dice". [identities] are candidates for the NEW dice, in order.
+ * [allowedDomains] are the only email domains an identity may use.
+ */
+class PresetRoll(
+    val faces: IntArray,
+    val identities: List<PresetIdentity>,
+    val allowedDomains: List<String> = IdentityGenerator.DEFAULT_AI_DOMAINS
+)
+
 /**
  * The daily dice. Every dice shows 0 to 5. 0 always means nothing happens.
  * 1 to 5 are bigger and bigger ranges that depend on how big the app is.
@@ -134,12 +148,133 @@ object DiceEngine {
     private fun plural(count: Int, one: String, many: String): String =
         if (count == 1) "1 $one" else "$count $many"
 
+    /** Draws one random face (0 to 5) for every visible dice, in dice order. -1 for a hidden dice. */
+    fun drawFaces(random: Random, visible: List<DiceKind>): List<Int> =
+        DiceKind.values().map { kind -> if (kind in visible) random.nextInt(0, 6) else -1 }
+
+    /** New users for a roll: the names Claude gave (after checks), then made-up ones for the rest. */
+    private fun makeNewUsers(
+        count: Int,
+        ledger: Ledger,
+        now: Long,
+        dayStart: Long,
+        random: Random,
+        preset: PresetRoll?
+    ): List<AppUser> {
+        val given = preset?.identities
+        if (preset == null || given == null || given.isEmpty()) {
+            return IdentityGenerator.make(count, ledger, now, dayStart, random)
+        }
+        val accepted = IdentityGenerator.acceptAiIdentities(
+            given, count, ledger, now, dayStart, random, preset.allowedDomains
+        )
+        val rest = count - accepted.size
+        val generated = if (rest > 0) {
+            IdentityGenerator.make(rest, ledger, now, dayStart, random, accepted)
+        } else {
+            emptyList()
+        }
+        return accepted + generated
+    }
+
+    /** The largest number of new users the NEW dice (face 5) could create for this app today. */
+    fun maxNewUsers(app: AppData, now: Long = System.currentTimeMillis()): Int {
+        val factor = app.campaign?.takeIf { it.isActiveOn(dayKey(now)) }?.size?.factor ?: 1.0
+        val scale = max(0.1, sqrt(app.totalUsers / 1000.0))
+        val range = NEW_RANGES[NEW_RANGES.size - 1]
+        val low = max(1, (range.first * scale).roundToInt())
+        val high = max(low, (range.second * scale).roundToInt())
+        return min(MAX_NEW_PER_ROLL, max(1, (high * factor).roundToInt()))
+    }
+
+    /** One plain sentence about what the dice controls. */
+    fun diceMeaning(kind: DiceKind): String = when (kind) {
+        DiceKind.NEW -> "Decides how many new Free users join the app today."
+        DiceKind.ACTIVE -> "Decides how many of the app's users are active today."
+        DiceKind.PREMIUM -> "Decides how many Free users upgrade to Premium today."
+        DiceKind.PRO -> "Decides how many Free users upgrade to Pro today."
+        DiceKind.RENEW -> "Decides how many users whose plan ended renew it today."
+        DiceKind.LOST -> "Decides how many users whose plan ended do not renew and go back to Free."
+        DiceKind.ADS -> "Decides how much Google Ads money the app earns today."
+    }
+
+    /** The name of the dice as the owner knows it (colour and job). */
+    fun diceTitle(kind: DiceKind): String = when (kind) {
+        DiceKind.NEW -> "Green dice - new users"
+        DiceKind.ACTIVE -> "Blue dice - active users"
+        DiceKind.PREMIUM -> "Yellow dice - Premium upgrades"
+        DiceKind.PRO -> "Purple dice - Pro upgrades"
+        DiceKind.RENEW -> "Orange dice - renewals"
+        DiceKind.LOST -> "Red dice - plans not renewed"
+        DiceKind.ADS -> "Gold dice - Google Ads"
+    }
+
+    private fun trimNumber(value: Double): String {
+        val text = when {
+            value >= 10.0 -> String.format(java.util.Locale.US, "%.0f", value)
+            value >= 1.0 -> String.format(java.util.Locale.US, "%.1f", value)
+            else -> String.format(java.util.Locale.US, "%.2f", value)
+        }
+        return if (text.contains('.')) text.trimEnd('0').trimEnd('.') else text
+    }
+
+    private fun percentRange(range: Pair<Double, Double>, multiplier: Double): String =
+        trimNumber(range.first * multiplier * 100.0) + " to " + trimNumber(range.second * multiplier * 100.0) + " %"
+
+    /**
+     * Six one-line effects (face 0 to 5) of one dice for this app today, made from the same numbers
+     * the roll uses. The ranges are the dice's own; nothing here changes the app.
+     */
+    fun faceTable(app: AppData, kind: DiceKind, now: Long): List<String> {
+        val factor = app.campaign?.takeIf { it.isActiveOn(dayKey(now)) }?.size?.factor ?: 1.0
+        val boost = 1.0 + (factor - 1.0) / 2.0
+        val scale = max(0.1, sqrt(app.totalUsers / 1000.0))
+        val rows = ArrayList<String>()
+        rows.add("Nothing happens.")
+        for (face in 1..5) {
+            val index = face - 1
+            val text = when (kind) {
+                DiceKind.NEW -> {
+                    val range = NEW_RANGES[index]
+                    val low = max(1, (range.first * scale).roundToInt())
+                    val high = max(low, (range.second * scale).roundToInt())
+                    val lowF = min(MAX_NEW_PER_ROLL, max(1, (low * factor).roundToInt()))
+                    val highF = min(MAX_NEW_PER_ROLL, max(lowF, (high * factor).roundToInt()))
+                    "About $lowF to $highF new users join."
+                }
+                DiceKind.ACTIVE ->
+                    "About " + percentRange(ACTIVE_SHARE[index], boost) + " of all users are active (never fewer than today's new users)."
+                DiceKind.PREMIUM ->
+                    "About " + percentRange(UPGRADE_SHARE[index], factor) + " of Free users upgrade to Premium (at least 1 person)."
+                DiceKind.PRO ->
+                    "About " + percentRange(UPGRADE_SHARE[index], factor * 0.5) + " of the Free users left upgrade to Pro (at least 1 person)."
+                DiceKind.RENEW ->
+                    "About " + percentRange(RENEW_SHARE[index], 1.0) + " of the people whose plan ended renew (at least 1 person)."
+                DiceKind.LOST ->
+                    "About " + percentRange(LOST_SHARE[index], 1.0) + " of the people whose plan ended do not renew."
+                DiceKind.ADS -> {
+                    val range = ADS_RATE[index]
+                    "About " + trimNumber(range.first) + " to " + trimNumber(range.second) +
+                        " naira per Free user, before Google's share."
+                }
+            }
+            rows.add(text)
+        }
+        return rows
+    }
+
     /**
      * Rolls every dice of one app for today and returns the new ledger.
      * Returns the ledger unchanged if the app is missing or today's roll is not allowed.
      * Money goes only into the app's Google Play Balance, never straight into profit.
      */
-    fun roll(ledger: Ledger, appId: String, now: Long, random: Random = Random.Default): Ledger {
+    fun roll(
+        ledger: Ledger,
+        appId: String,
+        now: Long,
+        random: Random = Random.Default,
+        preset: PresetRoll? = null
+    ): Ledger {
         val app = ledger.apps.firstOrNull { it.id == appId } ?: return ledger
         if (!app.googlePlayEnabled) return ledger
         if (rollBlock(app, now) != RollBlock.OK) return ledger
@@ -150,8 +285,12 @@ object DiceEngine {
         val factor = campaignToday?.size?.factor ?: 1.0
 
         val visible = visibleDice(app, now)
+        // The random faces are always drawn, so the random numbers used later are the same with or
+        // without a preset. A preset face only replaces the drawn face of a visible dice.
+        val drawn = drawFaces(random, visible)
         val faces = DiceKind.values().map { kind ->
-            if (kind in visible) random.nextInt(0, 6) else -1
+            val given = if (preset != null && kind in visible) preset.faces.getOrElse(kind.ordinal) { -1 } else -1
+            if (given in 0..5) given else drawn[kind.ordinal]
         }
         fun face(kind: DiceKind): Int = faces[kind.ordinal]
         fun timeToday(): Long = dayStart + random.nextLong(max(1L, now - dayStart))
@@ -176,7 +315,7 @@ object DiceEngine {
         // New users (green). They are Free users with a made-up name, email and phone.
         val newCount = newUsersFor(face(DiceKind.NEW), app.totalUsers, factor, random)
         val newUsers = if (newCount > 0) {
-            IdentityGenerator.make(newCount, ledger, now, dayStart, random)
+            makeNewUsers(newCount, ledger, now, dayStart, random, preset)
         } else {
             emptyList()
         }
@@ -510,7 +649,14 @@ object IdentityGenerator {
      * Makes [count] new Free users. Names, emails and phone numbers are checked against every user
      * in every app, and against each other, so none repeats.
      */
-    fun make(count: Int, ledger: Ledger, now: Long, dayStart: Long, random: Random): List<AppUser> {
+    fun make(
+        count: Int,
+        ledger: Ledger,
+        now: Long,
+        dayStart: Long,
+        random: Random,
+        extra: List<AppUser> = emptyList()
+    ): List<AppUser> {
         val names = HashSet<String>()
         val emails = HashSet<String>()
         val phones = HashSet<String>()
@@ -521,6 +667,12 @@ object IdentityGenerator {
                 val digits = digitsOf(user.phone)
                 if (digits.isNotEmpty()) phones.add(digits)
             }
+        }
+        for (user in extra) {
+            names.add(user.name.trim().lowercase())
+            emails.add(user.email.trim().lowercase())
+            val digits = digitsOf(user.phone)
+            if (digits.isNotEmpty()) phones.add(digits)
         }
         val result = ArrayList<AppUser>()
         repeat(count) {
@@ -535,6 +687,112 @@ object IdentityGenerator {
                     name = name,
                     email = email,
                     phone = phone,
+                    plan = Plan.FREE,
+                    addedMillis = dayStart + random.nextLong(max(1L, now - dayStart)),
+                    simulated = true
+                )
+            )
+        }
+        return result
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Names, emails and phone numbers that Claude wrote (Phase 4B). Always checked before use.
+    // -----------------------------------------------------------------------------------------
+
+    /** The only email domains Claude may use until the owner changes them in Settings. */
+    val DEFAULT_AI_DOMAINS: List<String> = listOf("example.com", "example.org", "example.net")
+
+    private val EMAIL_REGEX = Regex("^[a-z0-9._-]+@[a-z0-9.-]+$")
+
+    /** The last 10 digits of a phone number, so +234 and 0 forms of the same number match. */
+    fun phoneKey(text: String): String {
+        val digits = digitsOf(text)
+        return if (digits.length >= 10) digits.takeLast(10) else digits
+    }
+
+    /**
+     * Cleans one candidate from Claude. Returns the cleaned identity, or null when the name or email
+     * is not acceptable. A bad phone number does not reject the person: the phone becomes empty.
+     * [takenNames] and [takenEmails] are lowercase; [takenPhones] holds [phoneKey] values.
+     */
+    fun acceptAiIdentity(
+        candidate: PresetIdentity,
+        takenNames: Set<String>,
+        takenEmails: Set<String>,
+        takenPhones: Set<String>,
+        allowedDomains: List<String>
+    ): PresetIdentity? {
+        val name = candidate.name.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+        if (name.length < 3 || name.length > 60) return null
+        if (!name.all { it.isLetter() || it == ' ' || it == '\'' || it == '-' || it == '.' }) return null
+        if (!name.any { it.isLetter() }) return null
+
+        val email = candidate.email.trim()
+        if (email.length > 80 || email != email.lowercase()) return null
+        if (!EMAIL_REGEX.matches(email)) return null
+        val domain = email.substringAfter('@')
+        val domains = allowedDomains.map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        if (domains.none { it == domain }) return null
+
+        if (name.lowercase() in takenNames) return null
+        if (email in takenEmails) return null
+
+        val phone = cleanPhone(candidate.phone)
+        if (phone.isNotEmpty() && phoneKey(phone) in takenPhones) return null
+        return PresetIdentity(name, email, phone)
+    }
+
+    /** "0XXXXXXXXXX" (11 digits) for a good Nigerian mobile number, otherwise an empty text. */
+    private fun cleanPhone(raw: String): String {
+        val compact = raw.trim().filter { it != ' ' && it != '-' && it != '(' && it != ')' }
+        val body = when {
+            compact.startsWith("+234") -> compact.substring(4)
+            compact.startsWith("234") && compact.length == 13 -> compact.substring(3)
+            compact.startsWith("0") -> compact.substring(1)
+            else -> return ""
+        }
+        if (body.length != 10 || !body.all { it in '0'..'9' }) return ""
+        if (body[0] != '7' && body[0] != '8' && body[0] != '9') return ""
+        return "0$body"
+    }
+
+    /**
+     * Turns up to [limit] of Claude's candidates into Free dice users. A candidate that fails the
+     * checks (or repeats a name, email or phone of any user, or of an earlier candidate) is skipped.
+     */
+    fun acceptAiIdentities(
+        candidates: List<PresetIdentity>,
+        limit: Int,
+        ledger: Ledger,
+        now: Long,
+        dayStart: Long,
+        random: Random,
+        allowedDomains: List<String>
+    ): List<AppUser> {
+        val names = HashSet<String>()
+        val emails = HashSet<String>()
+        val phones = HashSet<String>()
+        for (app in ledger.apps) {
+            for (user in app.users) {
+                names.add(user.name.trim().lowercase())
+                emails.add(user.email.trim().lowercase())
+                val key = phoneKey(user.phone)
+                if (key.isNotEmpty()) phones.add(key)
+            }
+        }
+        val result = ArrayList<AppUser>()
+        for (candidate in candidates) {
+            if (result.size >= limit) break
+            val ok = acceptAiIdentity(candidate, names, emails, phones, allowedDomains) ?: continue
+            names.add(ok.name.lowercase())
+            emails.add(ok.email)
+            if (ok.phone.isNotEmpty()) phones.add(phoneKey(ok.phone))
+            result.add(
+                AppUser(
+                    name = ok.name,
+                    email = ok.email,
+                    phone = ok.phone,
                     plan = Plan.FREE,
                     addedMillis = dayStart + random.nextLong(max(1L, now - dayStart)),
                     simulated = true

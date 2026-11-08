@@ -46,7 +46,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.westly.neribogroup.cloud.AiRollKind
+import com.westly.neribogroup.cloud.AiRollState
 import com.westly.neribogroup.data.AppData
+import com.westly.neribogroup.data.DiceEngine
+import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.Entry
@@ -87,7 +91,13 @@ fun AppDashboardScreen(
     /** Company expenses charged by this (Google Play) app, newest first is applied here. */
     chargedToCompany: List<Entry>,
     onEnableGooglePlay: () -> Unit,
-    onAddCompanyExpense: (String, Long) -> Unit
+    onAddCompanyExpense: (String, Long) -> Unit,
+    /** Phase 4B: true when AI mode is ON. The dice screen is then replaced by the "Today's roll" card. */
+    aiOn: Boolean = false,
+    aiStateFor: (Long) -> AiRollState = { AiRollState(AiRollKind.NO_JOBS) },
+    aiChecking: Boolean = false,
+    onAiCheck: () -> Unit = {},
+    onAiRollBuiltIn: () -> Unit = {}
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(app) }
@@ -752,7 +762,18 @@ fun AppDashboardScreen(
                             }
                         }
 
-                        if (app.googlePlayEnabled) {
+                        if (app.googlePlayEnabled && aiOn) {
+                            item {
+                                AiRollCard(
+                                    state = aiStateFor(now),
+                                    now = now,
+                                    canRollBuiltIn = DiceEngine.rollBlock(app, now) == RollBlock.OK,
+                                    checking = aiChecking,
+                                    onCheck = onAiCheck,
+                                    onRollBuiltIn = onAiRollBuiltIn
+                                )
+                            }
+                        } else if (app.googlePlayEnabled) {
                             item { SectionTitle("Daily dice") }
                             item { DicePanel(app = app, now = now, onRoll = onRoll) }
                         }

@@ -9,6 +9,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import com.westly.neribogroup.cloud.AiCounts
+import com.westly.neribogroup.cloud.AiDone
+import com.westly.neribogroup.cloud.AiJobEngine
+import com.westly.neribogroup.cloud.AiJobHost
+import com.westly.neribogroup.cloud.AiJobRules
+import com.westly.neribogroup.cloud.AiRollState
+import com.westly.neribogroup.cloud.AiRunResult
+import com.westly.neribogroup.cloud.AiSettings
+import com.westly.neribogroup.cloud.AiSettingsOutcome
+import com.westly.neribogroup.cloud.JobRollResult
 import com.westly.neribogroup.cloud.AuthResult
 import com.westly.neribogroup.cloud.BackupOutcome
 import com.westly.neribogroup.cloud.CloudConfig
@@ -31,6 +41,9 @@ import com.westly.neribogroup.data.Entry
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.data.PresetRoll
+import com.westly.neribogroup.data.RollBlock
+import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.data.ProjectStage
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
@@ -49,6 +62,7 @@ import com.westly.neribogroup.ui.formatDate
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.random.Random
 
@@ -254,6 +268,229 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---- Claude (AI) — Phase 4B. Nothing here runs unless AI mode is ON and the cloud is linked. ----
+
+    private val aiEngine = AiJobEngine(application, cloudConfig, cloudApi, cloudEngine)
+
+    /** The owner's AI mode switch (kept on the phone). */
+    var aiMode by mutableStateOf(cloudConfig.aiMode)
+        private set
+
+    /** True while a pass over the Claude jobs runs. */
+    var aiRunning by mutableStateOf(false)
+        private set
+
+    /** A short calm line about the last pass (shown in the Claude (AI) card). */
+    var aiMessage by mutableStateOf("")
+        private set
+
+    /** A one-time text to show as a toast ("Claude rolled ..."). Empty when there is nothing to say. */
+    var aiNotice by mutableStateOf("")
+        private set
+
+    /** True when the last pass could not reach the cloud. */
+    var aiOffline by mutableStateOf(false)
+        private set
+
+    /** Per app: dice answered out of dice waiting (from the last pass). */
+    var aiCounts by mutableStateOf<Map<String, AiCounts>>(emptyMap())
+        private set
+
+    /** Per app: how its last AI-mode roll ended (see AiDone). */
+    var aiDoneMap by mutableStateOf<Map<String, String>>(startSync?.aiDone ?: emptyMap())
+        private set
+
+    var aiWaiting by mutableStateOf(0)
+        private set
+
+    var aiAnswered by mutableStateOf(0)
+        private set
+
+    /** The AI settings kept in the cloud, once read. */
+    var aiSettings by mutableStateOf<AiSettings?>(null)
+        private set
+
+    var aiSettingsMessage by mutableStateOf("")
+        private set
+
+    var aiSettingsBusy by mutableStateOf(false)
+        private set
+
+    /** AI mode counts only while the cloud is linked and signed in. Otherwise the app is as in Phase 3. */
+    val aiActive: Boolean
+        get() = aiMode && cloudMode == CloudMode.ON && cloudSignedIn && cloudInitialized
+
+    /** Rolls an app on the main thread with the answers of Claude. Saves ledger.json before anything else. */
+    private val jobHost = object : AiJobHost {
+        override fun currentLedger(): Ledger = ledger
+
+        override fun rollForJobs(appId: String, preset: PresetRoll?, wallNow: Long): JobRollResult {
+            val latch = CountDownLatch(1)
+            val outcome = AtomicReference(JobRollResult.FAILED)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    val target = current.apps.firstOrNull { it.id == appId }
+                    val now = maxOf(wallNow, current.casesClockMillis)
+                    if (target == null || !target.googlePlayEnabled ||
+                        DiceEngine.rollBlock(target, now) != RollBlock.OK
+                    ) {
+                        outcome.set(JobRollResult.BLOCKED)
+                    } else {
+                        val rolled = DiceEngine.roll(current, appId, now, Random.Default, preset)
+                        if (rolled === current) {
+                            outcome.set(JobRollResult.BLOCKED)
+                        } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(rolled))) {
+                            ledger = rolled
+                            onLocalChange()
+                            outcome.set(JobRollResult.ROLLED)
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return if (finished) outcome.get() else JobRollResult.FAILED
+        }
+    }
+
+    /** The AI mode switch. It can be turned on only when the cloud is linked and signed in. */
+    fun updateAiMode(on: Boolean) {
+        if (on) {
+            if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn || !cloudInitialized) {
+                aiMessage = "Connect to the cloud first (the Cloud card above)."
+                return
+            }
+            cloudConfig.aiMode = true
+            aiMode = true
+            aiMessage = ""
+            loadAiSettings()
+            runAiJobs()
+        } else {
+            cloudConfig.aiMode = false
+            aiMode = false
+            aiMessage = ""
+        }
+    }
+
+    /** Puts today's jobs in the cloud, reads Claude's answers and rolls the apps that are ready. */
+    fun runAiJobs() {
+        if (!aiActive || aiRunning || cloudWorking) return
+        aiRunning = true
+        thread(start = true) {
+            val result = try {
+                aiEngine.run(jobHost)
+            } catch (e: Throwable) {
+                AiRunResult(ran = true, message = "Claude's jobs had a problem. Your data is safe.")
+            }
+            mainHandler.post { finishAiRun(result) }
+        }
+    }
+
+    private fun finishAiRun(result: AiRunResult) {
+        aiRunning = false
+        if (result.ran) {
+            aiOffline = result.offline
+            if (result.complete) {
+                aiCounts = result.counts
+                aiWaiting = result.waiting
+                aiAnswered = result.answered
+            }
+            aiMessage = result.message
+            aiDoneMap = SyncStore.loadIfExists(getApplication())?.aiDone ?: aiDoneMap
+            if (result.notices.isNotEmpty()) aiNotice = result.notices.joinToString("\n")
+        }
+        // A roll changed the ledger: send it to the cloud now that the job pass has let go of the sync lock.
+        if (result.rolledAny) autoSync()
+    }
+
+    fun consumeAiNotice() {
+        aiNotice = ""
+    }
+
+    /** The state of the "Today's roll" card of one app. */
+    fun aiRollStateFor(app: AppData, nowMillis: Long): AiRollState {
+        val protectedNow = maxOf(nowMillis, ledger.casesClockMillis)
+        return AiJobRules.stateFor(app, dayKey(protectedNow), aiDoneMap[app.id], aiCounts[app.id], aiOffline)
+    }
+
+    /** How many dice jobs were applied today (for the status line). */
+    fun aiAppliedToday(): Int {
+        val today = dayKey(maxOf(System.currentTimeMillis(), ledger.casesClockMillis))
+        return aiDoneMap.values.mapNotNull { AiDone.parse(it) }.filter { it.dayKey == today }.sumOf { it.jobs }
+    }
+
+    /** "Roll with built-in dice instead": the old local roll, then the waiting jobs of that app are dropped. */
+    fun aiRollBuiltIn(appId: String) {
+        if (appId == SOFTWARE_APP_ID) return
+        val before = ledger.apps.firstOrNull { it.id == appId }?.lastRollDayKey ?: return
+        rollApp(appId)
+        val after = ledger.apps.firstOrNull { it.id == appId }?.lastRollDayKey ?: return
+        if (after == before) return
+        val wall = System.currentTimeMillis()
+        aiDoneMap = aiDoneMap + (appId to AiDone.encode(dayKey(wall), wall, false, 0))
+        if (!aiActive) return
+        thread(start = true) {
+            runCatching { aiEngine.afterBuiltInRoll(appId, wall, wall) }
+            mainHandler.post {
+                aiDoneMap = SyncStore.loadIfExists(getApplication())?.aiDone ?: aiDoneMap
+            }
+        }
+    }
+
+    /** Reads the AI settings from the cloud. */
+    fun loadAiSettings() {
+        if (aiSettingsBusy) return
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) return
+        aiSettingsBusy = true
+        aiSettingsMessage = ""
+        thread(start = true) {
+            val out = try {
+                aiEngine.fetchSettings()
+            } catch (e: Throwable) {
+                AiSettingsOutcome(null, "Could not read the AI settings. Try again later.")
+            }
+            mainHandler.post {
+                aiSettingsBusy = false
+                val got = out.settings
+                if (got != null) aiSettings = got
+                aiSettingsMessage = out.message
+            }
+        }
+    }
+
+    /** Saves the AI settings in the cloud. */
+    fun saveAiSettings(wanted: AiSettings) {
+        if (aiSettingsBusy) return
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
+            aiSettingsMessage = "Connect to the cloud first."
+            return
+        }
+        aiSettingsBusy = true
+        aiSettingsMessage = ""
+        thread(start = true) {
+            val out = try {
+                aiEngine.saveSettings(wanted)
+            } catch (e: Throwable) {
+                AiSettingsOutcome(null, "Could not save the AI settings. Try again later.")
+            }
+            mainHandler.post {
+                aiSettingsBusy = false
+                val got = out.settings
+                if (got != null) {
+                    aiSettings = got
+                    aiSettingsMessage = "Saved ✔"
+                } else {
+                    aiSettingsMessage = out.message
+                }
+            }
+        }
+    }
 
     init {
         cloudStatus = computeCloudStatus()
@@ -804,6 +1041,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             cloudUnsyncedDocs = result.unsyncedDocs
         }
         refreshCloudState()
+        // Phase 4B: after a good sync, look at the Claude jobs (does nothing when AI mode is off).
+        if (result.ran && result.status == CloudStatus.UP_TO_DATE) runAiJobs()
         if (!appInForeground || cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
             syncAgainAfter = false
             return
