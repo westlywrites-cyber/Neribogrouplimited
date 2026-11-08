@@ -24,14 +24,21 @@ object LedgerStorage {
     }
 
     fun save(context: Context, ledger: Ledger) {
-        runCatching {
-            val file = File(context.filesDir, FILE_NAME)
-            val temp = File(context.filesDir, "$FILE_NAME.tmp")
-            temp.writeText(toJson(ledger))
-            if (!temp.renameTo(file)) {
-                file.writeText(temp.readText())
-                temp.delete()
-            }
+        runCatching { writeAtomic(context, toJson(ledger)) }
+    }
+
+    /** Saves ledger text exactly as given, with the same atomic write as [save]. True when it was written. */
+    fun saveRawText(context: Context, text: String): Boolean {
+        return runCatching { writeAtomic(context, text) }.isSuccess
+    }
+
+    private fun writeAtomic(context: Context, text: String) {
+        val file = File(context.filesDir, FILE_NAME)
+        val temp = File(context.filesDir, "$FILE_NAME.tmp")
+        temp.writeText(text)
+        if (!temp.renameTo(file)) {
+            file.writeText(temp.readText())
+            temp.delete()
         }
     }
 

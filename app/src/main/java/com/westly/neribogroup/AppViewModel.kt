@@ -8,6 +8,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import com.westly.neribogroup.cloud.AuthResult
+import com.westly.neribogroup.cloud.CloudConfig
+import com.westly.neribogroup.cloud.CloudMode
+import com.westly.neribogroup.cloud.LinkOutcome
+import com.westly.neribogroup.cloud.SupabaseApi
+import com.westly.neribogroup.cloud.SyncEngine
+import com.westly.neribogroup.cloud.SyncStore
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Entry
 import com.westly.neribogroup.data.CampaignSize
@@ -23,6 +30,9 @@ import com.westly.neribogroup.data.markCasePaid
 import com.westly.neribogroup.data.withCaseNote
 import com.westly.neribogroup.data.withClockAtLeast
 import com.westly.neribogroup.data.withSoftwareApp
+import com.westly.neribogroup.feature.cloud.CheckLine
+import com.westly.neribogroup.feature.cloud.LinkDialog
+import com.westly.neribogroup.feature.cloud.SelfCheck
 import com.westly.neribogroup.ui.formatDate
 import kotlin.concurrent.thread
 import kotlin.random.Random
@@ -85,6 +95,325 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val fixed = step.coerceIn(0, 5)
         fontStep = fixed
         prefs.edit().putInt("font_step", fixed).apply()
+    }
+
+    // ---- Cloud (Phase 3A: login and the first upload only; nothing here runs unless the owner connects) ----
+
+    private val cloudConfig = CloudConfig(application)
+    private val cloudApi = SupabaseApi(cloudConfig)
+    private val cloudEngine = SyncEngine(application, cloudConfig, cloudApi)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val startSync = SyncStore.loadIfExists(application)
+
+    var cloudMode by mutableStateOf(cloudConfig.cloudMode)
+        private set
+
+    var cloudSignedIn by mutableStateOf(cloudConfig.signedIn)
+        private set
+
+    var cloudEmail by mutableStateOf(cloudConfig.email)
+        private set
+
+    /** True once the first upload (or the download of the cloud data) was verified on this phone. */
+    var cloudInitialized by mutableStateOf(startSync?.initialized ?: false)
+        private set
+
+    var cloudLastSyncMillis by mutableStateOf(startSync?.lastSyncMillis ?: 0L)
+        private set
+
+    /** The last plain-words problem of the link (also kept in cloud_sync.json). */
+    var cloudProblem by mutableStateOf(startSync?.lastError ?: "")
+        private set
+
+    /** True while any cloud task runs (sign-in, link, download, replace). Ignores a second tap. */
+    var cloudWorking by mutableStateOf(false)
+        private set
+
+    /** True while the Login / progress screen is showing (opened from the Cloud card in Settings). */
+    var showLogin by mutableStateOf(false)
+        private set
+
+    /** The error line of the sign-in form. */
+    var loginMessage by mutableStateOf("")
+        private set
+
+    /** -1 = nothing running; 0 safety copy, 1 uploading or downloading, 2 checking, 3 done. */
+    var linkStep by mutableStateOf(-1)
+        private set
+
+    var linkIsDownload by mutableStateOf(false)
+        private set
+
+    /** The result line of the link: a problem in plain words, or the success line. */
+    var linkMessage by mutableStateOf("")
+        private set
+
+    var linkOk by mutableStateOf(false)
+        private set
+
+    var linkDialog by mutableStateOf(LinkDialog.NONE)
+        private set
+
+    var selfCheckLines by mutableStateOf<List<CheckLine>?>(null)
+        private set
+
+    var selfCheckRunning by mutableStateOf(false)
+        private set
+
+    /** A warning line for the Cloud card (a very large document). Empty when there is nothing to say. */
+    var cloudWarning by mutableStateOf("")
+        private set
+
+    fun cloudSavedUrl(): String = cloudConfig.projectUrl
+
+    fun cloudSavedAnonKey(): String = cloudConfig.anonKey
+
+    /** The saved URL when this phone is already linked, else "". */
+    fun cloudLinkedUrl(): String = if (cloudInitialized) cloudConfig.projectUrl else ""
+
+    fun cloudDeviceId(): String = cloudConfig.deviceIdIfAny
+
+    fun openLogin() {
+        loginMessage = ""
+        showLogin = true
+    }
+
+    /** Leaves the login screen. Ignored while a cloud task is running. */
+    fun closeLogin() {
+        if (cloudWorking) return
+        showLogin = false
+        loginMessage = ""
+        if (linkOk) {
+            linkOk = false
+            linkStep = -1
+            linkMessage = ""
+        }
+    }
+
+    /** Signs in and, on a phone that is not linked yet, runs the first-link protocol. */
+    fun startSignIn(url: String, anonKey: String, email: String, password: String, resetLink: Boolean) {
+        if (cloudWorking) return
+        val cleanUrl = CloudConfig.normalizeUrl(url)
+        if (cleanUrl == null || !cleanUrl.contains('.')) {
+            loginMessage = "That URL does not look right. It should start with https://"
+            return
+        }
+        cloudWorking = true
+        loginMessage = ""
+        linkMessage = ""
+        linkOk = false
+        linkStep = -1
+        linkIsDownload = false
+        val snapshot = ledger
+        val cleanEmail = email.trim()
+        thread(start = true) {
+            var outcome: LinkOutcome? = null
+            var message = ""
+            var restored = false
+            try {
+                if (resetLink) cloudEngine.resetLinkState()
+                cloudConfig.projectUrl = cleanUrl
+                cloudConfig.anonKey = anonKey
+                cloudConfig.email = cleanEmail
+                when (val auth = cloudApi.signIn(cleanEmail, password)) {
+                    AuthResult.Ok -> {
+                        if (cloudEngine.loadSync().initialized) {
+                            // Already linked on this phone: only the session comes back. No second upload.
+                            cloudConfig.cloudMode = CloudMode.ON
+                            restored = true
+                            outcome = LinkOutcome.Done
+                        } else {
+                            cloudConfig.cloudMode = CloudMode.LINKING
+                            mainHandler.post { cloudMode = CloudMode.LINKING; cloudSignedIn = true }
+                            outcome = cloudEngine.link(snapshot) { step -> postStep(step) }
+                        }
+                    }
+                    AuthResult.InvalidCredentials -> message = "Email or password is not right."
+                    AuthResult.Offline -> message = "No internet. Try again when you are online."
+                    is AuthResult.ServerError -> message = "The cloud had a problem (code " + auth.code + "). Try again."
+                }
+            } catch (e: Throwable) {
+                message = "Something went wrong. Your data on the phone is untouched."
+            }
+            val finalOutcome = outcome
+            val finalMessage = message
+            val wasRestored = restored
+            mainHandler.post { finishCloudTask(finalOutcome, finalMessage, wasRestored) }
+        }
+    }
+
+    /** "Try again" / resume: runs the first-link protocol again for a signed-in phone. */
+    fun retryLink() {
+        if (cloudWorking) return
+        if (!cloudSignedIn) {
+            openLogin()
+            return
+        }
+        showLogin = true
+        val snapshot = ledger
+        runCloudTask { onStep -> cloudEngine.link(snapshot, onStep) }
+    }
+
+    /** The owner chose "Use cloud data" (case B or C). */
+    fun useCloudData() {
+        if (cloudWorking) return
+        runCloudTask { onStep -> cloudEngine.useCloudData(onStep) }
+    }
+
+    /** Case C: the owner typed REPLACE. */
+    fun confirmReplaceCloud() {
+        if (cloudWorking) return
+        val snapshot = ledger
+        runCloudTask { onStep -> cloudEngine.replaceCloudWithPhone(snapshot, onStep) }
+    }
+
+    fun askReplaceCloud() {
+        linkDialog = LinkDialog.REPLACE_CONFIRM
+    }
+
+    fun backToCaseCChoice() {
+        linkDialog = LinkDialog.CASE_C
+    }
+
+    /** "Keep phone data" / "Cancel": nothing is linked, the session is closed, the phone data is untouched. */
+    fun keepPhoneData() {
+        if (cloudWorking) return
+        cloudWorking = true
+        linkDialog = LinkDialog.NONE
+        thread(start = true) {
+            runCatching { cloudEngine.signOutLocal() }
+            mainHandler.post {
+                cloudWorking = false
+                linkStep = -1
+                linkMessage = ""
+                refreshCloudState()
+            }
+        }
+    }
+
+    /** Signs out. Local data stays; the cloud copy is kept. */
+    fun signOutCloud() {
+        if (cloudWorking) return
+        cloudWorking = true
+        thread(start = true) {
+            runCatching { cloudEngine.signOutLocal() }
+            mainHandler.post {
+                cloudWorking = false
+                linkOk = false
+                linkStep = -1
+                linkMessage = ""
+                refreshCloudState()
+            }
+        }
+    }
+
+    /** Runs the self-check on the real ledger in the background and shows the PASS/FAIL lines. */
+    fun runSelfCheck() {
+        if (selfCheckRunning || cloudWorking) return
+        selfCheckRunning = true
+        val snapshot = ledger
+        val online = cloudSignedIn && cloudInitialized
+        thread(start = true) {
+            val result = try {
+                val sync = if (online) cloudEngine.loadSync() else null
+                SelfCheck.run(snapshot, cloudApi, sync, online)
+            } catch (e: Throwable) {
+                null
+            }
+            mainHandler.post {
+                selfCheckRunning = false
+                if (result == null) {
+                    selfCheckLines = listOf(CheckLine("Self-check", false, "It could not run. Your data is untouched."))
+                } else {
+                    selfCheckLines = result.lines
+                    setWarningFor(result.largestDocBytes)
+                }
+                refreshCloudState()
+            }
+        }
+    }
+
+    fun closeSelfCheck() {
+        selfCheckLines = null
+    }
+
+    private fun runCloudTask(task: ((Int) -> Unit) -> LinkOutcome) {
+        cloudWorking = true
+        linkDialog = LinkDialog.NONE
+        linkMessage = ""
+        linkOk = false
+        linkStep = 0
+        linkIsDownload = false
+        thread(start = true) {
+            val outcome = try {
+                task { step -> postStep(step) }
+            } catch (e: Throwable) {
+                LinkOutcome.Failed("Something went wrong. Your data on the phone is untouched.")
+            }
+            mainHandler.post { finishCloudTask(outcome, "", false) }
+        }
+    }
+
+    private fun postStep(step: Int) {
+        mainHandler.post {
+            if (step == SyncEngine.STEP_DOWNLOAD) {
+                linkIsDownload = true
+                linkStep = SyncEngine.STEP_UPLOAD
+            } else {
+                linkStep = step
+            }
+        }
+    }
+
+    private fun finishCloudTask(outcome: LinkOutcome?, message: String, restored: Boolean) {
+        cloudWorking = false
+        if (message.isNotEmpty()) loginMessage = message
+        when (outcome) {
+            null -> {}
+            LinkOutcome.Done -> {
+                linkOk = true
+                linkStep = SyncEngine.STEP_DONE
+                linkMessage = if (restored) "Signed in again ✔" else "Your data is now safely in the cloud ✔"
+            }
+            is LinkOutcome.DoneWithCloudData -> {
+                openAppId = null
+                openStaffId = null
+                openCaseId = null
+                openOfferId = null
+                openProjectId = null
+                openSection = null
+                ledger = outcome.ledger
+                linkOk = true
+                linkStep = SyncEngine.STEP_DONE
+                linkMessage = "The cloud data is now on this phone ✔"
+            }
+            LinkOutcome.AskUseCloud -> linkDialog = LinkDialog.USE_CLOUD
+            LinkOutcome.AskCaseC -> linkDialog = LinkDialog.CASE_C
+            is LinkOutcome.Failed -> {
+                linkOk = false
+                linkMessage = outcome.message
+            }
+        }
+        setWarningFor(cloudEngine.largestDocBytes)
+        refreshCloudState()
+    }
+
+    private fun setWarningFor(largestBytes: Int) {
+        cloudWarning = if (largestBytes > 10_000_000) {
+            "One part of your data is very large (" + (largestBytes / 1_000_000) + " MB). It may not upload."
+        } else {
+            ""
+        }
+    }
+
+    private fun refreshCloudState() {
+        cloudMode = cloudConfig.cloudMode
+        cloudSignedIn = cloudConfig.signedIn
+        cloudEmail = cloudConfig.email
+        val sync = SyncStore.loadIfExists(getApplication())
+        cloudInitialized = sync?.initialized ?: false
+        cloudLastSyncMillis = sync?.lastSyncMillis ?: 0L
+        cloudProblem = sync?.lastError ?: ""
     }
 
     fun saveLedger(newLedger: Ledger) {

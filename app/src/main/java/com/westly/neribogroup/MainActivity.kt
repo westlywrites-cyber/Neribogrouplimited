@@ -12,6 +12,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
+import com.westly.neribogroup.feature.cloud.CloudCard
+import com.westly.neribogroup.feature.cloud.CloudCardState
+import com.westly.neribogroup.feature.cloud.LoginScreen
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.feature.group.AppsScreen
 import com.westly.neribogroup.feature.group.CaseDetailScreen
@@ -104,13 +107,58 @@ private fun NeriboRoot(vm: AppViewModel) {
                 vm.openAppId = id
             }
         )
+    } else if (vm.showLogin) {
+        LoginScreen(
+            initialUrl = vm.cloudSavedUrl(),
+            initialAnonKey = vm.cloudSavedAnonKey(),
+            initialEmail = vm.cloudEmail,
+            linkedUrl = vm.cloudLinkedUrl(),
+            signedIn = vm.cloudSignedIn,
+            working = vm.cloudWorking,
+            errorMessage = vm.loginMessage,
+            linkStep = vm.linkStep,
+            linkIsDownload = vm.linkIsDownload,
+            linkMessage = vm.linkMessage,
+            linkOk = vm.linkOk,
+            dialog = vm.linkDialog,
+            onSignIn = { url, key, email, password, reset -> vm.startSignIn(url, key, email, password, reset) },
+            onTryAgain = { vm.retryLink() },
+            onBack = { vm.closeLogin() },
+            onUseCloud = { vm.useCloudData() },
+            onKeepPhone = { vm.keepPhoneData() },
+            onAskReplace = { vm.askReplaceCloud() },
+            onBackToChoice = { vm.backToCaseCChoice() },
+            onConfirmReplace = { vm.confirmReplaceCloud() }
+        )
     } else if (vm.showSettings && vm.openSection == null && openApp == null && openStaff == null) {
         SettingsScreen(
             darkTheme = vm.darkTheme,
             fontStep = vm.fontStep,
             onBack = { vm.showSettings = false },
             onDarkTheme = { vm.updateDarkTheme(it) },
-            onFontStep = { vm.updateFontStep(it) }
+            onFontStep = { vm.updateFontStep(it) },
+            cloud = {
+                CloudCard(
+                    state = CloudCardState(
+                        mode = vm.cloudMode,
+                        signedIn = vm.cloudSignedIn,
+                        initialized = vm.cloudInitialized,
+                        working = vm.cloudWorking,
+                        email = vm.cloudEmail,
+                        lastSyncMillis = vm.cloudLastSyncMillis,
+                        problem = vm.cloudProblem,
+                        deviceId = vm.cloudDeviceId(),
+                        warning = vm.cloudWarning,
+                        selfCheckRunning = vm.selfCheckRunning
+                    ),
+                    selfCheckLines = vm.selfCheckLines,
+                    onConnect = { vm.openLogin() },
+                    onTryAgain = { vm.retryLink() },
+                    onSignOut = { vm.signOutCloud() },
+                    onSelfCheck = { vm.runSelfCheck() },
+                    onCloseSelfCheck = { vm.closeSelfCheck() }
+                )
+            }
         )
     } else if (openOffer != null) {
         SoftwareOfferScreen(

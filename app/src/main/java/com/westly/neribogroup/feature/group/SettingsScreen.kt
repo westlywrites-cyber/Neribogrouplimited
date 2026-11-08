@@ -39,7 +39,9 @@ fun SettingsScreen(
     fontStep: Int,
     onBack: () -> Unit,
     onDarkTheme: (Boolean) -> Unit,
-    onFontStep: (Int) -> Unit
+    onFontStep: (Int) -> Unit,
+    /** The Cloud card (Phase 3A). Shown first in the list; nothing when not given. */
+    cloud: @Composable () -> Unit = {}
 ) {
     BackHandler { onBack() }
 
@@ -62,6 +64,10 @@ fun SettingsScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            item(key = "cloud") {
+                cloud()
+            }
+
             item(key = "theme") {
                 FlatCard {
                     SectionTitle("Theme")
