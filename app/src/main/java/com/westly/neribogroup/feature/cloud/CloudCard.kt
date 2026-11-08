@@ -38,7 +38,9 @@ data class CloudCardState(
     val problem: String,
     val deviceId: String,
     val warning: String,
-    val selfCheckRunning: Boolean
+    val selfCheckRunning: Boolean,
+    val syncing: Boolean = false,
+    val syncMessage: String = ""
 )
 
 enum class CloudCardKind { NOT_CONNECTED, LINKING, LINKED, SIGN_IN_AGAIN, PROBLEM }
@@ -60,7 +62,8 @@ fun CloudCard(
     onTryAgain: () -> Unit,
     onSignOut: () -> Unit,
     onSelfCheck: () -> Unit,
-    onCloseSelfCheck: () -> Unit
+    onCloseSelfCheck: () -> Unit,
+    onSyncNow: () -> Unit = {}
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
@@ -87,10 +90,10 @@ fun CloudCard(
             fontWeight = FontWeight.SemiBold
         )
 
-        if (kind == CloudCardKind.LINKED) {
+        if (kind == CloudCardKind.LINKED && state.syncMessage.isNotEmpty()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Automatic sync is coming in the next update. Changes you make now will be copied to the cloud then.",
+                text = state.syncMessage,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -133,13 +136,21 @@ fun CloudCard(
                         )
                     }
                 }
-                CloudCardKind.LINKED ->
+                CloudCardKind.LINKED -> {
+                    TintedButton(
+                        text = if (state.syncing) "Syncing…" else "Sync now",
+                        onClick = onSyncNow,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.syncing && !state.working
+                    )
                     TintedButton(
                         text = "Sign out",
                         onClick = { confirmSignOut = true },
                         modifier = Modifier.fillMaxWidth(),
-                        destructive = true
+                        destructive = true,
+                        enabled = !state.syncing
                     )
+                }
                 CloudCardKind.LINKING -> {}
             }
             TintedButton(

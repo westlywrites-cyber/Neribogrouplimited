@@ -10,9 +10,15 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import com.westly.neribogroup.cloud.AuthResult
 import com.westly.neribogroup.cloud.CloudConfig
+import com.westly.neribogroup.cloud.CloudConflictInfo
 import com.westly.neribogroup.cloud.CloudMode
+import com.westly.neribogroup.cloud.CloudStatus
 import com.westly.neribogroup.cloud.LinkOutcome
+import com.westly.neribogroup.cloud.LedgerSplitter
 import com.westly.neribogroup.cloud.SupabaseApi
+import com.westly.neribogroup.cloud.SyncHost
+import com.westly.neribogroup.cloud.SyncResult
+import com.westly.neribogroup.cloud.SyncRules
 import com.westly.neribogroup.cloud.SyncEngine
 import com.westly.neribogroup.cloud.SyncStore
 import com.westly.neribogroup.data.AppData
@@ -34,6 +40,9 @@ import com.westly.neribogroup.feature.cloud.CheckLine
 import com.westly.neribogroup.feature.cloud.LinkDialog
 import com.westly.neribogroup.feature.cloud.SelfCheck
 import com.westly.neribogroup.ui.formatDate
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.random.Random
 
@@ -164,6 +173,94 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var cloudWarning by mutableStateOf("")
         private set
 
+    // ---- Cloud sync state (Phase 3B-1a). 3B-1b and 3B-2 read these. ----
+
+    /** One word for the whole cloud state: NOT_CONNECTED, SYNCING, UP_TO_DATE, WAITING_INTERNET, SIGN_IN_AGAIN, PROBLEM. */
+    var cloudStatus by mutableStateOf(CloudStatus.NOT_CONNECTED)
+        private set
+
+    /** The last sync problem in plain words (also kept in cloud_sync.json). Empty when there is none. */
+    var cloudLastError by mutableStateOf(startSync?.lastError ?: "")
+        private set
+
+    /** How many changed documents are waiting in the saved outbox batch. */
+    var cloudPendingChanges by mutableStateOf(startSync?.pending?.changes?.size ?: 0)
+        private set
+
+    /** How many documents on the phone differ from the cloud (counted after each sync). */
+    var cloudUnsyncedDocs by mutableStateOf(0)
+        private set
+
+    /** The conflicts waiting for the owner's choice, with friendly names. */
+    var cloudConflicts by mutableStateOf<List<CloudConflictInfo>>(emptyList())
+        private set
+
+    /** A short calm line about the last "Sync now". Empty when there is nothing to say. */
+    var cloudSyncMessage by mutableStateOf("")
+        private set
+
+    /** True while a sync (or a conflict choice) runs. Ignores a second tap. */
+    var cloudSyncing by mutableStateOf(false)
+        private set
+
+    /** The result of the last finished sync (the status shown when nothing is running). */
+    private var lastSyncStatus = if ((startSync?.lastError ?: "").isEmpty()) CloudStatus.UP_TO_DATE else CloudStatus.PROBLEM
+
+    /**
+     * True only while a sync puts cloud data on the phone. 3B-1b's change trigger must ignore changes made
+     * while this is true, so the cloud data is never sent back as a new "local change".
+     */
+    @Volatile
+    var applyingCloudData = false
+        private set
+
+    private val syncHost = object : SyncHost {
+        override fun currentLedger(): Ledger = ledger
+
+        override fun applyCloudLedger(base: Ledger, newLedger: Ledger): Boolean {
+            val latch = CountDownLatch(1)
+            val done = AtomicBoolean(false)
+            mainHandler.post {
+                try {
+                    // Only if nothing was saved since the sync read the ledger.
+                    if (ledger === base) {
+                        val text = LedgerStorage.toJson(newLedger)
+                        if (LedgerStorage.saveRawText(getApplication(), text)) {
+                            applyingCloudData = true
+                            try {
+                                ledger = newLedger
+                            } finally {
+                                applyingCloudData = false
+                            }
+                            done.set(true)
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return finished && done.get()
+        }
+    }
+
+
+    init {
+        cloudStatus = computeCloudStatus()
+        cloudConflicts = buildConflictInfos(startSync)
+        if (startSync != null && cloudConfig.cloudMode == CloudMode.ON) {
+            val snapshot = ledger
+            thread(start = true) {
+                val count = runCatching { cloudEngine.countUnsynced(snapshot) }.getOrDefault(0)
+                mainHandler.post { cloudUnsyncedDocs = count }
+            }
+        }
+    }
+
     fun cloudSavedUrl(): String = cloudConfig.projectUrl
 
     fun cloudSavedAnonKey(): String = cloudConfig.anonKey
@@ -293,7 +390,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Signs out. Local data stays; the cloud copy is kept. */
     fun signOutCloud() {
-        if (cloudWorking) return
+        if (cloudWorking || cloudSyncing) return
         cloudWorking = true
         thread(start = true) {
             runCatching { cloudEngine.signOutLocal() }
@@ -414,6 +511,75 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cloudInitialized = sync?.initialized ?: false
         cloudLastSyncMillis = sync?.lastSyncMillis ?: 0L
         cloudProblem = sync?.lastError ?: ""
+        cloudLastError = sync?.lastError ?: ""
+        cloudPendingChanges = sync?.pending?.changes?.size ?: 0
+        cloudConflicts = buildConflictInfos(sync)
+        cloudStatus = computeCloudStatus()
+    }
+
+    private fun computeCloudStatus(): CloudStatus = when {
+        cloudSyncing -> CloudStatus.SYNCING
+        cloudConfig.cloudMode != CloudMode.ON -> CloudStatus.NOT_CONNECTED
+        !cloudConfig.signedIn -> CloudStatus.SIGN_IN_AGAIN
+        else -> lastSyncStatus
+    }
+
+    /** The open conflicts (not yet chosen), with the document names in plain words. */
+    private fun buildConflictInfos(sync: com.westly.neribogroup.cloud.SyncData?): List<CloudConflictInfo> {
+        if (sync == null) return emptyList()
+        val names = HashMap<String, String>()
+        for (a in ledger.apps) names[LedgerSplitter.keyForApp(a.id)] = a.name
+        val result = ArrayList<CloudConflictInfo>()
+        for (text in sync.conflicts) {
+            val c = com.westly.neribogroup.cloud.SyncConflict.fromJsonText(text) ?: continue
+            if (c.handled) continue
+            result.add(CloudConflictInfo(c.key, SyncRules.friendlyDocName(c.key, names), c.cloudVersion, c.file, c.notified))
+        }
+        return result
+    }
+
+    /** "Sync now": resend, pull, apply, push. Ignores a second tap. With the cloud off nothing is sent. */
+    fun syncNowAction() {
+        runSyncTask { cloudEngine.syncNow(syncHost) }
+    }
+
+    /** The owner chose "Keep phone version" for one conflict: it is marked handled and a sync runs. */
+    fun resolveConflictKeepPhone(key: String) {
+        runSyncTask { cloudEngine.resolveConflictKeepPhone(key, syncHost) }
+    }
+
+    /** The owner chose "Use cloud version" for one conflict: it is marked handled and a sync runs. */
+    fun resolveConflictUseCloud(key: String) {
+        runSyncTask { cloudEngine.resolveConflictUseCloud(key, syncHost) }
+    }
+
+    private fun runSyncTask(task: () -> SyncResult) {
+        if (cloudWorking || cloudSyncing) return
+        if (cloudConfig.cloudMode != CloudMode.ON) {
+            cloudSyncMessage = "Connect to the cloud first."
+            return
+        }
+        cloudSyncing = true
+        cloudSyncMessage = ""
+        cloudStatus = CloudStatus.SYNCING
+        thread(start = true) {
+            val result = try {
+                task()
+            } catch (e: Throwable) {
+                SyncResult(true, CloudStatus.PROBLEM, "Sync problem — your data on the phone is safe.")
+            }
+            mainHandler.post { finishSync(result) }
+        }
+    }
+
+    private fun finishSync(result: SyncResult) {
+        cloudSyncing = false
+        if (result.ran) {
+            lastSyncStatus = result.status
+            cloudSyncMessage = result.message
+            cloudUnsyncedDocs = result.unsyncedDocs
+        }
+        refreshCloudState()
     }
 
     fun saveLedger(newLedger: Ledger) {

@@ -149,14 +149,17 @@ private fun NeriboRoot(vm: AppViewModel) {
                         problem = vm.cloudProblem,
                         deviceId = vm.cloudDeviceId(),
                         warning = vm.cloudWarning,
-                        selfCheckRunning = vm.selfCheckRunning
+                        selfCheckRunning = vm.selfCheckRunning,
+                        syncing = vm.cloudSyncing,
+                        syncMessage = vm.cloudSyncMessage
                     ),
                     selfCheckLines = vm.selfCheckLines,
                     onConnect = { vm.openLogin() },
                     onTryAgain = { vm.retryLink() },
                     onSignOut = { vm.signOutCloud() },
                     onSelfCheck = { vm.runSelfCheck() },
-                    onCloseSelfCheck = { vm.closeSelfCheck() }
+                    onCloseSelfCheck = { vm.closeSelfCheck() },
+                    onSyncNow = { vm.syncNowAction() }
                 )
             }
         )

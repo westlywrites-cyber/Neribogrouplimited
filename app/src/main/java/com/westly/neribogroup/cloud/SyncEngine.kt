@@ -3,12 +3,15 @@ package com.westly.neribogroup.cloud
 import android.content.Context
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.LedgerStorage
+import com.westly.neribogroup.data.SoftwareEngine
+import com.westly.neribogroup.data.withClockAtLeast
 import com.westly.neribogroup.data.withSoftwareApp
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** What a link step ended with. */
 sealed class LinkOutcome {
@@ -22,6 +25,29 @@ sealed class LinkOutcome {
     object AskCaseC : LinkOutcome()
     data class Failed(val message: String, val needsSignIn: Boolean = false) : LinkOutcome()
 }
+
+/** What the sync engine needs from the app. The engine runs on a background thread. */
+interface SyncHost {
+    /** The phone's live ledger right now. */
+    fun currentLedger(): Ledger
+
+    /**
+     * Replaces the live ledger with [newLedger] (saves ledger.json, updates the screen) only if the live ledger
+     * is still [base]. Returns false when it changed meanwhile or the save failed; nothing is changed then.
+     * Must not start another sync.
+     */
+    fun applyCloudLedger(base: Ledger, newLedger: Ledger): Boolean
+}
+
+/** How one sync ended. [ran] is false only when another sync was already running. */
+data class SyncResult(
+    val ran: Boolean,
+    val status: CloudStatus,
+    val message: String = "",
+    val appliedCloudData: Boolean = false,
+    val newConflicts: Int = 0,
+    val unsyncedDocs: Int = 0
+)
 
 /**
  * Phase 3A: only the first-link protocol and its helpers. Every function blocks: call it from a background
@@ -43,6 +69,7 @@ class SyncEngine(
         const val RPC_PUSH = "push_docs"
         const val RPC_VERIFY = "verify_docs"
         const val RPC_BACKUP = "create_backup"
+        const val RPC_GET_VERSION = "get_doc_version"
 
         const val P_OP_ID = "p_op_id"
         const val P_DEVICE_ID = "p_device_id"
@@ -53,6 +80,10 @@ class SyncEngine(
         const val P_AFTER_KEY = "p_after_key"
         const val P_BACKUP_KIND = "p_kind"
         const val P_BACKUP_NOTE = "p_note"
+        const val P_LABEL = "p_label"
+        const val P_APP_VERSION = "p_app_version"
+        const val P_DOC_KEY = "p_doc_key"
+        const val P_VERSION = "p_version"
 
         const val MODE_INITIAL = "initial"
         const val MODE_REPLACE_ALL = "replace_all"
@@ -348,6 +379,767 @@ class SyncEngine(
         pulled = null
         onStep(STEP_DONE)
         return LinkOutcome.DoneWithCloudData(newLedger)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Phase 3B-1a: the sync cycle (resend, pull, apply, push), conflicts and their resolution
+    // ---------------------------------------------------------------------------------------------
+
+    private val running = AtomicBoolean(false)
+    private var consecutiveFailures = 0
+
+    /** How long to wait before the next try after a network problem. 0 after a success. 3B-1b schedules it. */
+    @Volatile
+    var nextRetryDelayMillis: Long = 0L
+        private set
+
+    private class PullChanges(val docs: Map<String, PulledDoc>, val newLastSeq: Long, val failure: SyncResult?)
+
+    private class StepOutcome(val stop: SyncResult?, val applied: Boolean, val newConflicts: Int, val retry: Boolean = false)
+
+    private class BuildResult(val batch: PendingBatch?, val failure: SyncResult?)
+
+    private class PushLoopOutcome(val stop: SyncResult?, val hadConflict: Boolean)
+
+    private class JoinOutcome(val applied: Boolean, val retry: Boolean, val failure: SyncResult?)
+
+    private sealed class PushAnswer {
+        object Ok : PushAnswer()
+        object Conflict : PushAnswer()
+        class Stop(val result: SyncResult) : PushAnswer()
+    }
+
+    /**
+     * One full sync: resend a saved batch, pull, apply, push. Blocks: call it from a background thread.
+     * A second call while one is running returns at once with ran = false. With the cloud OFF nothing is sent.
+     */
+    fun syncNow(host: SyncHost): SyncResult {
+        if (config.cloudMode != CloudMode.ON) return SyncResult(true, CloudStatus.NOT_CONNECTED)
+        if (!config.signedIn) return SyncResult(true, CloudStatus.SIGN_IN_AGAIN, "Please sign in again. Your data on the phone is safe.")
+        if (!running.compareAndSet(false, true)) return SyncResult(false, CloudStatus.SYNCING)
+        try {
+            if (!loadSync().initialized) return SyncResult(true, CloudStatus.NOT_CONNECTED)
+            return try {
+                cycle(host)
+            } catch (e: Throwable) {
+                problem("Sync problem (" + e.javaClass.simpleName + ") — your data on the phone is safe.")
+            }
+        } finally {
+            running.set(false)
+        }
+    }
+
+    /**
+     * Called when the app starts (3B-1b): if a batch was saved but never answered, send it again first,
+     * unchanged (same opId). Does not pull. Blocks: call it from a background thread.
+     */
+    fun resendPendingOnStart(): SyncResult {
+        if (config.cloudMode != CloudMode.ON) return SyncResult(true, CloudStatus.NOT_CONNECTED)
+        if (!config.signedIn) return SyncResult(true, CloudStatus.SIGN_IN_AGAIN, "Please sign in again. Your data on the phone is safe.")
+        if (!running.compareAndSet(false, true)) return SyncResult(false, CloudStatus.SYNCING)
+        try {
+            val sync = loadSync()
+            val saved = sync.pending
+            if (!sync.initialized || saved == null) return SyncResult(true, CloudStatus.UP_TO_DATE)
+            return try {
+                when (val answer = sendPending(saved)) {
+                    PushAnswer.Ok -> {
+                        resetBackoff()
+                        SyncResult(true, CloudStatus.UP_TO_DATE)
+                    }
+                    PushAnswer.Conflict -> SyncResult(true, CloudStatus.UP_TO_DATE)
+                    is PushAnswer.Stop -> answer.result
+                }
+            } catch (e: Throwable) {
+                problem("Sync problem (" + e.javaClass.simpleName + ") — your data on the phone is safe.")
+            }
+        } finally {
+            running.set(false)
+        }
+    }
+
+    /** How many documents differ from the cloud right now (changed, new or removed on the phone). */
+    fun countUnsynced(ledger: Ledger): Int {
+        return try {
+            val sync = loadSync()
+            val docs = LedgerSplitter.split(LedgerStorage.toJson(ledger))
+            changedKeys(docs, sync, emptySet()).size
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    /**
+     * The owner chose "Keep phone version": the phone's document will be pushed on top of the newer cloud
+     * version (base_version = that version). Marks the conflict handled, then syncs.
+     */
+    fun resolveConflictKeepPhone(key: String, host: SyncHost): SyncResult {
+        if (config.cloudMode != CloudMode.ON) return SyncResult(true, CloudStatus.NOT_CONNECTED)
+        if (!running.compareAndSet(false, true)) return SyncResult(false, CloudStatus.SYNCING)
+        try {
+            val sync = loadSync()
+            val conflicts = parseConflicts(sync)
+            val index = conflicts.indexOfFirst { it.key == key && !it.handled }
+            if (index >= 0) {
+                val c = conflicts[index]
+                val docs = LinkedHashMap(sync.docs)
+                // An empty hash keeps the document "changed", so the next push sends the phone's version.
+                docs[key] = DocState(c.cloudVersion, "", false)
+                conflicts[index] = c.copy(handled = true)
+                if (!SyncStore.save(app, sync.copy(docs = docs, conflicts = conflictTexts(conflicts)))) {
+                    return problem("Could not save the sync notes on the phone. Nothing was changed.")
+                }
+            }
+        } finally {
+            running.set(false)
+        }
+        return syncNow(host)
+    }
+
+    /**
+     * The owner chose "Use cloud version": the newer cloud version of that one document replaces the phone's
+     * (the phone's version stays in the conflict copy file). Marks the conflict handled, then syncs.
+     */
+    fun resolveConflictUseCloud(key: String, host: SyncHost): SyncResult {
+        if (config.cloudMode != CloudMode.ON) return SyncResult(true, CloudStatus.NOT_CONNECTED)
+        if (!running.compareAndSet(false, true)) return SyncResult(false, CloudStatus.SYNCING)
+        var failure: SyncResult? = null
+        try {
+            failure = try {
+                useCloudInner(key, host)
+            } catch (e: Throwable) {
+                problem("Sync problem (" + e.javaClass.simpleName + ") — your data on the phone is safe.")
+            }
+        } finally {
+            running.set(false)
+        }
+        if (failure != null) return failure
+        return syncNow(host)
+    }
+
+    /** Returns null when it worked (or there was nothing to do), else the reason it stopped. */
+    private fun useCloudInner(key: String, host: SyncHost): SyncResult? {
+        val sync = loadSync()
+        val conflicts = parseConflicts(sync)
+        val index = conflicts.indexOfFirst { it.key == key && !it.handled }
+        if (index < 0) return null
+        val c = conflicts[index]
+
+        val body = JSONObject()
+        body.put(Contract.P_DOC_KEY, key)
+        body.put(Contract.P_VERSION, c.cloudVersion)
+        val r = api.rpc(Contract.RPC_GET_VERSION, body, true)
+        if (r !is ApiResult.Ok) return fromApiFailure(r)
+        val deleted = r.json.optBoolean("deleted", false)
+        val raw = r.json.opt("payload")
+        val text = if (raw is String) raw else (raw?.toString() ?: "")
+        val serverSha = r.json.optString("payload_sha256", "")
+        if (!deleted && (serverSha.isEmpty() || sha256Hex(text) != serverSha)) {
+            return problem("The data from the cloud did not match its checksum. Your phone data is untouched.")
+        }
+        val version = r.json.optInt("version", c.cloudVersion)
+
+        var applyTries = 0
+        while (true) {
+            applyTries++
+            val base = host.currentLedger()
+            val baseText = LedgerStorage.toJson(base)
+            val local = LedgerSplitter.split(baseText)
+            val copyName = makeConflictCopy(baseText)
+                ?: return problem("Could not make a safety copy. Nothing was changed.")
+            val texts = LinkedHashMap<String, String>()
+            for (d in local) texts[d.key] = d.text
+            val isApp = key.startsWith(LedgerSplitter.APP_PREFIX)
+            var changesPhone = true
+            if (deleted) {
+                if (isApp) texts.remove(key) else changesPhone = false
+            } else if (texts[key] == text) {
+                changesPhone = false
+            } else {
+                texts[key] = text
+            }
+            var applied = !changesPhone
+            if (changesPhone) {
+                val outcome = joinAndApply(host, base, texts)
+                val problemFound = outcome.failure
+                if (problemFound != null) return problemFound
+                applied = outcome.applied
+            }
+            if (applied) {
+                val fresh = loadSync()
+                val docs = LinkedHashMap(fresh.docs)
+                docs[key] = DocState(version, if (deleted) "" else serverSha, deleted)
+                val list = parseConflicts(fresh)
+                val at = list.indexOfFirst { it.key == key && !it.handled }
+                if (at >= 0) list[at] = list[at].copy(handled = true, file = copyName)
+                pruneConflictCopies(unhandledFiles(list))
+                if (!SyncStore.save(app, fresh.copy(docs = docs, conflicts = conflictTexts(list)))) {
+                    return problem("The cloud version is on the phone, but the sync notes could not be saved. Tap Sync now again.")
+                }
+                return null
+            }
+            if (applyTries >= 3) {
+                return problem("Could not copy the cloud version onto the phone right now. Your phone data is untouched. Try again.")
+            }
+        }
+    }
+
+    // ---- the cycle ----
+
+    private fun cycle(host: SyncHost): SyncResult {
+        var appliedAny = false
+        var newConflicts = 0
+
+        // Step 2: a saved batch is always sent again first, unchanged.
+        val saved = loadSync().pending
+        if (saved != null) {
+            when (val answer = sendPending(saved)) {
+                PushAnswer.Ok -> {}
+                PushAnswer.Conflict -> {}
+                is PushAnswer.Stop -> return withState(answer.result, host)
+            }
+        }
+
+        var conflictRetried = false
+        while (true) {
+            // Step 3: pull first, then apply
+            val pulledStep = pullAndApply(host)
+            val stop = pulledStep.stop
+            if (stop != null) return withState(stop, host)
+            if (pulledStep.applied) appliedAny = true
+            newConflicts += pulledStep.newConflicts
+
+            // Steps 4 and 5: push what changed on the phone
+            val pushStep = pushLoop(host)
+            val pushStop = pushStep.stop
+            if (pushStop != null) return withState(pushStop, host)
+            if (pushStep.hadConflict) {
+                if (!conflictRetried) {
+                    conflictRetried = true
+                    continue
+                }
+                return withState(problem("The cloud changed while syncing. Tap Sync now again. Your data on the phone is safe."), host)
+            }
+            break
+        }
+
+        resetBackoff()
+        val after = loadSync()
+        val waiting = parseConflicts(after).count { !it.handled }
+        val warnings = pendingWarnings
+        pendingWarnings = ""
+        SyncStore.save(app, after.copy(lastSyncMillis = System.currentTimeMillis(), lastError = warnings))
+        val message = if (waiting > 0) {
+            "Synced, except for a part that needs your choice. Nothing was overwritten."
+        } else {
+            "Synced ✔"
+        }
+        return SyncResult(
+            ran = true,
+            status = CloudStatus.UP_TO_DATE,
+            message = message,
+            appliedCloudData = appliedAny,
+            newConflicts = newConflicts,
+            unsyncedDocs = safeUnsynced(host)
+        )
+    }
+
+    /** Adds the number of unsynced documents to a stopping result. */
+    private fun withState(result: SyncResult, host: SyncHost): SyncResult {
+        return result.copy(unsyncedDocs = safeUnsynced(host))
+    }
+
+    private fun safeUnsynced(host: SyncHost): Int {
+        return try {
+            countUnsynced(host.currentLedger())
+        } catch (e: Throwable) {
+            0
+        }
+    }
+
+    @Volatile
+    private var pendingWarnings: String = ""
+
+    private fun pullAndApply(host: SyncHost): StepOutcome {
+        var tries = 0
+        while (true) {
+            tries++
+            val sync = loadSync()
+            val pull = pullChanges(sync)
+            val failure = pull.failure
+            if (failure != null) return StepOutcome(failure, false, 0)
+            val result = applyChanges(host, sync, pull)
+            // retry = the phone's data changed while the cloud changes were being applied: read again.
+            if (!result.retry) return result
+            if (tries >= 3) {
+                return StepOutcome(
+                    problem("Could not copy the cloud changes onto the phone right now. Your phone data is untouched. Tap Sync now again."),
+                    false,
+                    0
+                )
+            }
+        }
+    }
+
+    /** Pages through pull_docs with the contract's cursor rule. Nothing is applied here. */
+    private fun pullChanges(sync: SyncData): PullChanges {
+        var since = sync.lastSeq
+        var after = ""
+        var pages = 0
+        val all = LinkedHashMap<String, PulledDoc>()
+        while (true) {
+            pages++
+            if (pages > 1000) return PullChanges(emptyMap(), sync.lastSeq, problem("The cloud has too much to read at once. Your phone data is untouched."))
+            val body = JSONObject()
+            body.put(Contract.P_SINCE_SEQ, since)
+            body.put(Contract.P_AFTER_KEY, after)
+            val r = api.rpc(Contract.RPC_PULL, body, true)
+            if (r !is ApiResult.Ok) return PullChanges(emptyMap(), sync.lastSeq, fromApiFailure(r))
+            val j = r.json
+            val array = j.optJSONArray("docs") ?: JSONArray()
+            for (i in 0 until array.length()) {
+                val o = array.optJSONObject(i) ?: continue
+                val key = o.optString("doc_key", "")
+                if (key.isEmpty()) continue
+                val deleted = o.optBoolean("deleted", false)
+                val raw = if (o.has("payload") && !o.isNull("payload")) o.get("payload") else ""
+                val text = if (raw is String) raw else raw.toString()
+                val serverSha = o.optString("payload_sha256", "")
+                val ourSha = sha256Hex(text)
+                if (!deleted && (serverSha.isEmpty() || serverSha != ourSha)) {
+                    return PullChanges(
+                        emptyMap(),
+                        sync.lastSeq,
+                        problem("The data from the cloud did not match its checksum, so nothing was applied. Your phone data is untouched.")
+                    )
+                }
+                val version = o.optInt("version", 0)
+                val known = all[key]
+                if (known == null || version > known.version) {
+                    all[key] = PulledDoc(key, version, text, deleted, if (deleted) "" else ourSha)
+                }
+            }
+            val cursor = j.optJSONObject("next_cursor")
+            val cursorSeq = if (cursor != null) cursor.optLong("seq", since) else j.optLong("server_last_seq", since)
+            val cursorKey = if (cursor != null) cursor.optString("doc_key", "") else ""
+            val more = j.optBoolean("has_more", false)
+            if (!more) {
+                return PullChanges(all, cursorSeq, null)
+            }
+            if (cursorSeq == since && cursorKey == after) {
+                return PullChanges(emptyMap(), sync.lastSeq, problem("Could not read all of the cloud data. Your phone data is untouched."))
+            }
+            since = cursorSeq
+            after = cursorKey
+        }
+    }
+
+    /** Section 9: decide per document, keep copies for conflicts, join, save, tell the app. */
+    private fun applyChanges(host: SyncHost, sync: SyncData, pull: PullChanges): StepOutcome {
+        val base = host.currentLedger()
+        val baseText = LedgerStorage.toJson(base)
+        val local = LedgerSplitter.split(baseText)
+        val localByKey = HashMap<String, SplitDoc>()
+        for (d in local) localByKey[d.key] = d
+
+        val conflicts = parseConflicts(sync)
+        val blocked = HashSet<String>()
+        for (c in conflicts) if (!c.handled) blocked.add(c.key)
+
+        val docs = LinkedHashMap(sync.docs)
+        val overrides = LinkedHashMap<String, String>()
+        val removals = HashSet<String>()
+        val conflictKeys = LinkedHashMap<String, Int>()
+        val warnings = ArrayList<String>()
+
+        for (d in pull.docs.values) {
+            val state = sync.docs[d.key]
+            val localVersion = state?.version ?: 0
+            if (d.version <= localVersion) continue
+            val isApp = d.key.startsWith(LedgerSplitter.APP_PREFIX)
+            val localDoc = localByKey[d.key]
+            val sameAsLocal = if (d.deleted) localDoc == null else (localDoc != null && localDoc.sha256 == d.sha)
+            val dirty = SyncRules.isDirty(localDoc?.sha256, state, isApp) && !sameAsLocal
+            val decision = SyncRules.decide(dirty || blocked.contains(d.key), localVersion, d.version)
+            when (decision) {
+                SyncDecision.NOTHING -> {}
+                SyncDecision.CONFLICT -> conflictKeys[d.key] = d.version
+                SyncDecision.APPLY -> {
+                    if (sameAsLocal) {
+                        docs[d.key] = DocState(d.version, d.sha, d.deleted)
+                    } else if (d.deleted) {
+                        if (isApp) {
+                            removals.add(d.key)
+                        } else {
+                            warnings.add("The cloud tried to remove \"" + d.key + "\". It was ignored.")
+                        }
+                        docs[d.key] = DocState(d.version, "", true)
+                    } else {
+                        overrides[d.key] = d.text
+                        docs[d.key] = DocState(d.version, d.sha, false)
+                    }
+                }
+            }
+        }
+
+        // Conflicts: the phone's version is copied first. If that fails, nothing at all is applied.
+        var copyName = ""
+        if (conflictKeys.isNotEmpty()) {
+            copyName = makeConflictCopy(baseText)
+                ?: return StepOutcome(problem("Could not make a safety copy. Nothing was changed."), false, 0)
+        }
+        var newConflicts = 0
+        val now = System.currentTimeMillis()
+        for ((key, version) in conflictKeys) {
+            val at = conflicts.indexOfFirst { it.key == key && !it.handled }
+            if (at >= 0) {
+                conflicts[at] = conflicts[at].copy(cloudVersion = maxOf(conflicts[at].cloudVersion, version))
+            } else {
+                conflicts.add(SyncConflict(key, version, copyName, false, false, now))
+                newConflicts++
+            }
+        }
+
+        var applied = false
+        if (overrides.isNotEmpty() || removals.isNotEmpty()) {
+            val texts = LinkedHashMap<String, String>()
+            for (d in local) texts[d.key] = d.text
+            for (k in removals) texts.remove(k)
+            for ((k, t) in overrides) texts[k] = t
+            val outcome = joinAndApply(host, base, texts)
+            val failure = outcome.failure
+            if (failure != null) return StepOutcome(failure, false, 0)
+            if (outcome.retry) return StepOutcome(null, false, 0, true)
+            applied = outcome.applied
+        }
+
+        // The notes are written last: if the app dies before this, the next pull finds the phone already
+        // equal to the cloud for those documents and only does the bookkeeping.
+        val changedSeq = maxOf(sync.lastSeq, pull.newLastSeq)
+        pruneConflictCopies(unhandledFiles(conflicts))
+        val trimmed = trimConflicts(conflicts)
+        val updated = sync.copy(lastSeq = changedSeq, docs = docs, conflicts = conflictTexts(trimmed))
+        if (!SyncStore.save(app, updated)) {
+            return StepOutcome(
+                problem("The cloud changes are on the phone, but the sync notes could not be saved. Tap Sync now again."),
+                applied,
+                newConflicts
+            )
+        }
+        if (warnings.isNotEmpty()) pendingWarnings = warnings.joinToString(" ")
+        return StepOutcome(null, applied, newConflicts)
+    }
+
+    /** Joins the documents, checks them, and hands the new ledger to the app. */
+    private fun joinAndApply(host: SyncHost, base: Ledger, texts: Map<String, String>): JoinOutcome {
+        val newLedger: Ledger = try {
+            val joined = LedgerSplitter.join(texts)
+            val parsed = LedgerStorage.fromJson(joined)
+            // The clocks never go backwards.
+            val withCases = parsed.withClockAtLeast(base.casesClockMillis)
+            SoftwareEngine.withClockAtLeast(withCases, base.software.clockMillis)
+        } catch (e: Exception) {
+            return JoinOutcome(false, false, problem("Could not read the cloud data. Your phone data is untouched."))
+        }
+        val ok = host.applyCloudLedger(base, newLedger)
+        return if (ok) JoinOutcome(true, false, null) else JoinOutcome(false, true, null)
+    }
+
+    // ---- push ----
+
+    private fun pushLoop(host: SyncHost): PushLoopOutcome {
+        var loops = 0
+        while (loops < 3) {
+            loops++
+            val built = buildDirtyBatch(host.currentLedger(), loadSync())
+            val failure = built.failure
+            if (failure != null) return PushLoopOutcome(failure, false)
+            val batch = built.batch ?: return PushLoopOutcome(null, false)
+            // Saved BEFORE it is sent.
+            if (!SyncStore.save(app, loadSync().copy(pending = batch))) {
+                return PushLoopOutcome(problem("Could not save the sync notes on the phone. Nothing was uploaded."), false)
+            }
+            when (val answer = sendPending(batch)) {
+                PushAnswer.Ok -> {}
+                PushAnswer.Conflict -> return PushLoopOutcome(null, true)
+                is PushAnswer.Stop -> return PushLoopOutcome(answer.result, false)
+            }
+        }
+        return PushLoopOutcome(null, false)
+    }
+
+    /** The keys that differ from the cloud: changed or new documents, and removed apps. */
+    private fun changedKeys(docs: List<SplitDoc>, sync: SyncData, blocked: Set<String>): List<String> {
+        val result = ArrayList<String>()
+        val present = HashSet<String>()
+        for (d in docs) {
+            present.add(d.key)
+            if (blocked.contains(d.key)) continue
+            if (SyncRules.isDirty(d.sha256, sync.docs[d.key], d.key.startsWith(LedgerSplitter.APP_PREFIX))) result.add(d.key)
+        }
+        for ((key, state) in sync.docs) {
+            if (present.contains(key) || blocked.contains(key)) continue
+            if (SyncRules.isDirty(null, state, key.startsWith(LedgerSplitter.APP_PREFIX))) result.add(key)
+        }
+        return result
+    }
+
+    private fun buildDirtyBatch(ledger: Ledger, sync: SyncData): BuildResult {
+        val text = LedgerStorage.toJson(ledger)
+        val docs = LedgerSplitter.split(text)
+        val blocked = HashSet<String>()
+        for (c in parseConflicts(sync)) if (!c.handled) blocked.add(c.key)
+        val keys = changedKeys(docs, sync, blocked)
+        if (keys.isEmpty()) return BuildResult(null, null)
+
+        // Safety: joining the documents again must give exactly the same ledger. If not, nothing is sent.
+        val rebuilt = LedgerStorage.toJson(
+            LedgerStorage.fromJson(LedgerSplitter.join(docs.associate { it.key to it.text }))
+        )
+        if (rebuilt != text) {
+            return BuildResult(null, problem("The safety check before the upload failed, so nothing was uploaded. Your data is untouched."))
+        }
+        var biggest = 0
+        for (d in docs) {
+            val size = d.text.toByteArray(Charsets.UTF_8).size
+            if (size > biggest) biggest = size
+        }
+        largestDocBytes = biggest
+
+        val byKey = HashMap<String, SplitDoc>()
+        for (d in docs) byKey[d.key] = d
+        val changes = ArrayList<PendingChange>()
+        for (key in keys) {
+            val doc = byKey[key]
+            val baseVersion = sync.docs[key]?.version ?: 0
+            if (doc != null) {
+                changes.add(PendingChange(key, baseVersion, doc.text, doc.sha256, false))
+            } else {
+                val removed = "{\"deleted\":true}"
+                changes.add(PendingChange(key, baseVersion, removed, sha256Hex(removed), true))
+            }
+            if (changes.size >= MAX_DOCS_PER_BATCH) break
+        }
+        val batch = PendingBatch(UUID.randomUUID().toString(), "normal", changes, System.currentTimeMillis())
+        return BuildResult(batch, null)
+    }
+
+    private fun pushBody(batch: PendingBatch): JSONObject {
+        val body = JSONObject()
+        body.put(Contract.P_OP_ID, batch.opId)
+        body.put(Contract.P_DEVICE_ID, config.deviceId)
+        body.put(Contract.P_LABEL, "phone sync")
+        body.put(Contract.P_APP_VERSION, appVersionName())
+        body.put(Contract.P_MODE, batch.mode)
+        val changes = JSONArray()
+        for (c in batch.changes) {
+            val o = JSONObject()
+            o.put("doc_key", c.docKey)
+            o.put("base_version", c.baseVersion)
+            o.put("payload", c.payload)
+            o.put("payload_sha256", c.payloadSha256)
+            o.put("deleted", c.deleted)
+            changes.put(o)
+        }
+        body.put(Contract.P_CHANGES, changes)
+        return body
+    }
+
+    private fun appVersionName(): String {
+        return try {
+            app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /** Sends a saved batch and handles every kind of answer. The batch stays saved until the server answers. */
+    private fun sendPending(batch: PendingBatch): PushAnswer {
+        var attempt = 0
+        while (attempt < 3) {
+            attempt++
+            val r = api.rpc(Contract.RPC_PUSH, pushBody(batch), true)
+            if (r is ApiResult.AppError && r.code == Contract.ERR_CHECKSUM) continue
+            return classifyPush(batch, r)
+        }
+        // The same data failed its checksum three times: the notes are cleared (the changes are found again
+        // from the ledger next time) and the problem is shown. Local data is untouched.
+        SyncStore.save(app, loadSync().copy(pending = null))
+        return PushAnswer.Stop(problem("Sync problem — your data on the phone is safe. The upload did not pass its check. Try again later."))
+    }
+
+    private fun classifyPush(batch: PendingBatch, r: ApiResult): PushAnswer {
+        if (r is ApiResult.Ok) {
+            val status = r.json.optString("status", if (r.json.has("results")) "ok" else "")
+            if (status == "conflict") {
+                SyncStore.save(app, loadSync().copy(pending = null))
+                return PushAnswer.Conflict
+            }
+            if (status != "ok") {
+                return PushAnswer.Stop(problem("The cloud answered in a way this app did not expect. Your data on the phone is safe."))
+            }
+            return recordPushOk(batch, r.json)
+        }
+        if (r is ApiResult.AppError) {
+            // Nothing was written on the server. Do not block later syncs with a batch that can never pass.
+            val code = if (r.code.isEmpty()) "error" else r.code
+            SyncStore.save(app, loadSync().copy(pending = null))
+            return PushAnswer.Stop(problem("The cloud did not accept the upload ($code). Your data on the phone is safe."))
+        }
+        return PushAnswer.Stop(fromApiFailure(r))
+    }
+
+    private fun recordPushOk(batch: PendingBatch, json: JSONObject): PushAnswer {
+        val byKey = HashMap<String, JSONObject>()
+        val results = json.optJSONArray("results")
+        if (results != null) {
+            for (i in 0 until results.length()) {
+                val o = results.optJSONObject(i) ?: continue
+                byKey[o.optString("doc_key", "")] = o
+            }
+        }
+        val sync = loadSync()
+        val docs = LinkedHashMap(sync.docs)
+        for (c in batch.changes) {
+            val res = byKey[c.docKey]
+            val version = if (res != null) res.optInt("version", c.baseVersion + 1) else c.baseVersion + 1
+            // The server stored exactly what was sent (an unchanged answer means the same text was already there).
+            docs[c.docKey] = DocState(version, if (c.deleted) "" else c.payloadSha256, c.deleted)
+        }
+        // lastSeq moves up only when our push is the very next one: otherwise another phone pushed in between
+        // and its changes must still be pulled.
+        val seq = json.optLong("seq", sync.lastSeq)
+        val newSeq = if (seq == sync.lastSeq + 1) seq else sync.lastSeq
+        val done = sync.copy(
+            lastSeq = newSeq,
+            docs = docs,
+            pending = null,
+            lastSyncMillis = System.currentTimeMillis(),
+            lastError = ""
+        )
+        if (!SyncStore.save(app, done)) {
+            return PushAnswer.Stop(problem("The cloud has your changes, but this phone could not save its sync notes. Tap Sync now again."))
+        }
+        resetBackoff()
+        return PushAnswer.Ok
+    }
+
+    // ---- results ----
+
+    private fun resetBackoff() {
+        consecutiveFailures = 0
+        nextRetryDelayMillis = 0L
+    }
+
+    private fun waiting(): SyncResult {
+        consecutiveFailures++
+        nextRetryDelayMillis = SyncRules.backoffDelayMillis(consecutiveFailures)
+        return SyncResult(true, CloudStatus.WAITING_INTERNET, "No internet right now. Your data is safe on the phone.")
+    }
+
+    private fun signInAgain(): SyncResult {
+        config.clearSession()
+        return SyncResult(true, CloudStatus.SIGN_IN_AGAIN, "Please sign in again. Your data on the phone is safe.")
+    }
+
+    /** Remembers the problem in cloud_sync.json (lastError) and returns it as a result. */
+    private fun problem(message: String): SyncResult {
+        runCatching { SyncStore.save(app, loadSync().copy(lastError = message)) }
+        return SyncResult(true, CloudStatus.PROBLEM, message)
+    }
+
+    private fun fromApiFailure(r: ApiResult): SyncResult {
+        return when (r) {
+            ApiResult.Offline -> waiting()
+            ApiResult.AuthExpired -> signInAgain()
+            is ApiResult.Http -> {
+                if (r.code == 429 || r.code in 500..599) {
+                    waiting()
+                } else {
+                    problem("Sync problem (code " + r.code + ") — your data on the phone is safe.")
+                }
+            }
+            is ApiResult.AppError -> {
+                if (r.code == "cursor_ahead") {
+                    problem("The cloud was reset or restored, so this phone cannot sync safely. Your phone data is untouched. Ask the owner's helper.")
+                } else {
+                    val code = if (r.code.isEmpty()) "error" else r.code
+                    problem("Sync problem ($code) — your data on the phone is safe.")
+                }
+            }
+            is ApiResult.Ok -> problem("The cloud answered in a way this app did not expect. Your data on the phone is safe.")
+        }
+    }
+
+    // ---- conflicts: the list in cloud_sync.json and the copy files ----
+
+    private fun parseConflicts(sync: SyncData): ArrayList<SyncConflict> {
+        val list = ArrayList<SyncConflict>()
+        for (text in sync.conflicts) {
+            val c = SyncConflict.fromJsonText(text)
+            if (c != null) list.add(c)
+        }
+        return list
+    }
+
+    private fun conflictTexts(list: List<SyncConflict>): List<String> = list.map { it.toJsonText() }
+
+    /** Keeps every open conflict and the 30 newest handled ones. */
+    private fun trimConflicts(list: List<SyncConflict>): List<SyncConflict> {
+        val handled = list.filter { it.handled }.sortedBy { it.createdMillis }
+        val drop: Set<SyncConflict> = if (handled.size > 30) handled.take(handled.size - 30).toSet() else emptySet()
+        return list.filter { !drop.contains(it) }
+    }
+
+    private fun unhandledFiles(list: List<SyncConflict>): Set<String> {
+        val names = HashSet<String>()
+        for (c in list) if (!c.handled && c.file.isNotEmpty()) names.add(c.file)
+        return names
+    }
+
+    /** Writes the phone's ledger text as ledger.conflict-<time>.json (checked by reading it back). Null on failure. */
+    private fun makeConflictCopy(ledgerText: String): String? {
+        return try {
+            val now = System.currentTimeMillis()
+            var attempt = 1
+            var name = SyncRules.conflictFileName(now, attempt)
+            while (File(app.filesDir, name).exists()) {
+                attempt++
+                name = SyncRules.conflictFileName(now, attempt)
+            }
+            val dst = File(app.filesDir, name)
+            val bytes = ledgerText.toByteArray(Charsets.UTF_8)
+            val tmp = File(app.filesDir, "$name.tmp")
+            FileOutputStream(tmp).use { out ->
+                out.write(bytes)
+                out.fd.sync()
+            }
+            if (!tmp.renameTo(dst)) return null
+            val back = dst.readBytes()
+            if (back.size == bytes.size && sha256Hex(back) == sha256Hex(bytes)) name else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Keeps the newest [SyncRules.MAX_CONFLICT_COPIES] conflict copies. Only ledger.conflict-*.json files are ever
+     * deleted, and never one that an open conflict still needs ([protect]).
+     */
+    private fun pruneConflictCopies(protect: Set<String>) {
+        try {
+            val files = (app.filesDir.listFiles() ?: return).filter {
+                it.isFile && it.name.startsWith("ledger.conflict-") && it.name.endsWith(".json")
+            }.sortedWith(compareBy<File>({ it.lastModified() }, { it.name }))
+            var extra = files.size - SyncRules.MAX_CONFLICT_COPIES
+            for (f in files) {
+                if (extra <= 0) break
+                if (protect.contains(f.name)) continue
+                if (f.delete()) extra--
+            }
+        } catch (e: Exception) {
+            // Cleaning up is optional; never a problem.
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
