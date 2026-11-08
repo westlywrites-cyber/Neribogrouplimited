@@ -1,7 +1,12 @@
 package com.westly.neribogroup.cloud
 
 import android.content.Context
+import com.westly.neribogroup.data.AiCaseResult
 import com.westly.neribogroup.data.AppData
+import com.westly.neribogroup.data.CaseAi
+import com.westly.neribogroup.data.CaseGenerator
+import com.westly.neribogroup.data.CaseSkeleton
+import com.westly.neribogroup.data.ComplaintCase
 import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.DiceKind
 import com.westly.neribogroup.data.Ledger
@@ -18,6 +23,7 @@ import java.time.temporal.ChronoUnit
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.max
+import kotlin.random.Random
 
 // =================================================================================================
 // Phase 4B: "Roll next". The app puts one small job per dice in the cloud mailbox, Claude answers
@@ -61,7 +67,9 @@ data class AiRunResult(
     val notices: List<String> = emptyList(),
     val rolledAny: Boolean = false,
     /** True only when the pass reached its end, so [counts] can be trusted. */
-    val complete: Boolean = false
+    val complete: Boolean = false,
+    /** Phase 5: customer cases still waiting for their story. -1 = not known in this pass. */
+    val casesWaiting: Int = -1
 )
 
 /** What the engine needs from the app. */
@@ -76,7 +84,24 @@ interface AiJobHost {
      * written first; only then is the live ledger replaced. ROLLED only when the roll happened and was saved.
      */
     fun rollForJobs(appId: String, preset: PresetRoll?, wallNow: Long): JobRollResult
+
+    /**
+     * Phase 5: like [rollForJobs] with a preset, but the roll does NOT create a case. When the roll happened and
+     * was saved, the skeleton of the case that the roll caused (or null when no case happens) comes back.
+     */
+    fun rollWithSkeleton(appId: String, preset: PresetRoll?, wallNow: Long): JobRollOutcome
+
+    /**
+     * Phase 5: adds ONE case to the live ledger on the main thread, saved first like a roll. [build] gets the live
+     * ledger and the protected "now" and returns the case (or null). Nothing is added when a case with [caseId]
+     * is already there.
+     */
+    fun applyCase(caseId: String, wallNow: Long, build: (Ledger, Long) -> ComplaintCase?): CaseApplyResult
 }
+
+class JobRollOutcome(val result: JobRollResult, val skeleton: CaseSkeleton?)
+
+enum class CaseApplyResult { ADDED, ALREADY_THERE, NOT_BUILT, FAILED }
 
 /** One job as read from the cloud. */
 class JobRow(
@@ -87,6 +112,17 @@ class JobRow(
     val status: String,
     val result: JSONObject?,
     val kind: DiceKind?
+)
+
+/** One WRITE_CASE job as read from the cloud (Phase 5). */
+class CaseJobRow(
+    val id: String,
+    val dedupeKey: String,
+    val appId: String,
+    val dayKey: String,
+    val status: String,
+    val result: JSONObject?,
+    val context: JSONObject?
 )
 
 /** The check of one answer. */
@@ -309,6 +345,31 @@ object AiJobRules {
         return rows
     }
 
+    /** Reads the WRITE_CASE rows of a list_jobs answer (Phase 5). */
+    fun parseCaseRows(json: JSONObject): List<CaseJobRow> {
+        val array = json.optJSONArray("jobs") ?: return emptyList()
+        val rows = ArrayList<CaseJobRow>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            if (text(o, "kind") != CaseAi.KIND) continue
+            val id = text(o, "id")
+            val key = text(o, "dedupe_key")
+            if (id.isEmpty() || key.isEmpty()) continue
+            rows.add(
+                CaseJobRow(
+                    id = id,
+                    dedupeKey = key,
+                    appId = text(o, "app_id"),
+                    dayKey = text(o, "day_key"),
+                    status = text(o, "status"),
+                    result = o.optJSONObject("result"),
+                    context = o.optJSONObject("context")
+                )
+            )
+        }
+        return rows
+    }
+
     /** The state of the "Today's roll" card. */
     fun stateFor(app: AppData, today: String, done: String?, counts: AiCounts?, offline: Boolean): AiRollState {
         if (app.lastRollDayKey == today) {
@@ -376,18 +437,24 @@ class AiJobEngine(
         return result ?: AiRunResult(ran = false)
     }
 
-    private class Rows(val rows: List<JobRow>, val failure: ApiResult?)
+    private class Rows(val rows: List<JobRow>, val failure: ApiResult?, val cases: List<CaseJobRow> = emptyList())
 
     private fun readRows(): Rows {
         val rows = ArrayList<JobRow>()
+        val caseRows = ArrayList<CaseJobRow>()
         val lists = listOf(listOf("pending", "claimed"), listOf("submitted"))
         for (statuses in lists) {
             val asked = JSONArray()
             for (s in statuses) asked.put(s)
             val r = api.rpc("list_jobs", JSONObject().put("p_statuses", asked).put("p_limit", 100))
-            if (r is ApiResult.Ok) rows.addAll(AiJobRules.parseRows(r.json)) else return Rows(emptyList(), r)
+            if (r is ApiResult.Ok) {
+                rows.addAll(AiJobRules.parseRows(r.json))
+                caseRows.addAll(AiJobRules.parseCaseRows(r.json))
+            } else {
+                return Rows(emptyList(), r)
+            }
         }
-        return Rows(rows, null)
+        return Rows(rows, null, caseRows)
     }
 
     private fun failure(r: ApiResult): AiRunResult {
@@ -431,6 +498,7 @@ class AiJobEngine(
         val firstFailure = first.failure
         if (firstFailure != null) return failure(firstFailure)
         var rows = first.rows
+        var caseRows = first.cases
 
         // 1. Publish today's jobs, once per app per day.
         val gpApps = ledger0.apps.filter { it.googlePlayEnabled && it.id != SOFTWARE_APP_ID }
@@ -473,6 +541,7 @@ class AiJobEngine(
             val againFailure = again.failure
             if (againFailure != null) return failure(againFailure)
             rows = again.rows
+            caseRows = again.cases
         }
 
         // 2. Read Claude's answers and apply every group that is ready.
@@ -576,8 +645,19 @@ class AiJobEngine(
             }
 
             val wall = System.currentTimeMillis()
-            when (host.rollForJobs(appId, preset, wall)) {
+            var skeleton: CaseSkeleton? = null
+            val rollResult: JobRollResult
+            if (preset != null) {
+                // Phase 5: the roll does not write the case itself; its skeleton is sent to Claude.
+                val outcome = host.rollWithSkeleton(appId, preset, wall)
+                rollResult = outcome.result
+                skeleton = outcome.skeleton
+            } else {
+                rollResult = host.rollForJobs(appId, null, wall)
+            }
+            when (rollResult) {
                 JobRollResult.ROLLED -> {
+                    if (skeleton != null) queueCaseJob(host, skeleton, caseRows)
                     markApplied(usable)
                     doneUpdates[appId] = AiDone.encode(today, wall, preset != null, usable.size)
                     notices.add(
@@ -605,8 +685,13 @@ class AiJobEngine(
             }
         }
 
+        // Phase 5: publish new case jobs, read Claude's stories and add the cases.
+        val caseRun = processCases(host, caseRows, false, notices)
+        if (caseRun.added > 0) rolledAny = true
+
         val message = when {
             publishProblem.isNotEmpty() -> publishProblem
+            caseRun.failure != null && !rolledAny -> failure(caseRun.failure).message
             rolledAny -> ""
             waiting + answered > 0 -> "Checked just now. Claude has not finished yet."
             else -> "Checked just now. Nothing new from Claude yet."
@@ -619,7 +704,8 @@ class AiJobEngine(
             answered = answered,
             notices = notices,
             rolledAny = rolledAny,
-            complete = true
+            complete = true,
+            casesWaiting = caseRun.waiting
         )
     }
 
@@ -666,6 +752,214 @@ class AiJobEngine(
 
     private fun rejectAll(rows: List<JobRow>, reason: String) {
         for (row in rows) reject(row, reason)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Phase 5: Claude writes the customer complaints
+    // ---------------------------------------------------------------------------------------------
+
+    private class CaseRun(val added: Int, val waiting: Int, val failure: ApiResult?)
+
+    /** The case jobs this phone decided and has not finished yet, by dedupe key. */
+    private fun localCaseJobs(): LinkedHashMap<String, JSONObject> {
+        val out = LinkedHashMap<String, JSONObject>()
+        for (text in load().caseJobs) {
+            val o = runCatching { JSONObject(text) }.getOrNull() ?: continue
+            val key = o.optString("dedupe_key", "")
+            if (key.isNotEmpty()) out[key] = o
+        }
+        return out
+    }
+
+    /**
+     * Remembers the job of a new skeleton on the phone (it is published in the same pass). Only one unfinished
+     * case job per app exists at a time, so the "at most 2 open cases" and "7 days apart" rules stay true.
+     */
+    private fun queueCaseJob(host: AiJobHost, sk: CaseSkeleton, caseRows: List<CaseJobRow>) {
+        val job = CaseAi.buildJob(sk)
+        val key = job.getString("dedupe_key")
+        val ledger = host.currentLedger()
+        val local = localCaseJobs()
+        if (local.containsKey(key)) return
+        val busyLocal = local.entries.any { (k, o) ->
+            o.optString("app_id") == sk.appId && ledger.cases.none { it.id == CaseAi.caseId(k) }
+        }
+        val busyCloud = caseRows.any { it.appId == sk.appId }
+        if (busyLocal || busyCloud) return
+        update { it.copy(caseJobs = it.caseJobs + job.toString()) }
+    }
+
+    private fun markAppliedIds(ids: List<String>) {
+        val later = ArrayList<String>()
+        for (id in ids) {
+            val r = api.rpc("mark_job_applied", jobBody(id))
+            if (r is ApiResult.Ok || r is ApiResult.AppError) continue
+            later.add(id)
+        }
+        if (later.isNotEmpty()) {
+            update { it.copy(appliedPendingMark = (it.appliedPendingMark + later).distinct()) }
+        }
+    }
+
+    /** Best effort: the cloud only accepts it for a submitted job. */
+    private fun rejectId(id: String, reason: String) {
+        api.rpc("reject_job", jobBody(id).put("p_reason", reason))
+    }
+
+    private fun applyAi(host: AiJobHost, id: String, sk: CaseSkeleton, parsed: AiCaseResult?, wall: Long): CaseApplyResult {
+        if (parsed == null) return CaseApplyResult.NOT_BUILT
+        return host.applyCase(id, wall) { ledger, now ->
+            CaseGenerator.buildFromAi(ledger, sk, parsed, now)?.copy(id = id)
+        }
+    }
+
+    private fun applyTemplates(host: AiJobHost, id: String, sk: CaseSkeleton, wall: Long): CaseApplyResult =
+        host.applyCase(id, wall) { ledger, now ->
+            CaseGenerator.buildFromTemplates(ledger, sk, now, Random.Default).copy(id = id)
+        }
+
+    /**
+     * Turns every waiting case job into a case: Claude's story when it passes every check, otherwise the built-in
+     * texts. A job that is still waiting after 72 hours (or any job when [builtInOnly] is true) is written by the
+     * built-in generator. The case id comes from the job, so a case is never added twice.
+     */
+    private fun processCases(
+        host: AiJobHost,
+        caseRows: List<CaseJobRow>,
+        builtInOnly: Boolean,
+        notices: MutableList<String>
+    ): CaseRun {
+        val local = localCaseJobs()
+        val byKey = LinkedHashMap<String, CaseJobRow>()
+        for (r in caseRows) if (!byKey.containsKey(r.dedupeKey)) byKey[r.dedupeKey] = r
+        val keys = LinkedHashSet<String>()
+        keys.addAll(local.keys)
+        keys.addAll(byKey.keys)
+
+        val finished = HashSet<String>()
+        var added = 0
+        var waiting = 0
+        var failure: ApiResult? = null
+
+        for (key in keys) {
+            val id = CaseAi.caseId(key)
+            val row = byKey[key]
+            val before = host.currentLedger()
+
+            if (before.cases.any { it.id == id }) {
+                // Already a case (another phone, or an earlier pass): only tell the cloud.
+                if (row != null && row.status == "submitted") markAppliedIds(listOf(row.id))
+                finished.add(key)
+                continue
+            }
+            val context = row?.context ?: local[key]?.optJSONObject("context")
+            val skeleton = CaseSkeleton.fromJson(context?.optJSONObject("skeleton"))
+            if (skeleton == null) {
+                if (row != null && row.status == "submitted") rejectId(row.id, "unreadable case job")
+                finished.add(key)
+                continue
+            }
+            val wall = System.currentTimeMillis()
+            val overdue = max(wall, before.casesClockMillis) - skeleton.createdMillis >= CaseAi.TIMEOUT_MILLIS
+
+            var useTemplates = false
+            var rejectRowId: String? = null
+
+            if (row != null && row.status == "submitted" && !builtInOnly) {
+                when (applyAi(host, id, skeleton, CaseAi.parseResult(row.result), wall)) {
+                    CaseApplyResult.ADDED -> {
+                        markAppliedIds(listOf(row.id))
+                        added++
+                        notices.add("Claude wrote a customer complaint for " + skeleton.appName + ".")
+                        finished.add(key)
+                    }
+                    CaseApplyResult.ALREADY_THERE -> {
+                        markAppliedIds(listOf(row.id))
+                        finished.add(key)
+                    }
+                    CaseApplyResult.FAILED -> waiting++
+                    CaseApplyResult.NOT_BUILT -> {
+                        // Claude's answer broke a rule: the built-in generator writes this one.
+                        useTemplates = true
+                        rejectRowId = row.id
+                    }
+                }
+            } else if (builtInOnly || overdue) {
+                useTemplates = true
+                if (row != null && row.status == "submitted") rejectRowId = row.id
+            } else if (row == null) {
+                val job = local[key]
+                if (job == null) {
+                    finished.add(key)
+                } else {
+                    val r = api.rpc("publish_roll_jobs", body().put("p_jobs", JSONArray().put(job)))
+                    if (r is ApiResult.Ok) {
+                        if (r.json.optInt("inserted", 0) > 0) {
+                            waiting++
+                        } else {
+                            // The cloud has this job but it is no longer open (rejected or expired).
+                            useTemplates = true
+                        }
+                    } else if (r is ApiResult.AppError) {
+                        useTemplates = true
+                    } else {
+                        if (failure == null) failure = r
+                        waiting++
+                    }
+                }
+            } else {
+                waiting++
+            }
+
+            if (useTemplates) {
+                when (applyTemplates(host, id, skeleton, wall)) {
+                    CaseApplyResult.ADDED -> {
+                        added++
+                        notices.add("A customer complaint came in for " + skeleton.appName + ".")
+                        finished.add(key)
+                    }
+                    CaseApplyResult.ALREADY_THERE -> finished.add(key)
+                    else -> waiting++
+                }
+                if (finished.contains(key) && rejectRowId != null) rejectId(rejectRowId, "case written by the built-in generator")
+            }
+        }
+
+        if (finished.isNotEmpty()) {
+            update { data ->
+                data.copy(caseJobs = data.caseJobs.filter { text ->
+                    val k = runCatching { JSONObject(text).optString("dedupe_key", "") }.getOrDefault("")
+                    k !in finished
+                })
+            }
+        }
+        return CaseRun(added, waiting, failure)
+    }
+
+    /** The owner tapped "Write cases with the built-in generator": every waiting case is written now. */
+    fun runCasesBuiltIn(host: AiJobHost): AiRunResult {
+        if (!ready()) return AiRunResult(ran = false)
+        val result = sync.runExclusive(10_000L) {
+            try {
+                val read = readRows()
+                val rows = if (read.failure == null) read.cases else emptyList()
+                val notices = ArrayList<String>()
+                val run = processCases(host, rows, true, notices)
+                AiRunResult(
+                    ran = true,
+                    message = if (run.added > 0) "" else "No case was waiting.",
+                    notices = notices,
+                    rolledAny = run.added > 0,
+                    casesWaiting = run.waiting
+                )
+            } catch (e: Throwable) {
+                AiRunResult(
+                    ran = true,
+                    message = "The cases could not be written (" + e.javaClass.simpleName + "). Your data is safe."
+                )
+            }
+        }
+        return result ?: AiRunResult(ran = false)
     }
 
     // ---------------------------------------------------------------------------------------------

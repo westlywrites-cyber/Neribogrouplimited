@@ -429,6 +429,7 @@ object LedgerStorage {
         o.put("paid", c.paidMillis)
         o.put("expenseId", c.expenseId)
         o.put("notes", eventsToJson(c.notes))
+        if (c.writer.isNotEmpty()) o.put("writer", c.writer)
         return o
     }
 
@@ -463,7 +464,8 @@ object LedgerStorage {
             payByMillis = o.optLong("payBy"),
             paidMillis = o.optLong("paid"),
             expenseId = o.optString("expenseId"),
-            notes = jsonToEvents(o.optJSONArray("notes"))
+            notes = jsonToEvents(o.optJSONArray("notes")),
+            writer = o.optString("writer", "")
         )
     }
 

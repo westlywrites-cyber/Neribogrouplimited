@@ -304,6 +304,17 @@ fun CaseDetailScreen(
                 ) { Text("Add note") }
             }
 
+            if (case.writer.isNotEmpty()) {
+                item(key = "writer") {
+                    Text(
+                        text = if (case.writer == "Claude") "Written by Claude" else "Written by the app",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
             item(key = "bottom") { Spacer(modifier = Modifier.height(8.dp)) }
         }
     }

@@ -18,6 +18,8 @@ import com.westly.neribogroup.cloud.AiRollState
 import com.westly.neribogroup.cloud.AiRunResult
 import com.westly.neribogroup.cloud.AiSettings
 import com.westly.neribogroup.cloud.AiSettingsOutcome
+import com.westly.neribogroup.cloud.CaseApplyResult
+import com.westly.neribogroup.cloud.JobRollOutcome
 import com.westly.neribogroup.cloud.JobRollResult
 import com.westly.neribogroup.cloud.AuthResult
 import com.westly.neribogroup.cloud.BackupOutcome
@@ -39,6 +41,9 @@ import com.westly.neribogroup.cloud.SyncStore
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Entry
 import com.westly.neribogroup.data.CampaignSize
+import com.westly.neribogroup.data.CaseGenerator
+import com.westly.neribogroup.data.CaseSkeleton
+import com.westly.neribogroup.data.ComplaintCase
 import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.PresetRoll
@@ -51,6 +56,7 @@ import com.westly.neribogroup.data.SoftwareEngine
 import com.westly.neribogroup.data.SoftwareRates
 import com.westly.neribogroup.data.Staff
 import com.westly.neribogroup.data.markCasePaid
+import com.westly.neribogroup.data.withCaseAdded
 import com.westly.neribogroup.data.withCaseNote
 import com.westly.neribogroup.data.withClockAtLeast
 import com.westly.neribogroup.data.withSoftwareApp
@@ -303,6 +309,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var aiWaiting by mutableStateOf(0)
         private set
 
+    /** Phase 5: customer cases still waiting for their story (from Claude or the built-in generator). */
+    var aiCasesWaiting by mutableStateOf(startSync?.caseJobs?.size ?: 0)
+        private set
+
     var aiAnswered by mutableStateOf(0)
         private set
 
@@ -357,6 +367,79 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             return if (finished) outcome.get() else JobRollResult.FAILED
         }
+
+        override fun rollWithSkeleton(appId: String, preset: PresetRoll?, wallNow: Long): JobRollOutcome {
+            val latch = CountDownLatch(1)
+            val outcome = AtomicReference(JobRollResult.FAILED)
+            val skeleton = AtomicReference<CaseSkeleton?>(null)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    val target = current.apps.firstOrNull { it.id == appId }
+                    val now = maxOf(wallNow, current.casesClockMillis)
+                    if (target == null || !target.googlePlayEnabled ||
+                        DiceEngine.rollBlock(target, now) != RollBlock.OK
+                    ) {
+                        outcome.set(JobRollResult.BLOCKED)
+                    } else {
+                        val random = Random.Default
+                        // The roll itself, without a case. The case is only decided here (its skeleton).
+                        val (rolled, facts) = DiceEngine.rollWithFacts(current, appId, now, random, preset)
+                        if (facts == null || rolled === current) {
+                            outcome.set(JobRollResult.BLOCKED)
+                        } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(rolled))) {
+                            ledger = rolled
+                            onLocalChange()
+                            skeleton.set(CaseGenerator.decideSkeleton(rolled, appId, facts, now, random))
+                            outcome.set(JobRollResult.ROLLED)
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return if (finished) JobRollOutcome(outcome.get(), skeleton.get())
+            else JobRollOutcome(JobRollResult.FAILED, null)
+        }
+
+        override fun applyCase(caseId: String, wallNow: Long, build: (Ledger, Long) -> ComplaintCase?): CaseApplyResult {
+            val latch = CountDownLatch(1)
+            val outcome = AtomicReference(CaseApplyResult.FAILED)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    if (current.cases.any { it.id == caseId }) {
+                        outcome.set(CaseApplyResult.ALREADY_THERE)
+                    } else {
+                        val now = maxOf(wallNow, current.casesClockMillis)
+                        val made = build(current, now)
+                        if (made == null) {
+                            outcome.set(CaseApplyResult.NOT_BUILT)
+                        } else {
+                            val updated = current.withCaseAdded(made, now)
+                            if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
+                                ledger = updated
+                                onLocalChange()
+                                outcome.set(CaseApplyResult.ADDED)
+                            }
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return if (finished) outcome.get() else CaseApplyResult.FAILED
+        }
     }
 
     /** The AI mode switch. It can be turned on only when the cloud is linked and signed in. */
@@ -392,6 +475,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** "Write cases with the built-in generator": every waiting customer case is written now, without Claude. */
+    fun writeCasesBuiltIn() {
+        if (!aiActive || aiRunning || cloudWorking) return
+        aiRunning = true
+        thread(start = true) {
+            val result = try {
+                aiEngine.runCasesBuiltIn(jobHost)
+            } catch (e: Throwable) {
+                AiRunResult(ran = true, message = "The cases could not be written. Your data is safe.")
+            }
+            mainHandler.post { finishAiRun(result) }
+        }
+    }
+
     private fun finishAiRun(result: AiRunResult) {
         aiRunning = false
         if (result.ran) {
@@ -402,6 +499,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 aiAnswered = result.answered
             }
             aiMessage = result.message
+            if (result.casesWaiting >= 0) aiCasesWaiting = result.casesWaiting
             aiDoneMap = SyncStore.loadIfExists(getApplication())?.aiDone ?: aiDoneMap
             if (result.notices.isNotEmpty()) aiNotice = result.notices.joinToString("\n")
         }

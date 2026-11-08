@@ -1,5 +1,6 @@
 package com.westly.neribogroup.data
 
+import org.json.JSONObject
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -18,6 +19,158 @@ data class RollFacts(
     /** True when the gold dice earned ad money in this roll. */
     val adsEarned: Boolean = false
 )
+
+/** The limits inside which a case story may choose its amounts. They are the numbers the generator has always used. */
+data class CaseLimits(
+    val refundBaseMultipleMin: Int, val refundBaseMultipleMax: Int,
+    val damagesMin: Long, val damagesMax: Long, val damagesStep: Long,
+    val costsMin: Long, val costsMax: Long, val costsStep: Long,
+    val penaltyMin: Long, val penaltyMax: Long, val penaltyStep: Long,
+    val settlementPercentMin: Int, val settlementPercentMax: Int,
+    val awardedCostsMin: Long, val awardedCostsMax: Long,
+    val generalDamagesPercentMin: Int, val generalDamagesPercentMax: Int,
+    val magistrateMaxClaim: Long
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("refundBaseMultipleMin", refundBaseMultipleMin).put("refundBaseMultipleMax", refundBaseMultipleMax)
+        .put("damagesMin", damagesMin).put("damagesMax", damagesMax).put("damagesStep", damagesStep)
+        .put("costsMin", costsMin).put("costsMax", costsMax).put("costsStep", costsStep)
+        .put("penaltyMin", penaltyMin).put("penaltyMax", penaltyMax).put("penaltyStep", penaltyStep)
+        .put("settlementPercentMin", settlementPercentMin).put("settlementPercentMax", settlementPercentMax)
+        .put("awardedCostsMin", awardedCostsMin).put("awardedCostsMax", awardedCostsMax)
+        .put("generalDamagesPercentMin", generalDamagesPercentMin).put("generalDamagesPercentMax", generalDamagesPercentMax)
+        .put("magistrateMaxClaim", magistrateMaxClaim)
+
+    companion object {
+        /** Money step for settlement and general damages rounding (whole naira). */
+        const val ROUND_STEP = 5_000L
+
+        val STANDARD = CaseLimits(
+            refundBaseMultipleMin = 1, refundBaseMultipleMax = 3,
+            damagesMin = 100_000L, damagesMax = 1_500_000L, damagesStep = 50_000L,
+            costsMin = 20_000L, costsMax = 100_000L, costsStep = 5_000L,
+            penaltyMin = 150_000L, penaltyMax = 1_500_000L, penaltyStep = 10_000L,
+            settlementPercentMin = 25, settlementPercentMax = 60,
+            awardedCostsMin = 30_000L, awardedCostsMax = 150_000L,
+            generalDamagesPercentMin = 15, generalDamagesPercentMax = 50,
+            magistrateMaxClaim = 500_000L
+        )
+
+        fun fromJson(o: JSONObject?): CaseLimits? {
+            if (o == null) return null
+            return try {
+                CaseLimits(
+                    o.getInt("refundBaseMultipleMin"), o.getInt("refundBaseMultipleMax"),
+                    o.getLong("damagesMin"), o.getLong("damagesMax"), o.getLong("damagesStep"),
+                    o.getLong("costsMin"), o.getLong("costsMax"), o.getLong("costsStep"),
+                    o.getLong("penaltyMin"), o.getLong("penaltyMax"), o.getLong("penaltyStep"),
+                    o.getInt("settlementPercentMin"), o.getInt("settlementPercentMax"),
+                    o.getLong("awardedCostsMin"), o.getLong("awardedCostsMax"),
+                    o.getInt("generalDamagesPercentMin"), o.getInt("generalDamagesPercentMax"),
+                    o.getLong("magistrateMaxClaim")
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+}
+
+/**
+ * Everything the app decides about a complaint BEFORE any story is written: whether it happens, the category,
+ * the customer, the real charge, the tier, the outcome and every limit. A story (from Claude or from the
+ * built-in texts) can only fill in words, dates and amounts inside these limits.
+ */
+data class CaseSkeleton(
+    val appId: String,
+    val appName: String,
+    val customerId: String,
+    val customerName: String,
+    val customerEmail: String,
+    val customerPhone: String,
+    val plan: Plan,
+    val category: CaseCategory,
+    val chargeMillis: Long,
+    /** "d MMMM yyyy" */
+    val chargeDateText: String,
+    /** The real price of that plan in this app (0 for Free). */
+    val priceNaira: Long,
+    val agentName: String,
+    /** "A" | "B" | "C" */
+    val tier: String,
+    /** "REPLY" or "NO_REPLY" (tier B only, else ""). */
+    val tierBBranch: String,
+    /** Tier A only: whether the customer writes a thank-you after the resolution. */
+    val thanksReply: Boolean,
+    /** "" unless tier C. */
+    val regulatorShort: String,
+    val regulatorFullName: String,
+    /** "" | "CLOSED" | "REFUND" | "PENALTY" | "UNRESOLVED" */
+    val regulatorDecision: String,
+    /** "" | "DISMISSED" | "SETTLED" | "CLAIMANT_WINS" */
+    val lawsuitOutcome: String,
+    /** 0..2, only when there is a lawsuit. */
+    val adjournments: Int,
+    val outcome: CaseOutcome,
+    val limits: CaseLimits,
+    /** The protected "now" of the roll that decided this skeleton (used for the 72-hour wait). */
+    val createdMillis: Long = 0L
+) {
+    /** True when the story ends in a lawsuit. */
+    val hasCourtPath: Boolean get() = tier == "C" && regulatorDecision == "UNRESOLVED"
+
+    fun toJson(): JSONObject = JSONObject()
+        .put("appId", appId).put("appName", appName)
+        .put("customerId", customerId).put("customerName", customerName)
+        .put("customerEmail", customerEmail).put("customerPhone", customerPhone)
+        .put("plan", plan.name).put("category", category.name)
+        .put("chargeMillis", chargeMillis).put("chargeDateText", chargeDateText)
+        .put("priceNaira", priceNaira).put("agentName", agentName)
+        .put("tier", tier).put("tierBBranch", tierBBranch).put("thanksReply", thanksReply)
+        .put("regulatorShort", regulatorShort).put("regulatorFullName", regulatorFullName)
+        .put("regulatorDecision", regulatorDecision).put("lawsuitOutcome", lawsuitOutcome)
+        .put("adjournments", adjournments).put("outcome", outcome.name)
+        .put("limits", limits.toJson()).put("createdMillis", createdMillis)
+
+    companion object {
+        /** Reads a skeleton back. Returns null when anything is missing or not valid. */
+        fun fromJson(o: JSONObject?): CaseSkeleton? {
+            if (o == null) return null
+            return try {
+                val tier = o.getString("tier")
+                if (tier != "A" && tier != "B" && tier != "C") return null
+                val limits = CaseLimits.fromJson(o.optJSONObject("limits")) ?: return null
+                CaseSkeleton(
+                    appId = o.getString("appId"),
+                    appName = o.getString("appName"),
+                    customerId = o.getString("customerId"),
+                    customerName = o.getString("customerName"),
+                    customerEmail = o.getString("customerEmail"),
+                    customerPhone = o.getString("customerPhone"),
+                    plan = Plan.valueOf(o.getString("plan")),
+                    category = CaseCategory.valueOf(o.getString("category")),
+                    chargeMillis = o.getLong("chargeMillis"),
+                    chargeDateText = o.getString("chargeDateText"),
+                    priceNaira = o.getLong("priceNaira"),
+                    agentName = o.getString("agentName"),
+                    tier = tier,
+                    tierBBranch = o.getString("tierBBranch"),
+                    thanksReply = o.getBoolean("thanksReply"),
+                    regulatorShort = o.getString("regulatorShort"),
+                    regulatorFullName = o.getString("regulatorFullName"),
+                    regulatorDecision = o.getString("regulatorDecision"),
+                    lawsuitOutcome = o.getString("lawsuitOutcome"),
+                    adjournments = o.getInt("adjournments"),
+                    outcome = CaseOutcome.valueOf(o.getString("outcome")),
+                    limits = limits,
+                    createdMillis = o.optLong("createdMillis", 0L)
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+}
 
 /**
  * Creates customer service cases. The whole timeline, the outcome and every amount are decided ONCE
@@ -69,19 +222,31 @@ object CaseGenerator {
     /**
      * Called at the end of a Google Play app's daily roll. [ledger] already holds the roll's result.
      * Returns the ledger with at most one new case added, or unchanged.
+     * Phase 5: this is [decideSkeleton] followed by [buildFromTemplates].
      */
     fun maybeCreate(ledger: Ledger, appId: String, facts: RollFacts, now: Long, random: Random): Ledger {
-        val app = ledger.apps.firstOrNull { it.id == appId } ?: return ledger
-        if (!app.googlePlayEnabled) return ledger
-        if (app.users.count { it.simulated } < MIN_DICE_USERS) return ledger
-        if (app.rolls.size < MIN_ROLLS) return ledger
+        val skeleton = decideSkeleton(ledger, appId, facts, now, random) ?: return ledger
+        val c = buildFromTemplates(ledger, skeleton, now, random)
+        return ledger.withCaseAdded(c, now)
+    }
+
+    /**
+     * Step 1: the honest random part. Whether a case happens (the gates and probabilities), the category, the
+     * customer, the real charge, the tier, the regulator decision, the lawsuit outcome and the limits.
+     * Returns null when no case happens. Nothing is added to the ledger here.
+     */
+    fun decideSkeleton(ledger: Ledger, appId: String, facts: RollFacts, now: Long, random: Random): CaseSkeleton? {
+        val app = ledger.apps.firstOrNull { it.id == appId } ?: return null
+        if (!app.googlePlayEnabled) return null
+        if (app.users.count { it.simulated } < MIN_DICE_USERS) return null
+        if (app.rolls.size < MIN_ROLLS) return null
 
         val effectiveNow = maxOf(now, ledger.casesClockMillis)
         val appCases = ledger.cases.filter { it.appId == app.id }
         val active = appCases.count { !CaseEngine.isFinal(CaseEngine.statusAt(it, effectiveNow)) }
-        if (active >= MAX_ACTIVE_PER_APP) return ledger
+        if (active >= MAX_ACTIVE_PER_APP) return null
         val lastCreated = appCases.maxOfOrNull { it.createdMillis }
-        if (lastCreated != null && now - lastCreated < MIN_DAYS_BETWEEN * DAY_MILLIS) return ledger
+        if (lastCreated != null && now - lastCreated < MIN_DAYS_BETWEEN * DAY_MILLIS) return null
 
         val hits = ArrayList<CaseCategory>()
         if (triggered(facts.renewedUsers.size, 0.0015, random)) hits.add(CaseCategory.BILLING_RENEWAL)
@@ -89,11 +254,11 @@ object CaseGenerator {
         if (triggered(facts.lapsedUsers.size, 0.0010, random)) hits.add(CaseCategory.PLAN_ACCESS)
         if (triggered(facts.newUserCount, 0.0001, random)) hits.add(CaseCategory.DATA_PRIVACY)
         if (facts.adsEarned && random.nextDouble() < 0.004) hits.add(CaseCategory.ADS_CONTENT)
-        if (hits.isEmpty()) return ledger
+        if (hits.isEmpty()) return null
 
         val category = hits[random.nextInt(hits.size)]
         val diceUsers = app.users.filter { it.simulated }
-        if (diceUsers.isEmpty()) return ledger
+        if (diceUsers.isEmpty()) return null
 
         // The customer and the real charge behind the complaint.
         val customer: AppUser
@@ -117,12 +282,96 @@ object CaseGenerator {
             }
         }
 
-        val c = build(ledger, app, customer, chargeMillis, category, now, random)
-        return ledger.withCaseAdded(c, now)
+        val agent = CaseText.AGENTS[random.nextInt(CaseText.AGENTS.size)]
+        val regShort = regulatorShort(category)
+
+        var tier = "A"
+        var branch = ""
+        var thanks = false
+        var regulatorDecision = ""
+        var lawsuit = ""
+        var adjournments = 0
+        var outcome = CaseOutcome.RESOLVED_BY_SUPPORT
+
+        val roll = random.nextInt(100)
+        when {
+            roll < 85 -> {
+                tier = "A"
+                thanks = random.nextInt(100) < 60
+            }
+            roll < 96 -> {
+                tier = "B"
+                branch = if (random.nextInt(100) < 80) "REPLY" else "NO_REPLY"
+            }
+            else -> {
+                tier = "C"
+                val pick = random.nextInt(100)
+                // Penalty (5 points) is only for data privacy. For every other category it becomes "Closed".
+                regulatorDecision = when {
+                    pick < 55 -> "CLOSED"
+                    pick < 70 -> "REFUND"
+                    pick < 75 -> if (category == CaseCategory.DATA_PRIVACY) "PENALTY" else "CLOSED"
+                    else -> "UNRESOLVED"
+                }
+                when (regulatorDecision) {
+                    "CLOSED" -> outcome = CaseOutcome.REGULATOR_CLOSED
+                    "REFUND" -> outcome = CaseOutcome.REGULATOR_REFUND
+                    "PENALTY" -> outcome = CaseOutcome.REGULATOR_PENALTY
+                    else -> {
+                        val adjRoll = random.nextInt(100)
+                        adjournments = if (adjRoll < 40) 0 else if (adjRoll < 80) 1 else 2
+                        val outRoll = random.nextInt(100)
+                        if (outRoll < 45) {
+                            lawsuit = "DISMISSED"
+                            outcome = CaseOutcome.COMPANY_WON
+                        } else if (outRoll < 65) {
+                            lawsuit = "SETTLED"
+                            outcome = CaseOutcome.SETTLED
+                        } else {
+                            lawsuit = "CLAIMANT_WINS"
+                            outcome = CaseOutcome.CUSTOMER_WON
+                        }
+                    }
+                }
+            }
+        }
+
+        return CaseSkeleton(
+            appId = app.id,
+            appName = app.name,
+            customerId = customer.id,
+            customerName = customer.name,
+            customerEmail = customer.email,
+            customerPhone = customer.phone,
+            plan = customer.plan,
+            category = category,
+            chargeMillis = chargeMillis,
+            chargeDateText = longDate(chargeMillis),
+            priceNaira = priceOf(app, customer.plan),
+            agentName = agent,
+            tier = tier,
+            tierBBranch = branch,
+            thanksReply = thanks,
+            regulatorShort = if (tier == "C") regShort else "",
+            regulatorFullName = if (tier == "C") regulatorFullName(regShort) else "",
+            regulatorDecision = regulatorDecision,
+            lawsuitOutcome = lawsuit,
+            adjournments = adjournments,
+            outcome = outcome,
+            limits = CaseLimits.STANDARD,
+            createdMillis = now
+        )
     }
 
+    /**
+     * Step 2 (AI): builds the case from Claude's story. Returns null when anything in the answer breaks a rule,
+     * so the caller can fall back to [buildFromTemplates]. Nothing is added to the ledger here.
+     */
+    fun buildFromAi(ledger: Ledger, skeleton: CaseSkeleton, result: AiCaseResult, now: Long): ComplaintCase? =
+        CaseAi.assemble(ledger, skeleton, result, now)
+
     // ---------------------------------------------------------------------------------------
-    // Building one case
+    // Building one case from the built-in texts
     // ---------------------------------------------------------------------------------------
 
     private class Timeline(private val start: Long, private val random: Random) {
@@ -160,30 +409,27 @@ object CaseGenerator {
         ): Long = add(last + random.nextLong(15L * MINUTE, 3 * HOUR), kind, actor, title, body, status)
     }
 
-    private fun build(
-        ledger: Ledger,
-        app: AppData,
-        customer: AppUser,
-        chargeMillis: Long,
-        category: CaseCategory,
-        now: Long,
-        random: Random
-    ): ComplaintCase {
+    /**
+     * Step 2 (built-in): builds the whole case from the skeleton with the texts of [CaseText] and [CaseCourtText].
+     * The skeleton decides the tier, the decision and the outcome. The random only picks wording, times and the
+     * amounts inside the skeleton's limits.
+     */
+    fun buildFromTemplates(ledger: Ledger, skeleton: CaseSkeleton, now: Long, random: Random): ComplaintCase {
         val number = ledger.nextCaseNumber
         val ref = "NG-CS-" + yearOf(now) + "-" + number.toString().padStart(4, '0')
-        val price = priceOf(app, customer.plan)
-        val first = customer.name.trim().substringBefore(' ')
-        val agent = CaseText.AGENTS[random.nextInt(CaseText.AGENTS.size)]
+        val category = skeleton.category
+        val price = skeleton.priceNaira
+        val first = skeleton.customerName.trim().substringBefore(' ')
         val regShort = regulatorShort(category)
         val vars = hashMapOf(
-            "name" to customer.name,
+            "name" to skeleton.customerName,
             "first" to first,
-            "app" to app.name,
-            "plan" to (if (customer.plan == Plan.FREE) "Free" else if (customer.plan == Plan.PREMIUM) "Premium" else "Pro"),
+            "app" to skeleton.appName,
+            "plan" to (if (skeleton.plan == Plan.FREE) "Free" else if (skeleton.plan == Plan.PREMIUM) "Premium" else "Pro"),
             "amount" to naira(price),
-            "date" to longDate(chargeMillis),
+            "date" to skeleton.chargeDateText,
             "ref" to ref,
-            "agent" to agent,
+            "agent" to skeleton.agentName,
             "regulator" to regulatorFullName(regShort)
         )
         fun f(t: String): String = CaseText.fill(t, vars)
@@ -195,7 +441,7 @@ object CaseGenerator {
         val tl = Timeline(now, random)
         tl.add(now, CaseEventKind.CUSTOMER_EMAIL, CaseActor.CUSTOMER, subject, f(email.body), CaseStatus.OPEN)
 
-        var outcome = CaseOutcome.RESOLVED_BY_SUPPORT
+        var outcome = skeleton.outcome
         var regulator = ""
         var regulatorRef = ""
         var court = ""
@@ -205,9 +451,8 @@ object CaseGenerator {
         var dueReason = ""
         var payBy = 0L
 
-        val roll = random.nextInt(100)
-        when {
-            roll < 85 -> {
+        when (skeleton.tier) {
+            "A" -> {
                 // Tier A: resolved by support.
                 if (random.nextInt(100) < 70) {
                     tl.sameDay(CaseEventKind.SUPPORT_REPLY, CaseActor.SUPPORT, reSubject, f(CaseText.acknowledgement(random)))
@@ -217,18 +462,18 @@ object CaseGenerator {
                 val res = CaseText.resolution(category, random)
                 val resDay = random.nextInt(2, 7)
                 val resDue = tl.addOnDay(resDay, CaseEventKind.RESOLUTION, CaseActor.SUPPORT, f(res.subject), f(res.body), CaseStatus.RESOLVED)
-                if (random.nextInt(100) < 60) {
+                if (skeleton.thanksReply) {
                     tl.add(
                         resDue + random.nextLong(DAY_MILLIS, 2 * DAY_MILLIS),
                         CaseEventKind.CUSTOMER_REPLY, CaseActor.CUSTOMER, "Re: $subject", f(CaseText.thanks(random))
                     )
                 }
             }
-            roll < 96 -> {
+            "B" -> {
                 // Tier B: pending, then resolved.
                 tl.addOnDay(random.nextInt(1, 3), CaseEventKind.SUPPORT_REPLY, CaseActor.SUPPORT, reSubject,
                     f(CaseText.infoRequest(category, random)), CaseStatus.PENDING)
-                if (random.nextInt(100) < 80) {
+                if (skeleton.tierBBranch == "REPLY") {
                     tl.addOnDay(random.nextInt(3, 6), CaseEventKind.CUSTOMER_REPLY, CaseActor.CUSTOMER, "Re: $subject", f(CaseText.details(random)))
                     val res = CaseText.resolution(category, random)
                     tl.addOnDay(random.nextInt(8, 21), CaseEventKind.RESOLUTION, CaseActor.SUPPORT, f(res.subject), f(res.body), CaseStatus.RESOLVED)
@@ -256,26 +501,16 @@ object CaseGenerator {
                     "Response to " + regulatorRef, f(CaseCourtText.companyResponse(random)), CaseStatus.ESCALATED)
                 val decisionDue0 = letterDue + random.nextLong(21 * DAY_MILLIS, 45 * DAY_MILLIS)
 
-                val pick = random.nextInt(100)
-                // Penalty (5 points) is only for data privacy. For every other category it becomes "Closed".
-                val decision = when {
-                    pick < 55 -> 0
-                    pick < 70 -> 1
-                    pick < 75 -> if (category == CaseCategory.DATA_PRIVACY) 2 else 0
-                    else -> 3
-                }
-                when (decision) {
-                    0 -> {
-                        outcome = CaseOutcome.REGULATOR_CLOSED
+                when (skeleton.regulatorDecision) {
+                    "CLOSED" -> {
                         tl.add(decisionDue0, CaseEventKind.REGULATOR_DECISION, CaseActor.REGULATOR, "Decision: complaint closed", f(CaseCourtText.decisionClosed(random)), CaseStatus.RESOLVED)
                     }
-                    1 -> {
-                        outcome = CaseOutcome.REGULATOR_REFUND
+                    "REFUND" -> {
                         tl.add(decisionDue0, CaseEventKind.REGULATOR_DECISION, CaseActor.REGULATOR, "Decision: refund directed", f(CaseCourtText.decisionRefund(random)), CaseStatus.RESOLVED)
                     }
-                    2 -> {
-                        outcome = CaseOutcome.REGULATOR_PENALTY
-                        amountDue = roundTo(random.nextLong(150_000L, 1_500_001L), 10_000L)
+                    "PENALTY" -> {
+                        val lim = skeleton.limits
+                        amountDue = roundTo(random.nextLong(lim.penaltyMin, lim.penaltyMax + 1L), lim.penaltyStep)
                         payBy = decisionDue0 + 30 * DAY_MILLIS
                         dueReason = "Regulatory penalty — NDPC"
                         vars["amount"] = naira(amountDue)
@@ -284,7 +519,7 @@ object CaseGenerator {
                     }
                     else -> {
                         tl.add(decisionDue0, CaseEventKind.REGULATOR_DECISION, CaseActor.REGULATOR, "Decision: not resolved", f(CaseCourtText.decisionUnresolved(random)), CaseStatus.ESCALATED)
-                        val courtInfo = addCourtPath(tl, vars, customer, price, now, decisionDue0, random)
+                        val courtInfo = addCourtPath(tl, vars, skeleton, now, decisionDue0, random)
                         court = courtInfo.court
                         suitNo = courtInfo.suitNo
                         claimAmount = courtInfo.claim
@@ -299,13 +534,13 @@ object CaseGenerator {
 
         return ComplaintCase(
             ref = ref,
-            appId = app.id,
-            appName = app.name,
-            userId = customer.id,
-            customerName = customer.name,
-            customerEmail = customer.email,
-            customerPhone = customer.phone,
-            plan = customer.plan,
+            appId = skeleton.appId,
+            appName = skeleton.appName,
+            userId = skeleton.customerId,
+            customerName = skeleton.customerName,
+            customerEmail = skeleton.customerEmail,
+            customerPhone = skeleton.customerPhone,
+            plan = skeleton.plan,
             category = category,
             subject = subject,
             createdMillis = now,
@@ -321,7 +556,8 @@ object CaseGenerator {
             payByMillis = payBy,
             paidMillis = 0L,
             expenseId = "",
-            notes = emptyList()
+            notes = emptyList(),
+            writer = "App"
         )
     }
 
@@ -339,21 +575,22 @@ object CaseGenerator {
     private fun addCourtPath(
         tl: Timeline,
         vars: HashMap<String, String>,
-        customer: AppUser,
-        price: Long,
+        skeleton: CaseSkeleton,
         now: Long,
         afterMillis: Long,
         random: Random
     ): CourtInfo {
-        val refundBase = price * random.nextInt(1, 4)
-        val damages = roundTo(random.nextLong(100_000L, 1_500_001L), 50_000L)
-        val costs = roundTo(random.nextLong(20_000L, 100_001L), 5_000L)
+        val lim = skeleton.limits
+        val price = skeleton.priceNaira
+        val refundBase = price * random.nextInt(lim.refundBaseMultipleMin, lim.refundBaseMultipleMax + 1)
+        val damages = roundTo(random.nextLong(lim.damagesMin, lim.damagesMax + 1L), lim.damagesStep)
+        val costs = roundTo(random.nextLong(lim.costsMin, lim.costsMax + 1L), lim.costsStep)
         val claim = refundBase + damages + costs
 
         val year = yearOf(afterMillis)
         val court: String
         val suitNo: String
-        if (claim <= 500_000L) {
+        if (claim <= lim.magistrateMaxClaim) {
             court = "Magistrate's Court, Ikeja, Lagos"
             suitNo = "MIK/" + random.nextInt(100, 10000) + "/" + year
         } else {
@@ -374,9 +611,7 @@ object CaseGenerator {
         var day = 35
         tl.add(at(day), CaseEventKind.COURT_HEARING, CaseActor.COURT, "First hearing", f(CaseCourtText.firstHearing(random)))
 
-        val adjRoll = random.nextInt(100)
-        val adjournments = if (adjRoll < 40) 0 else if (adjRoll < 80) 1 else 2
-        repeat(adjournments) {
+        repeat(skeleton.adjournments) {
             day += 28
             tl.add(at(day), CaseEventKind.COURT_ADJOURNED, CaseActor.COURT, "Adjourned", f(CaseCourtText.adjourned(random)))
         }
@@ -386,32 +621,32 @@ object CaseGenerator {
         tl.add(at(day), CaseEventKind.COURT_HEARING, CaseActor.COURT, "Judgment reserved", f(CaseCourtText.reserved(random)))
         val judgmentDay = day + 35
 
-        val outRoll = random.nextInt(100)
-        return when {
-            outRoll < 45 -> {
+        return when (skeleton.lawsuitOutcome) {
+            "DISMISSED" -> {
                 tl.add(at(judgmentDay), CaseEventKind.COURT_JUDGMENT, CaseActor.COURT, "Judgment: claim dismissed", f(CaseCourtText.judgmentDismissed(random)), CaseStatus.CLOSED)
                 CourtInfo(court, suitNo, claim, CaseOutcome.COMPANY_WON, 0L, "", 0L)
             }
-            outRoll < 65 -> {
+            "SETTLED" -> {
                 val settlementDay = judgmentDay - random.nextInt(14, 22)
                 val settleAt = at(settlementDay)
-                val award = maxOf(5_000L, roundTo(claim * random.nextInt(25, 61) / 100L, 5_000L))
+                val percent = random.nextInt(lim.settlementPercentMin, lim.settlementPercentMax + 1)
+                val award = CaseMoney.settlementAmount(claim, percent)
                 val payBy = settleAt + 14 * DAY_MILLIS
                 vars["award"] = naira(award)
                 vars["payby"] = longDate(payBy)
                 tl.add(settleAt, CaseEventKind.SETTLEMENT, CaseActor.COURT, "Settlement agreed", f(CaseCourtText.settlement(random)), CaseStatus.PAYMENT_DUE)
-                CourtInfo(court, suitNo, claim, CaseOutcome.SETTLED, award, "Settlement agreed out of court", payBy)
+                CourtInfo(court, suitNo, claim, CaseOutcome.SETTLED, award, CaseMoney.REASON_SETTLED, payBy)
             }
             else -> {
-                val generalDamages = roundTo(damages * random.nextInt(15, 51) / 100L, 5_000L)
-                val awardedCosts = roundTo(random.nextLong(30_000L, 150_001L), 5_000L)
-                val award = minOf(claim, refundBase + generalDamages + awardedCosts)
+                val percent = random.nextInt(lim.generalDamagesPercentMin, lim.generalDamagesPercentMax + 1)
+                val awardedCosts = roundTo(random.nextLong(lim.awardedCostsMin, lim.awardedCostsMax + 1L), CaseLimits.ROUND_STEP)
+                val award = CaseMoney.claimantAward(refundBase, damages, percent, awardedCosts, claim)
                 val judgmentAt = at(judgmentDay)
                 val payBy = judgmentAt + 30 * DAY_MILLIS
                 vars["award"] = naira(award)
                 vars["payby"] = longDate(payBy)
                 tl.add(judgmentAt, CaseEventKind.COURT_JUDGMENT, CaseActor.COURT, "Judgment for the claimant", f(CaseCourtText.judgmentClaimant(random)), CaseStatus.PAYMENT_DUE)
-                CourtInfo(court, suitNo, claim, CaseOutcome.CUSTOMER_WON, award, "Court-ordered refund, damages and costs", payBy)
+                CourtInfo(court, suitNo, claim, CaseOutcome.CUSTOMER_WON, award, CaseMoney.REASON_CLAIMANT, payBy)
             }
         }
     }

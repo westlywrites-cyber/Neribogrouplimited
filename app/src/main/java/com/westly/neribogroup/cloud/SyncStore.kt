@@ -42,7 +42,9 @@ data class SyncData(
     /** Phase 4B: jobs that were applied on the phone but not yet marked applied in the cloud. Optional. */
     val appliedPendingMark: List<String> = emptyList(),
     /** Phase 4B: per app, how its last AI-mode roll ended ("day|millis|C or B|jobs"). Optional. */
-    val aiDone: Map<String, String> = emptyMap()
+    val aiDone: Map<String, String> = emptyMap(),
+    /** Phase 5: the WRITE_CASE jobs (JSON text) decided on this phone and not yet turned into a case. Optional. */
+    val caseJobs: List<String> = emptyList()
 )
 
 /** Reads and writes cloud_sync.json. Writes are atomic (tmp file, then rename). */
@@ -180,6 +182,11 @@ object SyncStore {
             for ((k, v) in data.aiDone) o.put(k, v)
             root.put("aiDone", o)
         }
+        if (data.caseJobs.isNotEmpty()) {
+            val a = JSONArray()
+            for (j in data.caseJobs) a.put(j)
+            root.put("caseJobs", a)
+        }
         return root.toString(2)
     }
 
@@ -251,6 +258,14 @@ object SyncStore {
                 done[k] = doneObject.optString(k, "")
             }
         }
+        val caseJobs = ArrayList<String>()
+        val caseArray = root.optJSONArray("caseJobs")
+        if (caseArray != null) {
+            for (i in 0 until caseArray.length()) {
+                val t = caseArray.optString(i, "")
+                if (t.isNotEmpty()) caseJobs.add(t)
+            }
+        }
         return SyncData(
             schema = root.optInt("schema", 1),
             deviceId = root.optString("deviceId", ""),
@@ -263,7 +278,8 @@ object SyncStore {
             conflicts = conflicts,
             publishedDays = published,
             appliedPendingMark = marks,
-            aiDone = done
+            aiDone = done,
+            caseJobs = caseJobs
         )
     }
 }

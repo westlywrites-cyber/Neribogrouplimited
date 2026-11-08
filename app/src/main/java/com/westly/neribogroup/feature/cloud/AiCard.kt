@@ -38,7 +38,9 @@ data class AiCardState(
     val appliedToday: Int,
     val settings: AiSettings?,
     val settingsBusy: Boolean,
-    val settingsMessage: String
+    val settingsMessage: String,
+    /** Phase 5: customer cases still waiting for their story. */
+    val casesWaiting: Int = 0
 )
 
 /** The "Claude (AI)" card of Settings: the AI mode switch, the AI settings and a short how-to. */
@@ -48,7 +50,8 @@ fun AiCard(
     onToggle: (Boolean) -> Unit,
     onCheck: () -> Unit,
     onReloadSettings: () -> Unit,
-    onSaveSettings: (AiSettings) -> Unit
+    onSaveSettings: (AiSettings) -> Unit,
+    onWriteCasesBuiltIn: () -> Unit = {}
 ) {
     FlatCard {
         SectionTitle("Claude (AI)")
@@ -105,6 +108,14 @@ fun AiCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            if (state.casesWaiting > 0) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (state.casesWaiting == 1) "1 case waiting" else state.casesWaiting.toString() + " cases waiting",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             val limit = state.settings?.maxJobsPerDay
             if (limit != null && state.waiting + state.answered + state.appliedToday > limit) {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -121,6 +132,11 @@ fun AiCard(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !state.running
             )
+            TextButton(
+                onClick = onWriteCasesBuiltIn,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.running && state.casesWaiting > 0
+            ) { Text("Write cases with the built-in generator") }
 
             Spacer(modifier = Modifier.height(16.dp))
             Text(

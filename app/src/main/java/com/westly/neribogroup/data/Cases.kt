@@ -69,7 +69,9 @@ data class ComplaintCase(
     /** Empty until paid. Then the id of the company expense. */
     val expenseId: String = "",
     /** Owner notes (kind NOTE, actor OWNER, dueMillis = when written). */
-    val notes: List<CaseEvent> = emptyList()
+    val notes: List<CaseEvent> = emptyList(),
+    /** Who wrote the story: "Claude", "App" or empty (older cases). Only shown as tiny grey text on the detail screen. */
+    val writer: String = ""
 ) {
     val hasRegulator: Boolean get() = regulator.isNotBlank()
     val hasSuit: Boolean get() = suitNo.isNotBlank() || court.isNotBlank()

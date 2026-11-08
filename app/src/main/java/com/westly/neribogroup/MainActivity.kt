@@ -232,12 +232,14 @@ private fun NeriboRoot(vm: AppViewModel) {
                         appliedToday = vm.aiAppliedToday(),
                         settings = vm.aiSettings,
                         settingsBusy = vm.aiSettingsBusy,
-                        settingsMessage = vm.aiSettingsMessage
+                        settingsMessage = vm.aiSettingsMessage,
+                        casesWaiting = vm.aiCasesWaiting
                     ),
                     onToggle = { vm.updateAiMode(it) },
                     onCheck = { vm.runAiJobs() },
                     onReloadSettings = { vm.loadAiSettings() },
-                    onSaveSettings = { vm.saveAiSettings(it) }
+                    onSaveSettings = { vm.saveAiSettings(it) },
+                    onWriteCasesBuiltIn = { vm.writeCasesBuiltIn() }
                 )
             }
         )

@@ -275,9 +275,26 @@ object DiceEngine {
         random: Random = Random.Default,
         preset: PresetRoll? = null
     ): Ledger {
-        val app = ledger.apps.firstOrNull { it.id == appId } ?: return ledger
-        if (!app.googlePlayEnabled) return ledger
-        if (rollBlock(app, now) != RollBlock.OK) return ledger
+        val (rolled, facts) = rollWithFacts(ledger, appId, now, random, preset)
+        if (facts == null) return rolled
+        return CaseGenerator.maybeCreate(rolled, appId, facts, now, random)
+    }
+
+    /**
+     * The same roll as [roll], but it does NOT create a customer case. It returns the rolled ledger and what
+     * the roll really did ([RollFacts]). The facts are null (and the ledger is the very same object) when the
+     * roll was not possible. Phase 5: AI mode decides the case skeleton from these facts.
+     */
+    fun rollWithFacts(
+        ledger: Ledger,
+        appId: String,
+        now: Long,
+        random: Random = Random.Default,
+        preset: PresetRoll? = null
+    ): Pair<Ledger, RollFacts?> {
+        val app = ledger.apps.firstOrNull { it.id == appId } ?: return Pair(ledger, null)
+        if (!app.googlePlayEnabled) return Pair(ledger, null)
+        if (rollBlock(app, now) != RollBlock.OK) return Pair(ledger, null)
 
         val today = dayKey(now)
         val dayStart = dayStartMillis(now)
@@ -462,7 +479,7 @@ object DiceEngine {
             newUserCount = newCount,
             adsEarned = adsGross > 0L
         )
-        return CaseGenerator.maybeCreate(rolled, appId, facts, now, random)
+        return Pair(rolled, facts)
     }
 
     // -----------------------------------------------------------------------------------------
