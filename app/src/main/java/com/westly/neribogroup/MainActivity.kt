@@ -8,12 +8,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
 import com.westly.neribogroup.feature.cloud.CloudCard
 import com.westly.neribogroup.feature.cloud.CloudCardState
+import com.westly.neribogroup.feature.cloud.ConflictDialog
 import com.westly.neribogroup.feature.cloud.LoginScreen
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.feature.group.AppsScreen
@@ -32,6 +34,19 @@ import com.westly.neribogroup.feature.staff.StaffDetailScreen
 import com.westly.neribogroup.ui.theme.NeriboTheme
 
 class MainActivity : ComponentActivity() {
+    // The same ViewModel that setContent gets below (both belong to this activity).
+    private val cloudVm: AppViewModel by viewModels()
+
+    override fun onResume() {
+        super.onResume()
+        cloudVm.onAppResumed()
+    }
+
+    override fun onPause() {
+        cloudVm.onAppPaused()
+        super.onPause()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -79,13 +94,30 @@ private fun NeriboRoot(vm: AppViewModel) {
                     it.readBytes().toString(Charsets.UTF_8)
                 }
             }.getOrNull()
+            val toCloud = vm.importCopiesToCloud()
             val ok = text != null && vm.importJson(text)
             Toast.makeText(
                 context,
-                if (ok) "Backup restored" else "That file is not a valid backup",
+                if (ok && toCloud) {
+                    "Backup restored. Imported data will be copied to the cloud"
+                } else if (ok) {
+                    "Backup restored"
+                } else {
+                    "That file is not a valid backup"
+                },
                 Toast.LENGTH_LONG
             ).show()
         }
+    }
+
+    // The conflict question: one at a time, never closes without a choice, never chooses by itself.
+    val waitingConflict = vm.cloudConflicts.firstOrNull()
+    if (waitingConflict != null && !vm.cloudSyncing && !vm.cloudWorking) {
+        ConflictDialog(
+            name = waitingConflict.friendlyName,
+            onKeepPhone = { vm.resolveConflictKeepPhone(waitingConflict.key) },
+            onUseCloud = { vm.resolveConflictUseCloud(waitingConflict.key) }
+        )
     }
 
     val openApp = vm.openAppId?.let { id -> vm.ledger.apps.firstOrNull { it.id == id } }
@@ -151,7 +183,10 @@ private fun NeriboRoot(vm: AppViewModel) {
                         warning = vm.cloudWarning,
                         selfCheckRunning = vm.selfCheckRunning,
                         syncing = vm.cloudSyncing,
-                        syncMessage = vm.cloudSyncMessage
+                        syncMessage = vm.cloudSyncMessage,
+                        status = vm.cloudStatus,
+                        pendingChanges = vm.cloudPendingChanges,
+                        unsyncedDocs = vm.cloudUnsyncedDocs
                     ),
                     selfCheckLines = vm.selfCheckLines,
                     onConnect = { vm.openLogin() },

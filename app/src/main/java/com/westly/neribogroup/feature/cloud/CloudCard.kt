@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.cloud.CloudMode
+import com.westly.neribogroup.cloud.CloudStatus
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.FlatCard
@@ -40,7 +41,10 @@ data class CloudCardState(
     val warning: String,
     val selfCheckRunning: Boolean,
     val syncing: Boolean = false,
-    val syncMessage: String = ""
+    val syncMessage: String = "",
+    val status: CloudStatus = CloudStatus.UP_TO_DATE,
+    val pendingChanges: Int = 0,
+    val unsyncedDocs: Int = 0
 )
 
 enum class CloudCardKind { NOT_CONNECTED, LINKING, LINKED, SIGN_IN_AGAIN, PROBLEM }
@@ -76,11 +80,7 @@ fun CloudCard(
         val stateLine = when (kind) {
             CloudCardKind.NOT_CONNECTED -> "Not connected"
             CloudCardKind.LINKING -> "Linking your data…"
-            CloudCardKind.LINKED -> {
-                val who = if (state.email.isNotEmpty()) state.email else "your account"
-                val whenText = if (state.lastSyncMillis > 0L) " · first upload verified " + formatTime(state.lastSyncMillis) else ""
-                "Linked as $who$whenText"
-            }
+            CloudCardKind.LINKED -> linkedStateLine(state)
             CloudCardKind.SIGN_IN_AGAIN -> "Please sign in again"
             CloudCardKind.PROBLEM -> "Link problem — your data on the phone is safe"
         }
@@ -90,6 +90,15 @@ fun CloudCard(
             fontWeight = FontWeight.SemiBold
         )
 
+        if (kind == CloudCardKind.LINKED) {
+            Spacer(modifier = Modifier.height(4.dp))
+            val who = if (state.email.isNotEmpty()) state.email else "your account"
+            Text(
+                text = "Connected as $who",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         if (kind == CloudCardKind.LINKED && state.syncMessage.isNotEmpty()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -98,7 +107,9 @@ fun CloudCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        if (kind == CloudCardKind.PROBLEM) {
+        if (kind == CloudCardKind.PROBLEM ||
+            (kind == CloudCardKind.LINKED && !state.syncing && state.status == CloudStatus.PROBLEM)
+        ) {
             TextButton(onClick = { showDetails = true }) { Text("Details") }
         }
         if (state.warning.isNotEmpty()) {
@@ -190,6 +201,47 @@ fun CloudCard(
     }
     if (selfCheckLines != null) {
         SelfCheckDialog(lines = selfCheckLines, onClose = onCloseSelfCheck)
+    }
+}
+
+/** The calm one-line state of a linked phone. Reads the status the app already worked out. */
+private fun linkedStateLine(s: CloudCardState): String {
+    if (s.syncing || s.status == CloudStatus.SYNCING) return "Syncing…"
+    return when (s.status) {
+        CloudStatus.WAITING_INTERNET -> {
+            val n = maxOf(1, maxOf(s.pendingChanges, s.unsyncedDocs))
+            "Waiting for internet — " + n + (if (n == 1) " change" else " changes") + " will sync later"
+        }
+        CloudStatus.PROBLEM -> "Sync problem — your data on the phone is safe"
+        CloudStatus.SIGN_IN_AGAIN -> "Please sign in again"
+        CloudStatus.NOT_CONNECTED -> "Not connected"
+        CloudStatus.UP_TO_DATE ->
+            if (s.lastSyncMillis > 0L) "Up to date · last synced " + formatTime(s.lastSyncMillis) else "Up to date"
+        CloudStatus.SYNCING -> "Syncing…"
+    }
+}
+
+/**
+ * Asked when this phone and the cloud both changed one document. It has no way to close except a choice
+ * (back press and a tap outside do nothing), and it never chooses by itself.
+ */
+@Composable
+fun ConflictDialog(
+    name: String,
+    onKeepPhone: () -> Unit,
+    onUseCloud: () -> Unit
+) {
+    NeriboDialog(onDismiss = {}, title = "Which version?") {
+        Text(
+            text = "This phone and the cloud both changed $name. Which one do you want to keep?",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            TintedButton(text = "Keep this phone's version", onClick = onKeepPhone, modifier = Modifier.fillMaxWidth())
+            TintedButton(text = "Use the cloud version", onClick = onUseCloud, modifier = Modifier.fillMaxWidth())
+        }
     }
 }
 

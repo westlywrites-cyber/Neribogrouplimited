@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -493,6 +494,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         setWarningFor(cloudEngine.largestDocBytes)
         refreshCloudState()
+        // Right after login / linking (the first upload itself is already done): one normal sync.
+        if (outcome == LinkOutcome.Done || outcome is LinkOutcome.DoneWithCloudData) autoSync()
     }
 
     private fun setWarningFor(largestBytes: Int) {
@@ -515,6 +518,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cloudPendingChanges = sync?.pending?.changes?.size ?: 0
         cloudConflicts = buildConflictInfos(sync)
         cloudStatus = computeCloudStatus()
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) cancelCloudTimers()
     }
 
     private fun computeCloudStatus(): CloudStatus = when {
@@ -562,6 +566,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cloudSyncing = true
         cloudSyncMessage = ""
         cloudStatus = CloudStatus.SYNCING
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(debounceRunnable)
         thread(start = true) {
             val result = try {
                 task()
@@ -580,11 +586,119 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             cloudUnsyncedDocs = result.unsyncedDocs
         }
         refreshCloudState()
+        if (!appInForeground || cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
+            syncAgainAfter = false
+            return
+        }
+        if (result.ran && result.status == CloudStatus.WAITING_INTERNET) {
+            // One retry after the engine's back-off delay, while the app is open.
+            syncAgainAfter = false
+            val delay = cloudEngine.nextRetryDelayMillis
+            if (delay > 0L) {
+                mainHandler.removeCallbacks(retryRunnable)
+                mainHandler.postDelayed(retryRunnable, delay)
+            }
+        } else if (syncAgainAfter) {
+            syncAgainAfter = false
+            autoSync()
+        }
     }
+
+    // ---- Cloud triggers (Phase 3B-1b): when a sync starts by itself. Nothing here runs with the cloud OFF. ----
+
+    /** True while the app is in the foreground (set by MainActivity onResume / onPause). */
+    private var appInForeground = false
+
+    /** The first resume after the app process started runs the start-up sync (resend, then sync). */
+    private var startupSyncDone = false
+
+    /** SystemClock.elapsedRealtime() of the last resume sync. Used only to ignore a double resume. */
+    private var lastResumeSyncAt = 0L
+
+    /** True when a change or trigger came in while a sync was running: one more sync follows. */
+    private var syncAgainAfter = false
+
+    private val debounceRunnable = Runnable { autoSync() }
+
+    private val retryRunnable = Runnable { autoSync() }
+
+    private val tickRunnable = object : Runnable {
+        override fun run() {
+            if (!appInForeground) return
+            autoSync()
+            mainHandler.postDelayed(this, FOREGROUND_TICK_MILLIS)
+        }
+    }
+
+    /** MainActivity.onResume. Starts the 5-minute timer and syncs (the first time: resend first). */
+    fun onAppResumed() {
+        appInForeground = true
+        mainHandler.removeCallbacks(tickRunnable)
+        mainHandler.postDelayed(tickRunnable, FOREGROUND_TICK_MILLIS)
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) return
+        val now = SystemClock.elapsedRealtime()
+        if (!startupSyncDone) {
+            startupSyncDone = true
+            lastResumeSyncAt = now
+            // The session is refreshed inside every call, so it is fresh when these two run.
+            runSyncTask {
+                val first = cloudEngine.resendPendingOnStart()
+                if (first.ran && first.status == CloudStatus.SIGN_IN_AGAIN) first else cloudEngine.syncNow(syncHost)
+            }
+            return
+        }
+        // A rotation or a quick switch gives two resumes in a row: one sync is enough.
+        if (lastResumeSyncAt != 0L && now - lastResumeSyncAt < RESUME_SYNC_GAP_MILLIS) return
+        lastResumeSyncAt = now
+        autoSync()
+    }
+
+    /** MainActivity.onPause. No timer survives in the background; a running sync may finish. */
+    fun onAppPaused() {
+        appInForeground = false
+        syncAgainAfter = false
+        mainHandler.removeCallbacks(tickRunnable)
+        mainHandler.removeCallbacks(debounceRunnable)
+        mainHandler.removeCallbacks(retryRunnable)
+    }
+
+    /**
+     * Called after a local save. Only schedules one sync, at least 2 seconds after the last change
+     * (a burst of changes gives one sync). Never called for cloud-applied changes.
+     */
+    private fun onLocalChange() {
+        if (applyingCloudData) return
+        if (!appInForeground) return
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) return
+        mainHandler.removeCallbacks(debounceRunnable)
+        mainHandler.postDelayed(debounceRunnable, DEBOUNCE_MILLIS)
+    }
+
+    /** The one door for every automatic sync. Busy = one more sync is remembered for when this one ends. */
+    private fun autoSync() {
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) return
+        if (cloudWorking) return
+        if (cloudSyncing) {
+            syncAgainAfter = true
+            return
+        }
+        runSyncTask { cloudEngine.syncNow(syncHost) }
+    }
+
+    private fun cancelCloudTimers() {
+        syncAgainAfter = false
+        mainHandler.removeCallbacks(debounceRunnable)
+        mainHandler.removeCallbacks(retryRunnable)
+    }
+
+    /** True when an import should show the note "Imported data will be copied to the cloud". */
+    fun importCopiesToCloud(): Boolean = cloudConfig.cloudMode == CloudMode.ON && cloudConfig.signedIn
 
     fun saveLedger(newLedger: Ledger) {
         ledger = newLedger
         LedgerStorage.save(getApplication(), newLedger)
+        // After the local save: only schedules a sync (does nothing with the cloud off).
+        onLocalChange()
     }
 
     fun saveApp(updated: AppData) {
@@ -837,5 +951,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) {
             false
         }
+    }
+
+    private companion object {
+        /** Wait this long after the last change before syncing. */
+        const val DEBOUNCE_MILLIS = 2_500L
+
+        /** The foreground timer: one sync every 5 minutes while the app is open. */
+        const val FOREGROUND_TICK_MILLIS = 5L * 60L * 1000L
+
+        /** Two resumes closer than this give one sync. */
+        const val RESUME_SYNC_GAP_MILLIS = 5_000L
     }
 }
