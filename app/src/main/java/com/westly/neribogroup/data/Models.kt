@@ -122,20 +122,27 @@ data class AppData(
     val manualProToday: Long = 0,
     val manualTodayKey: String = "",
     /** What happened to users' paid plans (started, renewed, ended). The newest 2000 are kept. */
-    val planHistory: List<PlanEvent> = emptyList()
+    val planHistory: List<PlanEvent> = emptyList(),
+    /** Adverts of this app (Google Play apps only). Running, upcoming and the newest finished ones. */
+    val adverts: List<Advert> = emptyList(),
+    /** Free users brought by adverts that are counted but not stored as individual rows. */
+    val audienceFree: Long = 0,
+    /** How many audience users were added on the day named by [audienceTodayKey]. */
+    val audienceTodayKey: String = "",
+    val audienceToday: Long = 0
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
     val profit: Long get() = income - expenses
 
     /** Google Play apps count from the user list. Manual apps use the numbers typed in Edit. */
-    val totalUsers: Long get() = if (googlePlayEnabled) users.size.toLong() else manualTotalUsers
+    val totalUsers: Long get() = if (googlePlayEnabled) users.size.toLong() + audienceFree else manualTotalUsers
     val premiumUsers: Long
         get() = if (googlePlayEnabled) users.count { it.plan == Plan.PREMIUM }.toLong() else manualPremiumUsers
     val proUsers: Long
         get() = if (googlePlayEnabled) users.count { it.plan == Plan.PRO }.toLong() else manualProUsers
     val freeUsers: Long
-        get() = if (googlePlayEnabled) users.count { it.plan == Plan.FREE }.toLong()
+        get() = if (googlePlayEnabled) users.count { it.plan == Plan.FREE }.toLong() + audienceFree
         else maxOf(0L, manualTotalUsers - manualPremiumUsers - manualProUsers)
 
     /** Everything waiting in the Google Play Balance. It is not profit until it is withdrawn. */
@@ -147,7 +154,8 @@ data class AppData(
         }
         val start = dayStartMillis(now)
         val end = start + DAY_MILLIS
-        return users.count { it.addedMillis >= start && it.addedMillis < end }.toLong()
+        val rows = users.count { it.addedMillis >= start && it.addedMillis < end }.toLong()
+        return rows + (if (audienceTodayKey == dayKey(now)) audienceToday else 0L)
     }
 
     fun premiumTodayAt(now: Long): Long {
@@ -328,6 +336,10 @@ data class AppData(
         playSubsBalance = current.playSubsBalance,
         playAdsBalance = current.playAdsBalance,
         campaign = current.campaign,
+        adverts = current.adverts,
+        audienceFree = current.audienceFree,
+        audienceTodayKey = current.audienceTodayKey,
+        audienceToday = current.audienceToday,
         planHistory = PlanHistory.merge(current.planHistory, planHistory)
     )
 

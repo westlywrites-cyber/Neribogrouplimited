@@ -80,6 +80,10 @@ object LedgerStorage {
             o.put("manualPremiumToday", app.manualPremiumToday)
             o.put("manualProToday", app.manualProToday)
             o.put("manualTodayKey", app.manualTodayKey)
+            o.put("adverts", advertsToJson(app.adverts))
+            o.put("audienceFree", app.audienceFree)
+            o.put("audienceTodayKey", app.audienceTodayKey)
+            o.put("audienceToday", app.audienceToday)
             val campaign = app.campaign
             if (campaign != null) {
                 val co = JSONObject()
@@ -305,6 +309,7 @@ object LedgerStorage {
         val rolls = jsonToRolls(o.optJSONArray("rolls"))
         val playTx = jsonToPlayTx(o.optJSONArray("playTx"))
         val campaign = jsonToCampaign(o.optJSONObject("campaign"))
+        val adverts = jsonToAdverts(o.optJSONArray("adverts"))
         val lastRoll = o.optString("lastRollDayKey")
         val subs = o.optLong("playSubsBalance")
         val ads = o.optLong("playAdsBalance")
@@ -314,7 +319,7 @@ object LedgerStorage {
             o.optBoolean("googlePlayEnabled")
         } else {
             lastRoll.isNotBlank() || rolls.isNotEmpty() || playTx.isNotEmpty() || subs > 0L || ads > 0L ||
-                users.any { it.simulated } || adsOn || campaign != null
+                users.any { it.simulated } || adsOn || campaign != null || adverts.isNotEmpty()
         }
 
         val hasManual = o.has("manualTotalUsers")
@@ -354,8 +359,84 @@ object LedgerStorage {
             manualPremiumToday = o.optLong("manualPremiumToday"),
             manualProToday = o.optLong("manualProToday"),
             manualTodayKey = o.optString("manualTodayKey"),
-            planHistory = jsonToPlanHistory(o.optJSONArray("planHistory"))
+            planHistory = jsonToPlanHistory(o.optJSONArray("planHistory")),
+            adverts = adverts,
+            audienceFree = o.optLong("audienceFree"),
+            audienceTodayKey = o.optString("audienceTodayKey"),
+            audienceToday = o.optLong("audienceToday")
         )
+    }
+
+    /** Adverts as JSON. The plan is a JSON array of whole numbers; nothing here is a floating point. */
+    private fun advertsToJson(list: List<Advert>): JSONArray {
+        val array = JSONArray()
+        for (a in list) {
+            val o = JSONObject()
+            o.put("id", a.id)
+            o.put("celebrityName", a.celebrityName)
+            val platforms = JSONArray()
+            for (p in a.platforms) {
+                platforms.put(JSONObject().put("name", p.name).put("followers", p.followers))
+            }
+            o.put("platforms", platforms)
+            o.put("totalFollowers", a.totalFollowers)
+            o.put("conversionPpm", a.conversionPpm)
+            o.put("targetUsers", a.targetUsers)
+            o.put("startDayKey", a.startDayKey)
+            o.put("endDayKey", a.endDayKey)
+            o.put("stoppedDayKey", a.stoppedDayKey)
+            val plan = JSONArray()
+            for (n in a.plan) plan.put(n)
+            o.put("plan", plan)
+            o.put("deliveredDays", a.deliveredDays)
+            o.put("deliveredUsers", a.deliveredUsers)
+            o.put("createdMillis", a.createdMillis)
+            array.put(o)
+        }
+        return array
+    }
+
+    /** Reads adverts. Older files have none. A broken advert (no days, no plan) is skipped. */
+    private fun jsonToAdverts(array: JSONArray?): List<Advert> {
+        if (array == null) return emptyList()
+        val list = ArrayList<Advert>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val start = o.optString("startDayKey")
+            val end = o.optString("endDayKey")
+            val planArray = o.optJSONArray("plan")
+            if (start.isBlank() || end.isBlank() || planArray == null || planArray.length() == 0) continue
+            val plan = ArrayList<Long>()
+            for (j in 0 until planArray.length()) plan.add(planArray.optLong(j))
+            val platforms = ArrayList<AdvertPlatform>()
+            val platformArray = o.optJSONArray("platforms")
+            if (platformArray != null) {
+                for (j in 0 until platformArray.length()) {
+                    val po = platformArray.optJSONObject(j) ?: continue
+                    val name = po.optString("name")
+                    if (name.isBlank()) continue
+                    platforms.add(AdvertPlatform(name, po.optLong("followers")))
+                }
+            }
+            list.add(
+                Advert(
+                    id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    celebrityName = o.optString("celebrityName"),
+                    platforms = platforms,
+                    totalFollowers = o.optLong("totalFollowers"),
+                    conversionPpm = o.optInt("conversionPpm"),
+                    targetUsers = o.optLong("targetUsers"),
+                    startDayKey = start,
+                    endDayKey = end,
+                    stoppedDayKey = o.optString("stoppedDayKey"),
+                    plan = plan,
+                    deliveredDays = o.optInt("deliveredDays"),
+                    deliveredUsers = o.optLong("deliveredUsers"),
+                    createdMillis = o.optLong("createdMillis")
+                )
+            )
+        }
+        return list
     }
 
     private fun planHistoryToJson(list: List<PlanEvent>): JSONArray {
@@ -571,6 +652,7 @@ object LedgerStorage {
             o.put("subsNet", r.subsNet)
             o.put("adsNet", r.adsNet)
             o.put("campaign", r.campaign)
+            o.put("advertUsers", r.advertUsers)
             array.put(o)
         }
         return array
@@ -601,7 +683,8 @@ object LedgerStorage {
                     lapsed = o.optLong("lapsed"),
                     subsNet = o.optLong("subsNet"),
                     adsNet = o.optLong("adsNet"),
-                    campaign = o.optBoolean("campaign")
+                    campaign = o.optBoolean("campaign"),
+                    advertUsers = o.optLong("advertUsers")
                 )
             )
         }

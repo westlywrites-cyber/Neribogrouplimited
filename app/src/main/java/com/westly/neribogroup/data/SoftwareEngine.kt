@@ -253,7 +253,7 @@ object SoftwareEngine {
     }
 
     /** Keeps at most 100 closed proposals. A proposal that has a project is never dropped. */
-    private fun pruneOffers(
+    internal fun pruneOffers(
         offers: List<SoftwareOffer>,
         projects: List<SoftwareProject>,
         effectiveNow: Long

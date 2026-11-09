@@ -337,10 +337,29 @@ object DiceEngine {
             emptyList()
         }
 
-        // Active users (blue). Never more than all users, never fewer than today's new users.
-        val totalAfter = app.totalUsers + newCount
+        // Adverts: users that celebrities' followers bring. They come on top of the dice and are NOT
+        // multiplied by the Campaign. No random numbers are drawn when the app has no advert users.
+        val delivery = AdvertEngine.deliverAll(app, today)
+        val advertTotal = delivery.users
+        var advertRows: List<AppUser> = emptyList()
+        if (advertTotal > 0L) {
+            val room = max(0, AdvertEngine.MAX_STORED_USER_ROWS_PER_APP - (app.users.size + newCount))
+            val rowsToMake = min(
+                advertTotal,
+                min(AdvertEngine.MAX_ROWS_PER_ROLL, room).toLong()
+            ).toInt()
+            if (rowsToMake > 0) {
+                advertRows = IdentityGenerator.make(rowsToMake, ledger, now, dayStart, random, newUsers)
+            }
+        }
+        // The rest is only counted (Free users that are not listed one by one).
+        val audienceAdded = advertTotal - advertRows.size
+
+        // Active users (blue). Never more than all users, never fewer than today's new users
+        // (advert users are active on the day they arrive).
+        val totalAfter = app.totalUsers + newCount + advertTotal
         val fromDice = activeFor(face(DiceKind.ACTIVE), totalAfter, factor, random)
-        val activeToday = min(totalAfter, max(fromDice, newCount.toLong()))
+        val activeToday = min(totalAfter, max(fromDice, newCount + advertTotal))
 
         // Upgrades (yellow and purple). Only dice users who were Free before this roll.
         val freePool = upgradePool(app).shuffled(random)
@@ -438,7 +457,7 @@ object DiceEngine {
         val subsNet = lines.filter { it.kind != PlayTxKind.ADS }.sumOf { it.net }
         val adsNet = lines.filter { it.kind == PlayTxKind.ADS }.sumOf { it.net }
 
-        val finalUsers = users.map { changed[it.id] ?: it } + newUsers
+        val finalUsers = users.map { changed[it.id] ?: it } + newUsers + advertRows
 
         val record = RollRecord(
             dayKey = today,
@@ -451,7 +470,8 @@ object DiceEngine {
             lapsed = lapsed.toLong(),
             subsNet = subsNet,
             adsNet = adsNet,
-            campaign = campaignToday != null
+            campaign = campaignToday != null,
+            advertUsers = advertTotal
         )
 
         val history = (app.activeHistory.filter { it.dayKey != today } + DayCount(today, activeToday))
@@ -485,7 +505,15 @@ object DiceEngine {
             rolls = (app.rolls + record).takeLast(30),
             playTx = (app.playTx + lines).takeLast(200),
             playSubsBalance = app.playSubsBalance + subsNet,
-            playAdsBalance = app.playAdsBalance + adsNet
+            playAdsBalance = app.playAdsBalance + adsNet,
+            adverts = delivery.updatedAdverts,
+            audienceFree = app.audienceFree + audienceAdded,
+            audienceTodayKey = if (audienceAdded > 0L) today else app.audienceTodayKey,
+            audienceToday = if (audienceAdded > 0L) {
+                (if (app.audienceTodayKey == today) app.audienceToday else 0L) + audienceAdded
+            } else {
+                app.audienceToday
+            }
         )
         val rolled = ledger.copy(apps = ledger.apps.map { if (it.id == appId) updated else it })
 

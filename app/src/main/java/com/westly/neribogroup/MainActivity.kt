@@ -285,7 +285,7 @@ private fun NeriboRoot(vm: AppViewModel) {
             aiStateFor = { n -> vm.aiRollStateForSoftware(n) },
             aiChecking = vm.aiRunning,
             onAiCheck = { vm.runAiJobs() },
-            onAiRollBuiltIn = { vm.aiRollSoftwareBuiltIn() }
+            softwareAttempts = vm.softwareAttemptsToday(System.currentTimeMillis())
         )
     } else if (openApp != null) {
         AppDashboardScreen(
@@ -299,6 +299,10 @@ private fun NeriboRoot(vm: AppViewModel) {
                 vm.startCampaign(openApp.id, size, startIn, lasts)
             },
             onStopCampaign = { vm.stopCampaign(openApp.id) },
+            onStartAdvert = { name, platforms, startIn, lasts ->
+                vm.startAdvert(openApp.id, name, platforms, startIn, lasts)
+            },
+            onStopAdvert = { advertId -> vm.stopAdvert(openApp.id, advertId) },
             chargedToCompany = vm.ledger.company.expenses.filter { it.appId == openApp.id },
             onEnableGooglePlay = { vm.enableGooglePlay(openApp.id) },
             onAddCompanyExpense = { title, amount -> vm.addAppExpense(openApp.id, title, amount) },

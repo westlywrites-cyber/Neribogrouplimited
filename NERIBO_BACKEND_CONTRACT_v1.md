@@ -87,3 +87,20 @@ Global checks on results: every email-like string anywhere in the result must us
 ## JSON-Schema subset (result_schema)
 Supported: `type` (string or array of: object, array, string, integer, number, boolean, null), `enum`, `const`, `properties`, `required`, `additionalProperties` (boolean; default **false** when `properties` is present), `items` (single schema), `minItems`, `maxItems`, `minimum`, `maximum`, `multipleOf`, `minLength`, `maxLength`, `pattern` (Postgres regex), boolean schemas. Depth ≤ 12, errors ≤ 30. Error text looks like `$.fee: must be <= 5000000`.
 Warnings: unknown keywords (title, format, description, oneOf, anyOf, allOf, $ref …) are ignored silently; `additionalProperties` as a schema object is ignored. A broken schema returns an error text and never raises.
+
+
+## Addendum (update): SOFTWARE_ROLL, one software job a day
+
+- Software Development Clients are now rolled ONLY by Claude, with ONE job a day:
+  kind `SOFTWARE_ROLL`, app_id `software-clients`, dedupe_key `<day>:software-clients:SOFTWARE_ROLL:<attempt>` (attempt 1..3),
+  priority 50, sort_order 0. The app publishes it with `publish_roll_jobs`. No server function changed.
+- Claim order (unchanged): `agent_claim_next_app` orders pending jobs by priority, then sort_order, then created_at, with no day filter.
+  Priority 50 therefore comes before dice and case jobs (100) and the older software jobs (110). SOFTWARE_ROLL is not a
+  DICE_ROLL, so it is claimed alone, one job at a time (the single-job branch of `roll_next`), and answered with `submit_result`.
+- Answer shape (result_schema is built by the app): `{ contactFace 0-5, offerFace 0-5, comment?, offers: [ { projectCode, kind,
+  clientType, clientName, contactName, country, title, summary, requirements[5..7], deliveryWeeks 1-12, fee } ] }`.
+  The app checks every field again; a rejected answer is asked again (up to 3 attempts a day). Contacts, ids and the payment,
+  hosting, content and maintenance lines are made by the app.
+- Rulebook v5 adds `job_kinds.SOFTWARE_ROLL` and `software_roll` (the writing rules). The older software job kinds
+  (DICE_ROLL with SOFTWARE_CONTACTS / SOFTWARE_PROPOSALS, WRITE_PROPOSAL) are no longer published by the app.
+- Adverts (Google Play apps) are local to each app document: no backend change.

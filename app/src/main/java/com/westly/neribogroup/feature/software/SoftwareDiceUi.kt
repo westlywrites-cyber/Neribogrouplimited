@@ -21,6 +21,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.westly.neribogroup.cloud.AiRollKind
+import com.westly.neribogroup.cloud.AiRollState
 import com.westly.neribogroup.data.DiceKind
 import com.westly.neribogroup.data.SoftwareRoll
 import com.westly.neribogroup.feature.appdetail.DiceCube
@@ -203,5 +205,121 @@ fun SoftwareRollRow(roll: SoftwareRoll) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+
+/**
+ * Part C: "Today's roll" of the software app. Claude rolls both dice and writes the proposals in ONE job a
+ * day. There is no button that rolls here: only "Check now", which looks for Claude's answer.
+ */
+@Composable
+fun SoftwareClaudeCard(
+    now: Long,
+    aiOn: Boolean,
+    state: AiRollState,
+    attemptsToday: Int,
+    todayRoll: SoftwareRoll?,
+    checking: Boolean,
+    onCheck: () -> Unit
+) {
+    FlatCard {
+        Text(
+            text = "Today's roll",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            text = formatFullDate(now),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (!aiOn) {
+            Text(
+                text = "Claude rolls the software dice, once a day. Turn on the cloud and AI mode in " +
+                    "Settings, then proposals will arrive here.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            return@FlatCard
+        }
+
+        val rolled = state.kind == AiRollKind.ROLLED_CLAUDE || state.kind == AiRollKind.ROLLED_BUILTIN ||
+            state.kind == AiRollKind.ROLLED_OTHER
+        val headline = when {
+            rolled -> "Rolled today ✔"
+            state.kind == AiRollKind.OFFLINE -> "Waiting for internet"
+            state.kind == AiRollKind.WAITING && attemptsToday > 1 ->
+                "Claude's last answer was not accepted. Trying again (attempt " + attemptsToday + " of 3)."
+            state.kind == AiRollKind.WAITING -> "Waiting for Claude"
+            attemptsToday >= 3 ->
+                "Claude's answers were not accepted 3 times today, so there are no new proposals today."
+            else -> "Not rolled yet. Open Claude and say \"roll next\"."
+        }
+        Text(
+            text = headline,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold
+        )
+
+        if (rolled && todayRoll != null) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    DiceCube(face = todayRoll.contactFace, color = diceColor(DiceKind.ACTIVE))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Clients who contacted you",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    DiceCube(face = todayRoll.offerFace, color = diceColor(DiceKind.NEW))
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Real proposals",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = rollResultText(todayRoll),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (todayRoll.note.isNotBlank()) {
+                Text(
+                    text = todayRoll.note,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        if (!rolled) {
+            Spacer(modifier = Modifier.height(12.dp))
+            TintedButton(
+                text = if (checking) "Checking..." else "Check now",
+                onClick = onCheck,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !checking
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Claude rolls both dice and writes the proposals, once a day. " +
+                "No money is added until you accept one.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

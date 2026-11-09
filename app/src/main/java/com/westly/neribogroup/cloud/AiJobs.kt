@@ -16,6 +16,7 @@ import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.ProposalSlot
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_NAME
+import com.westly.neribogroup.data.SoftwareAi
 import com.westly.neribogroup.data.SoftwareEngine
 import com.westly.neribogroup.data.SoftwareGenerator
 import com.westly.neribogroup.data.SoftwarePreset
@@ -108,6 +109,13 @@ interface AiJobHost {
      * ledger.json is written first. ROLLED only when the roll happened and was saved.
      */
     fun rollSoftwareForJobs(preset: SoftwarePreset?, wallNow: Long): JobRollResult
+
+    /**
+     * Part C: applies Claude's software roll on the main thread. [build] gets the LIVE ledger and the
+     * protected "now" and returns the new ledger, or null when nothing may be made (then BLOCKED comes back).
+     * ledger.json is written first. Nothing is applied when today was already rolled.
+     */
+    fun applySoftwareRoll(dayKey: String, wallNow: Long, build: (Ledger, Long) -> Ledger?): JobRollResult
 }
 
 class JobRollOutcome(val result: JobRollResult, val skeleton: CaseSkeleton?)
@@ -523,7 +531,26 @@ class AiJobEngine(
         if (firstFailure != null) return failure(firstFailure)
         var rows = first.rows
         var caseRows = first.cases
-        var swRows = first.software
+        val swRows = first.software
+
+        val counts = LinkedHashMap<String, AiCounts>()
+        var waiting = 0
+        var answered = 0
+        val doneUpdates = LinkedHashMap<String, String>()
+        var domains: List<String>? = null
+        var publishProblem = ""
+
+        // 0. Software Development Clients come FIRST (Part C): one SOFTWARE_ROLL job a day, published and
+        // applied before any Google Play dice job. Software is rolled only by Claude; there is no fallback.
+        val swRun = processSoftwareRoll(host, swRows, notices, doneUpdates)
+        if (swRun.failure != null) return failure(swRun.failure)
+        if (swRun.rolled) rolledAny = true
+        if (swRun.counts != null) {
+            counts[SOFTWARE_APP_ID] = swRun.counts
+            waiting += swRun.counts.total - swRun.counts.answered
+            answered += swRun.counts.answered
+        }
+        if (swRun.publishProblem.isNotEmpty()) publishProblem = swRun.publishProblem
 
         // 1. Publish today's jobs, once per app per day.
         val gpApps = ledger0.apps.filter { it.googlePlayEnabled && it.id != SOFTWARE_APP_ID }
@@ -531,7 +558,6 @@ class AiJobEngine(
         val publishedNow = LinkedHashMap<String, String>()
         for ((id, day) in before) if (gpApps.any { it.id == id }) publishedNow[id] = day
         var publishedAny = false
-        var publishProblem = ""
         for ((index, a) in gpApps.withIndex()) {
             if (DiceEngine.rollBlock(a, now0) != RollBlock.OK) continue
             if (a.lastRollDayKey == today) continue
@@ -567,7 +593,6 @@ class AiJobEngine(
             if (againFailure != null) return failure(againFailure)
             rows = again.rows
             caseRows = again.cases
-            swRows = again.software
         }
 
         // 2. Read Claude's answers and apply every group that is ready.
@@ -578,12 +603,6 @@ class AiJobEngine(
                 gpApps.indexOfFirst { it.id == group[0].appId }
             })
         )
-
-        val counts = LinkedHashMap<String, AiCounts>()
-        var waiting = 0
-        var answered = 0
-        val doneUpdates = LinkedHashMap<String, String>()
-        var domains: List<String>? = null
 
         for (group in ordered) {
             val appId = group[0].appId
@@ -701,17 +720,6 @@ class AiJobEngine(
             }
         }
 
-        // Phase 6: Software Development Clients (two dice, then one job per proposal).
-        val swRun = processSoftware(host, swRows, notices, doneUpdates)
-        if (swRun.failure != null && !rolledAny && swRun.counts == null) return failure(swRun.failure)
-        if (swRun.rolled) rolledAny = true
-        if (swRun.counts != null) {
-            counts[SOFTWARE_APP_ID] = swRun.counts
-            waiting += swRun.counts.total - swRun.counts.answered
-            answered += swRun.counts.answered
-        }
-        if (swRun.publishProblem.isNotEmpty() && publishProblem.isEmpty()) publishProblem = swRun.publishProblem
-
         if (doneUpdates.isNotEmpty()) {
             val keep = ledger0.apps.map { it.id }.toSet()
             update { data ->
@@ -744,6 +752,118 @@ class AiJobEngine(
             complete = true,
             casesWaiting = caseRun.waiting
         )
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Part C: Software Development Clients, ONE job a day (SOFTWARE_ROLL), rolled only by Claude.
+    // Claude rolls both dice and writes the proposals in one answer. The app checks everything again,
+    // creates the proposals once and marks the job applied. A rejected answer is asked again, up to 3
+    // attempts a day. There is NO built-in fallback.
+    // ---------------------------------------------------------------------------------------------
+
+    private fun processSoftwareRoll(
+        host: AiJobHost,
+        rows0: List<SwRow>,
+        notices: MutableList<String>,
+        doneUpdates: MutableMap<String, String>
+    ): SoftwareRun {
+        val ledger0 = host.currentLedger()
+        if (ledger0.apps.none { it.id == SOFTWARE_APP_ID }) return SoftwareRun()
+
+        // Jobs of the older two-stage software roll are never used any more.
+        rejectSw(rows0.filter { !it.isRoll && it.status == "submitted" }, "software is rolled by one job now")
+
+        var rolled = false
+        var counts: AiCounts? = null
+        var openToday = false
+        var publishProblem = ""
+        val rollRows = rows0.filter { it.isRoll }.sortedWith(
+            compareBy<SwRow>({ it.dayKey }, { SoftwareAi.attemptOfDedupeKey(it.dedupeKey) ?: 0 })
+        )
+
+        for (row in rollRows) {
+            val live = host.currentLedger()
+            val wallNow = System.currentTimeMillis()
+            val liveToday = dayKey(SoftwareEngine.effectiveNow(live, wallNow))
+            val age = AiJobRules.ageDays(row.dayKey, liveToday)
+            val submitted = row.status == "submitted"
+            if (age == null) {
+                if (submitted) rejectId(row.id, "bad day")
+                continue
+            }
+            if (age < 0L) {
+                if (submitted) rejectId(row.id, "future day")
+                continue
+            }
+            if (age > AiJobRules.MAX_AGE_DAYS) {
+                if (submitted) rejectId(row.id, "too old")
+                continue
+            }
+            if (!submitted) {
+                // Still waiting for Claude.
+                openToday = true
+                counts = AiCounts(0, 1)
+                continue
+            }
+            // Today (or a later day) was already rolled: nothing to create, just close the job.
+            if (!SoftwareEngine.canRoll(live, wallNow) || live.software.lastRollDayKey >= row.dayKey) {
+                markAppliedIds(listOf(row.id))
+                continue
+            }
+            val check = SoftwareAi.validate(live, row.result, wallNow)
+            if (!check.ok) {
+                rejectId(row.id, check.reason)
+                continue
+            }
+            val wall = System.currentTimeMillis()
+            when (host.applySoftwareRoll(row.dayKey, wall) { current, now ->
+                SoftwareAi.applyClaudeRoll(current, row.result, now, Random.Default)
+            }) {
+                JobRollResult.ROLLED -> {
+                    markAppliedIds(listOf(row.id))
+                    doneUpdates[SOFTWARE_APP_ID] = AiDone.encode(liveToday, wall, true, 1)
+                    val made = host.currentLedger().software.rolls.firstOrNull()?.offers ?: 0
+                    notices.add(
+                        "Claude rolled the software dice: " + made + " new proposal" + (if (made == 1) "" else "s")
+                    )
+                    rolled = true
+                }
+                JobRollResult.BLOCKED -> rejectId(row.id, "roll blocked")
+                JobRollResult.FAILED -> {
+                    // The phone could not save. Nothing was marked: the next pass tries again.
+                    openToday = true
+                    counts = AiCounts(1, 1)
+                }
+            }
+        }
+
+        // Publish today's job (or the next attempt) when software can still roll and nothing is open.
+        val live = host.currentLedger()
+        val wall = System.currentTimeMillis()
+        if (!openToday && SoftwareEngine.canRoll(live, wall)) {
+            val today = dayKey(SoftwareEngine.effectiveNow(live, wall))
+            val attempts = load().softwareAttempts[today] ?: 0
+            if (attempts < SoftwareAi.MAX_ATTEMPTS) {
+                val attempt = attempts + 1
+                val list = JSONArray().put(SoftwareAi.buildJob(live, wall, attempt))
+                val r = api.rpc("publish_roll_jobs", body().put("p_jobs", list))
+                if (r is ApiResult.Ok) {
+                    update { data ->
+                        val merged = LinkedHashMap(data.softwareAttempts)
+                        merged[today] = attempt
+                        val keep = merged.keys.sortedDescending().take(5).toSet()
+                        data.copy(softwareAttempts = merged.filterKeys { it in keep })
+                    }
+                    counts = AiCounts(0, 1)
+                } else if (r is ApiResult.AppError) {
+                    publishProblem = "Could not put the software roll job in the cloud (" +
+                        (if (r.code.isEmpty()) "error" else r.code) + ")."
+                } else {
+                    return SoftwareRun(rolled = rolled, counts = counts, failure = r)
+                }
+            }
+        }
+        return SoftwareRun(rolled = rolled, counts = counts, publishProblem = publishProblem)
     }
 
     // ---------------------------------------------------------------------------------------------

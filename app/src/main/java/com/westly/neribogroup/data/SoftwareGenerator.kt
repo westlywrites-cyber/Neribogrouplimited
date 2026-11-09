@@ -391,6 +391,80 @@ object SoftwareGenerator {
         )
     }
 
+    /**
+     * Part C: makes one proposal from what Claude wrote and the app has already checked ([claude] comes
+     * from SoftwareAi.validate). The app-owned fields (id, ref, times, status, e-mail, phone, the payment,
+     * hosting, content and maintenance lines) are made here exactly as createOfferFromSlot makes them.
+     */
+    fun buildFromClaude(
+        claude: ClaudeOffer,
+        existingOffers: List<SoftwareOffer>,
+        existingClients: List<SoftwareClient>,
+        number: Int,
+        effectiveNow: Long,
+        random: Random
+    ): SoftwareOffer {
+        val taken = Taken(HashSet(), HashSet(), HashSet())
+        for (o in existingOffers) {
+            taken.names.add(o.clientName.trim().lowercase())
+            taken.emails.add(o.email.trim().lowercase())
+            taken.phones.add(digitsOf(o.phone))
+        }
+        for (c in existingClients) {
+            taken.names.add(c.name.trim().lowercase())
+            taken.emails.add(c.email.trim().lowercase())
+            taken.phones.add(digitsOf(c.phone))
+        }
+        val foreign: SoftwareCountry? = FOREIGN_COUNTRIES.firstOrNull { it.name == claude.country }
+        val email = if (claude.clientType == ClientType.COMPANY) {
+            "info@" + slugOf(claude.clientName) + "." + (foreign?.emailTld ?: "com.ng")
+        } else {
+            uniquePersonEmail(claude.clientName, taken, random)
+        }
+        val phone = uniquePhone(foreign, taken, random)
+
+        val isCode = claude.kind == OfferKind.CODE_PURCHASE
+        val requirements = ArrayList<String>(claude.requirements)
+        if (isCode) {
+            requirements.add("Payment: 50% when you accept, 50% on handover.")
+            requirements.add("Full handoff. No maintenance after delivery.")
+        } else {
+            requirements.add(HOSTING_LINES.random(random))
+            requirements.add(CONTENT_LINES.random(random))
+            requirements.add("Payment: 50% when you accept, 50% on delivery.")
+            requirements.add(
+                "Monthly maintenance after delivery: " + formatMoney(claude.feeUnits / 10, claude.currency) +
+                    " every 30 days."
+            )
+        }
+        val prefix = "Source code purchase: "
+        val title = if (isCode && !claude.title.startsWith(prefix, ignoreCase = true)) prefix + claude.title else claude.title
+        val created = createdTimeToday(effectiveNow, random)
+        return SoftwareOffer(
+            id = UUID.randomUUID().toString(),
+            ref = "SW-OFR-" + SoftwareEngine.yearOf(created) + "-" + number.toString().padStart(4, '0'),
+            createdMillis = created,
+            expiresMillis = created + SoftwareEngine.OFFER_VALID_DAYS * DAY_MILLIS,
+            status = OfferStatus.PENDING,
+            decidedMillis = 0L,
+            clientType = claude.clientType,
+            clientName = claude.clientName,
+            contactName = claude.contactName,
+            email = email,
+            phone = phone,
+            country = claude.country,
+            currency = claude.currency,
+            kind = claude.kind,
+            title = title,
+            summary = claude.summary,
+            requirements = requirements,
+            deliveryWeeks = claude.deliveryWeeks,
+            feeUnits = claude.feeUnits,
+            ngnEstimate = claude.ngnEstimate,
+            writer = "Claude"
+        )
+    }
+
     // ---- Fee ----
 
     private fun uniform(low: Long, high: Long, random: Random): Long =

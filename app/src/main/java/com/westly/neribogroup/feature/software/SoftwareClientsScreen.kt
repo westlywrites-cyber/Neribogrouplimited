@@ -166,7 +166,9 @@ fun SoftwareClientsScreen(
     aiStateFor: (Long) -> AiRollState = { AiRollState(AiRollKind.NO_JOBS) },
     aiChecking: Boolean = false,
     onAiCheck: () -> Unit = {},
-    onAiRollBuiltIn: () -> Unit = {}
+    onAiRollBuiltIn: () -> Unit = {},
+    /** Part C: how many SOFTWARE_ROLL requests were made today (1..3). */
+    softwareAttempts: Int = 0
 ) {
     val now = rememberNowMillis()
     val sw = ledger.software
@@ -255,23 +257,15 @@ fun SoftwareClientsScreen(
 
             // 2. Daily dice
             item(key = "dice") {
-                if (aiOn) {
-                    AiRollCard(
-                        state = aiStateFor(now),
-                        now = now,
-                        canRollBuiltIn = canRoll,
-                        checking = aiChecking,
-                        onCheck = onAiCheck,
-                        onRollBuiltIn = onAiRollBuiltIn
-                    )
-                } else {
-                    SoftwareDicePanel(
-                        now = now,
-                        canRoll = canRoll,
-                        todayRoll = todayRoll,
-                        onRoll = onRoll
-                    )
-                }
+                SoftwareClaudeCard(
+                    now = now,
+                    aiOn = aiOn,
+                    state = aiStateFor(now),
+                    attemptsToday = softwareAttempts,
+                    todayRoll = todayRoll,
+                    checking = aiChecking,
+                    onCheck = onAiCheck
+                )
             }
 
             // 3. Proposals waiting

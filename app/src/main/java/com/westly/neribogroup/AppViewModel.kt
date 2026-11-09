@@ -40,6 +40,8 @@ import com.westly.neribogroup.cloud.SyncEngine
 import com.westly.neribogroup.cloud.SyncStore
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Entry
+import com.westly.neribogroup.data.AdvertEngine
+import com.westly.neribogroup.data.AdvertPlatform
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.CaseGenerator
 import com.westly.neribogroup.data.CaseSkeleton
@@ -310,6 +312,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var aiWaiting by mutableStateOf(0)
         private set
 
+    /** Part C: how many SOFTWARE_ROLL requests were made per day (from the sync state). */
+    var aiSoftwareAttempts by mutableStateOf<Map<String, Int>>(startSync?.softwareAttempts ?: emptyMap())
+        private set
+
     /** Phase 5: customer cases still waiting for their story (from Claude or the built-in generator). */
     var aiCasesWaiting by mutableStateOf(startSync?.caseJobs?.size ?: 0)
         private set
@@ -349,6 +355,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             outcome.set(JobRollResult.BLOCKED)
                         } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(rolled))) {
                             ledger = rolled
+                            onLocalChange()
+                            outcome.set(JobRollResult.ROLLED)
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return if (finished) outcome.get() else JobRollResult.FAILED
+        }
+
+        override fun applySoftwareRoll(dayKey: String, wallNow: Long, build: (Ledger, Long) -> Ledger?): JobRollResult {
+            val latch = CountDownLatch(1)
+            val outcome = AtomicReference(JobRollResult.FAILED)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    if (!SoftwareEngine.canRoll(current, wallNow) || current.software.lastRollDayKey >= dayKey) {
+                        outcome.set(JobRollResult.BLOCKED)
+                    } else {
+                        val updated = build(current, wallNow)
+                        if (updated == null || updated === current) {
+                            outcome.set(JobRollResult.BLOCKED)
+                        } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
+                            ledger = updated
                             onLocalChange()
                             outcome.set(JobRollResult.ROLLED)
                         }
@@ -532,6 +568,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             aiMessage = result.message
             if (result.casesWaiting >= 0) aiCasesWaiting = result.casesWaiting
             aiDoneMap = SyncStore.loadIfExists(getApplication())?.aiDone ?: aiDoneMap
+            aiSoftwareAttempts = SyncStore.loadIfExists(getApplication())?.softwareAttempts ?: aiSoftwareAttempts
             if (result.notices.isNotEmpty()) aiNotice = result.notices.joinToString("\n")
         }
         // A roll changed the ledger: send it to the cloud now that the job pass has let go of the sync lock.
@@ -555,6 +592,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ledger.software.lastRollDayKey, dayKey(protectedNow), aiDoneMap[SOFTWARE_APP_ID],
             aiCounts[SOFTWARE_APP_ID], aiOffline
         )
+    }
+
+    /** Part C: how many times today's software roll was asked of Claude (0 to 3). */
+    fun softwareAttemptsToday(nowMillis: Long): Int {
+        val protectedNow = maxOf(nowMillis, ledger.software.clockMillis, ledger.casesClockMillis)
+        return aiSoftwareAttempts[dayKey(protectedNow)] ?: 0
     }
 
     /** Phase 6: "Roll with built-in dice instead" for the software dice. */
@@ -1383,6 +1426,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
         val updated = DiceEngine.stopCampaign(app, System.currentTimeMillis())
         saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
+    }
+
+    fun startAdvert(appId: String, name: String, platforms: List<AdvertPlatform>, startInDays: Int, lastsDays: Int) {
+        if (appId == SOFTWARE_APP_ID) return
+        val app = ledger.apps.firstOrNull { it.id == appId } ?: return
+        val updated = AdvertEngine.create(
+            app, name, platforms, startInDays, lastsDays, System.currentTimeMillis(), Random.Default
+        )
+        if (updated === app) return
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == appId) updated else it }))
+    }
+
+    fun stopAdvert(appId: String, advertId: String) {
+        if (appId == SOFTWARE_APP_ID) return
+        val app = ledger.apps.firstOrNull { it.id == appId } ?: return
+        val updated = AdvertEngine.stop(app, advertId, System.currentTimeMillis())
+        if (updated === app) return
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == appId) updated else it }))
     }
 
     /** Turns Google Play on for an app. One way only: it can never be turned off. */

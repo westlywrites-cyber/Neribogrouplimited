@@ -57,7 +57,9 @@ fun AppUsersScreen(
     appName: String,
     users: List<AppUser>,
     onBack: () -> Unit,
-    planHistory: List<PlanEvent> = emptyList()
+    planHistory: List<PlanEvent> = emptyList(),
+    /** Free users brought by adverts that are counted but not listed one by one. */
+    audienceFree: Long = 0L
 ) {
     var historyUserId by rememberSaveable { mutableStateOf<String?>(null) }
     val historyUser = users.firstOrNull { it.id == historyUserId }
@@ -114,19 +116,28 @@ fun AppUsersScreen(
                 )
             }
             item(key = "users-count") {
-                val total = users.size
+                val total = users.size.toLong() + audienceFree
                 val text = when {
-                    total == 0 -> "No users yet."
+                    total == 0L -> "No users yet."
                     query.isBlank() ->
-                        if (total == 1) "1 user" else formatCount(total.toLong()) + " users"
+                        if (total == 1L) "1 user" else formatCount(total) + " users"
                     else -> formatCount(visible.size.toLong()) + " of " +
-                        formatCount(total.toLong()) + " users"
+                        formatCount(total) + " users"
                 }
                 Text(
                     text = text,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            if (audienceFree > 0L) {
+                item(key = "users-audience") {
+                    Text(
+                        text = "plus " + formatCount(audienceFree) + " more audience users not listed",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             if (users.isNotEmpty() && visible.isEmpty()) {
                 item(key = "users-none") {

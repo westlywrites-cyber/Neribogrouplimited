@@ -55,6 +55,7 @@ object SoftwareJson {
             ro.put("contacts", r.contacts)
             ro.put("offers", r.offers)
             ro.put("note", r.note)
+            ro.put("byClaude", r.byClaude)
             rolls.put(ro)
         }
         root.put("rolls", rolls)
@@ -120,7 +121,8 @@ object SoftwareJson {
                         offerFace = o.optInt("offerFace").coerceIn(0, 5),
                         contacts = o.optInt("contacts"),
                         offers = o.optInt("offers"),
-                        note = o.optString("note")
+                        note = o.optString("note"),
+                        byClaude = o.optBoolean("byClaude")
                     )
                 )
             }

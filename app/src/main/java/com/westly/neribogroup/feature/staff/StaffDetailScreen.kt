@@ -27,6 +27,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -39,9 +40,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
 import com.westly.neribogroup.data.Allowance
 import com.westly.neribogroup.data.PayItem
 import com.westly.neribogroup.data.SALARY_KEY
@@ -80,6 +85,13 @@ fun StaffDetailScreen(
 
     val now = System.currentTimeMillis()
     val shown = if (editing) draft else staff
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    // Puts the exact text on the clipboard and says so with a short message.
+    val copyText: (String, String) -> Unit = { text, message ->
+        clipboard.setText(AnnotatedString(text))
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
 
     BackHandler {
         if (editing) editing = false else onBack()
@@ -197,10 +209,44 @@ fun StaffDetailScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             InfoRow("Role", shown.role)
-                            InfoRow("Email", shown.email)
-                            InfoRow("Phone", shown.phone)
-                            InfoRow("Bank", shown.bankName)
-                            InfoRow("Account number", shown.accountNumber)
+                            InfoRow(
+                                "Email", shown.email,
+                                onCopy = if (shown.email.isNotBlank()) {
+                                    { copyText(shown.email, "Email copied") }
+                                } else null
+                            )
+                            InfoRow(
+                                "Phone", shown.phone,
+                                onCopy = if (shown.phone.isNotBlank()) {
+                                    { copyText(shown.phone, "Phone copied") }
+                                } else null
+                            )
+                            InfoRow(
+                                "Bank", shown.bankName,
+                                onCopy = if (shown.bankName.isNotBlank()) {
+                                    { copyText(shown.bankName, "Bank name copied") }
+                                } else null
+                            )
+                            InfoRow(
+                                "Account number", shown.accountNumber,
+                                onCopy = if (shown.accountNumber.isNotBlank()) {
+                                    { copyText(shown.accountNumber, "Account number copied") }
+                                } else null
+                            )
+                            if (shown.bankName.isNotBlank() || shown.accountNumber.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val lines = ArrayList<String>()
+                                        lines.add(shown.name)
+                                        if (shown.bankName.isNotBlank()) lines.add("Bank: " + shown.bankName)
+                                        if (shown.accountNumber.isNotBlank()) {
+                                            lines.add("Account number: " + shown.accountNumber)
+                                        }
+                                        copyText(lines.joinToString("\n"), "Bank details copied")
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Copy bank details") }
+                            }
                         }
                     }
                 }
@@ -452,17 +498,22 @@ private fun TextInput(
 }
 
 @Composable
-private fun InfoRow(label: String, value: String) {
-    Column {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = value.ifBlank { "-" },
-            style = MaterialTheme.typography.bodyLarge
-        )
+private fun InfoRow(label: String, value: String, onCopy: (() -> Unit)? = null) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value.ifBlank { "-" },
+                style = MaterialTheme.typography.bodyLarge
+            )
+        }
+        if (onCopy != null) {
+            TextButton(onClick = onCopy) { Text("Copy", maxLines = 1) }
+        }
     }
 }
 

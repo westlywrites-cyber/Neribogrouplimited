@@ -8,6 +8,7 @@ import com.westly.neribogroup.data.ProposalSlot
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_NAME
 import com.westly.neribogroup.data.SOFTWARE_TYPES
+import com.westly.neribogroup.data.SoftwareAi
 import com.westly.neribogroup.data.SoftwareEngine
 import com.westly.neribogroup.data.dayKey
 import org.json.JSONArray
@@ -24,6 +25,8 @@ class SwRow(
     val result: JSONObject?,
     val context: JSONObject?
 ) {
+    /** Part C: the one SOFTWARE_ROLL job of a day. */
+    val isRoll: Boolean get() = kind == SoftwareAi.KIND
     val isDice: Boolean get() = kind == SoftwareAiRules.DICE_JOB_KIND
     val isProposal: Boolean get() = kind == SoftwareAiRules.PROPOSAL_KIND
 
@@ -61,7 +64,7 @@ object SoftwareAiRules {
             val o = array.optJSONObject(i) ?: continue
             val kind = text(o, "kind")
             if (text(o, "app_id") != SOFTWARE_APP_ID) continue
-            if (kind != DICE_JOB_KIND && kind != PROPOSAL_KIND) continue
+            if (kind != DICE_JOB_KIND && kind != PROPOSAL_KIND && kind != SoftwareAi.KIND) continue
             val id = text(o, "id")
             val key = text(o, "dedupe_key")
             if (id.isEmpty() || key.isEmpty()) continue

@@ -459,7 +459,7 @@ object SelfCheck {
     }
 
     private fun counts(l: Ledger): String {
-        val users = l.apps.sumOf { it.users.size }
+        val users = l.apps.sumOf { it.users.size.toLong() + it.audienceFree }
         return l.apps.size.toString() + "/" + users + "/" + l.cases.size + "/" +
             l.software.offers.size + "/" + l.staff.size
     }

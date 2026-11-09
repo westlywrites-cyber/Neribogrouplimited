@@ -77,5 +77,7 @@ data class RollRecord(
     val lapsed: Long,
     val subsNet: Long,
     val adsNet: Long,
-    val campaign: Boolean
+    val campaign: Boolean,
+    /** Users brought by adverts on this roll (on top of the dice users). */
+    val advertUsers: Long = 0
 )

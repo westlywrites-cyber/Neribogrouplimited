@@ -52,6 +52,7 @@ import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.AppUser
+import com.westly.neribogroup.data.AdvertPlatform
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.Entry
 import com.westly.neribogroup.data.Plan
@@ -76,6 +77,7 @@ private const val PAGE_USERS_PLANS = "users-plans"
 private const val PAGE_MONEY = "money"
 private const val PAGE_PLAY = "google-play"
 private const val PAGE_BENEFITS = "plan-benefits"
+private const val PAGE_ADVERTS = "adverts"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,6 +90,8 @@ fun AppDashboardScreen(
     onWithdraw: () -> Unit,
     onStartCampaign: (CampaignSize, Int, Int) -> Unit,
     onStopCampaign: () -> Unit,
+    onStartAdvert: (String, List<AdvertPlatform>, Int, Int) -> Unit,
+    onStopAdvert: (String) -> Unit,
     /** Company expenses charged by this (Google Play) app, newest first is applied here. */
     chargedToCompany: List<Entry>,
     onEnableGooglePlay: () -> Unit,
@@ -124,6 +128,8 @@ fun AppDashboardScreen(
     var showUsers by rememberSaveable { mutableStateOf(false) }
     // Which page is showing in view mode (PAGE_MAIN = the short main page).
     var page by rememberSaveable { mutableStateOf(PAGE_MAIN) }
+    // The advert whose details are open on the Adverts page (null = the list).
+    var openAdvertId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else app
@@ -139,15 +145,18 @@ fun AppDashboardScreen(
             appName = app.name,
             users = app.users,
             onBack = { showUsers = false },
-            planHistory = app.planHistory
+            planHistory = app.planHistory,
+            audienceFree = app.audienceFree
         )
         return
     }
 
     val subPage = !editing && page != PAGE_MAIN
+    val openAdvert = app.adverts.firstOrNull { it.id == openAdvertId }
 
     BackHandler {
         if (editing) editing = false
+        else if (subPage && page == PAGE_ADVERTS && (openAdvert != null || openAdvertId != null)) openAdvertId = null
         else if (subPage) page = PAGE_MAIN
         else onBack()
     }
@@ -164,6 +173,7 @@ fun AppDashboardScreen(
                                     PAGE_MONEY -> "Money"
                                     PAGE_PLAY -> "Google Play"
                                     PAGE_BENEFITS -> "Plan benefits"
+                                    PAGE_ADVERTS -> "Adverts"
                                     else -> app.name
                                 }
                             } else {
@@ -187,6 +197,7 @@ fun AppDashboardScreen(
                 navigationIcon = {
                     IconButton(onClick = {
                         if (editing) editing = false
+                        else if (subPage && page == PAGE_ADVERTS && (openAdvert != null || openAdvertId != null)) openAdvertId = null
                         else if (subPage) page = PAGE_MAIN
                         else onBack()
                     }) {
@@ -745,6 +756,17 @@ fun AppDashboardScreen(
                     // ---------------------------------------------------------------------
                     // Plan benefits: what Free, Premium and Pro include.
                     // ---------------------------------------------------------------------
+                    PAGE_ADVERTS -> {
+                        advertsPageItems(
+                            app = app,
+                            now = now,
+                            openAdvert = openAdvert,
+                            onOpenAdvert = { openAdvertId = it },
+                            onStartAdvert = onStartAdvert,
+                            onStopAdvert = onStopAdvert
+                        )
+                    }
+
                     PAGE_BENEFITS -> {
                         item { BenefitsBlock("Free includes", app.freeBenefits) }
                         if (app.premiumPrice > 0L) {
@@ -787,8 +809,8 @@ fun AppDashboardScreen(
                             item { DicePanel(app = app, now = now, onRoll = onRoll) }
                         }
 
-                        val userCount = app.users.size
-                        if (userCount == 0) {
+                        val userCount = app.users.size.toLong() + app.audienceFree
+                        if (userCount == 0L) {
                             item {
                                 Text(
                                     text = if (app.googlePlayEnabled) "No users yet. Roll the dice, or add your own in Edit."
@@ -801,7 +823,7 @@ fun AppDashboardScreen(
                             item {
                                 NavCard(
                                     title = "App users",
-                                    summary = (if (userCount == 1) "1 user" else formatCount(userCount.toLong()) + " users") +
+                                    summary = (if (userCount == 1L) "1 user" else formatCount(userCount) + " users") +
                                         " · see everyone and search",
                                     onClick = { showUsers = true }
                                 )
@@ -852,6 +874,15 @@ fun AppDashboardScreen(
                                 summary = "What " + benefitNames.joinToString(", ") + " include",
                                 onClick = { page = PAGE_BENEFITS }
                             )
+                        }
+                        if (app.googlePlayEnabled) {
+                            item {
+                                NavCard(
+                                    title = "Adverts",
+                                    summary = advertsSummary(app, now),
+                                    onClick = { page = PAGE_ADVERTS }
+                                )
+                            }
                         }
                     }
                 }

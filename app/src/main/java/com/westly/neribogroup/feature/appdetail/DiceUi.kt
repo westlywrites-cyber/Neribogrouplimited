@@ -258,6 +258,7 @@ private fun RollResults(record: RollRecord, adsOn: Boolean) {
     fun has(kind: DiceKind): Boolean = record.faces.getOrElse(kind.ordinal) { -1 } >= 0
     Column {
         ResultLine("New users", "+" + formatCount(record.newUsers))
+        if (record.advertUsers > 0L) ResultLine("Advert users", "+" + formatCount(record.advertUsers))
         ResultLine("Active users", formatCount(record.active))
         if (has(DiceKind.PREMIUM)) ResultLine("Upgraded to Premium", formatCount(record.premium))
         if (has(DiceKind.PRO)) ResultLine("Upgraded to Pro", formatCount(record.pro))
@@ -280,6 +281,13 @@ fun RollHistoryRow(record: RollRecord) {
             )
             if (record.campaign) {
                 StatusDot(text = "Campaign", color = MaterialTheme.colorScheme.primary)
+            }
+            if (record.advertUsers > 0L) {
+                StatusDot(
+                    text = "Advert +" + formatCount(record.advertUsers) + " users",
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
             }
         }
         Text(
