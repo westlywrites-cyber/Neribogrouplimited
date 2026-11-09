@@ -66,11 +66,11 @@ fun AiRollCard(
             ""
         }
         val headline = when (state.kind) {
-            AiRollKind.WAITING -> "Waiting for Claude — " + state.answered + " of " + state.total + " dice answered"
+            AiRollKind.WAITING -> "Waiting for Claude — " + state.answered + " of " + state.total + " answers received"
             AiRollKind.ROLLED_CLAUDE -> "Rolled today by Claude ✔" + (if (timeText.isNotEmpty()) " at $timeText" else "")
             AiRollKind.ROLLED_BUILTIN -> "Rolled with built-in dice"
             AiRollKind.ROLLED_OTHER -> "Rolled today ✔"
-            AiRollKind.NO_JOBS -> "No new roll yet — open Claude and say \"roll next\""
+            AiRollKind.NO_JOBS -> "Not rolled yet — open Claude and say \"roll next\". It rolls one whole app each time."
             AiRollKind.OFFLINE -> "Waiting for internet"
         }
         Text(
@@ -103,7 +103,7 @@ fun AiRollCard(
         ) {
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "The results are in App users, Money and the roll history.",
+                text = "The results are in the app's screens and the roll history.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

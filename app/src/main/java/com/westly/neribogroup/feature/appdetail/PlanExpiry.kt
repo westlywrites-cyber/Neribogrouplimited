@@ -38,7 +38,7 @@ internal fun planStatusText(left: Long?): String {
  * renewed. Users made by the dice renew or leave by themselves, so they are not tappable.
  */
 @Composable
-internal fun ExpiryRow(user: AppUser, now: Long, onClick: () -> Unit) {
+internal fun ExpiryRow(user: AppUser, now: Long, onClick: () -> Unit, onHistory: (() -> Unit)? = null) {
     val left = user.planDaysLeft(now)
     val cs = MaterialTheme.colorScheme
     val statusColor = when {
@@ -51,7 +51,13 @@ internal fun ExpiryRow(user: AppUser, now: Long, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (user.simulated) Modifier else Modifier.clickable(onClick = onClick))
+            .then(
+                if (user.simulated) {
+                    if (onHistory != null) Modifier.clickable(onClick = onHistory) else Modifier
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                }
+            )
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

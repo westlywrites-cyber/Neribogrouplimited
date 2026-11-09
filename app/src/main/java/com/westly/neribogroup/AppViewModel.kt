@@ -53,6 +53,7 @@ import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.data.ProjectStage
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SoftwareEngine
+import com.westly.neribogroup.data.SoftwarePreset
 import com.westly.neribogroup.data.SoftwareRates
 import com.westly.neribogroup.data.Staff
 import com.westly.neribogroup.data.markCasePaid
@@ -334,6 +335,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val jobHost = object : AiJobHost {
         override fun currentLedger(): Ledger = ledger
 
+        override fun rollSoftwareForJobs(preset: SoftwarePreset?, wallNow: Long): JobRollResult {
+            val latch = CountDownLatch(1)
+            val outcome = AtomicReference(JobRollResult.FAILED)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    if (!SoftwareEngine.canRoll(current, wallNow)) {
+                        outcome.set(JobRollResult.BLOCKED)
+                    } else {
+                        val rolled = SoftwareEngine.roll(current, wallNow, Random.Default, preset)
+                        if (rolled === current) {
+                            outcome.set(JobRollResult.BLOCKED)
+                        } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(rolled))) {
+                            ledger = rolled
+                            onLocalChange()
+                            outcome.set(JobRollResult.ROLLED)
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return if (finished) outcome.get() else JobRollResult.FAILED
+        }
+
         override fun rollForJobs(appId: String, preset: PresetRoll?, wallNow: Long): JobRollResult {
             val latch = CountDownLatch(1)
             val outcome = AtomicReference(JobRollResult.FAILED)
@@ -515,6 +546,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun aiRollStateFor(app: AppData, nowMillis: Long): AiRollState {
         val protectedNow = maxOf(nowMillis, ledger.casesClockMillis)
         return AiJobRules.stateFor(app, dayKey(protectedNow), aiDoneMap[app.id], aiCounts[app.id], aiOffline)
+    }
+
+    /** Phase 6: the state of the "Today's roll" card of the software dice. */
+    fun aiRollStateForSoftware(nowMillis: Long): AiRollState {
+        val protectedNow = maxOf(nowMillis, ledger.software.clockMillis, ledger.casesClockMillis)
+        return AiJobRules.stateForKey(
+            ledger.software.lastRollDayKey, dayKey(protectedNow), aiDoneMap[SOFTWARE_APP_ID],
+            aiCounts[SOFTWARE_APP_ID], aiOffline
+        )
+    }
+
+    /** Phase 6: "Roll with built-in dice instead" for the software dice. */
+    fun aiRollSoftwareBuiltIn() {
+        val before = ledger.software.lastRollDayKey
+        rollSoftware()
+        if (ledger.software.lastRollDayKey == before) return
+        val wall = System.currentTimeMillis()
+        aiDoneMap = aiDoneMap + (SOFTWARE_APP_ID to AiDone.encode(dayKey(wall), wall, false, 0))
+        if (!aiActive) return
+        thread(start = true) {
+            runCatching { aiEngine.afterBuiltInRoll(SOFTWARE_APP_ID, wall, wall) }
+            mainHandler.post {
+                aiDoneMap = SyncStore.loadIfExists(getApplication())?.aiDone ?: aiDoneMap
+            }
+        }
     }
 
     /** How many dice jobs were applied today (for the status line). */

@@ -103,7 +103,7 @@ fun AiCard(
             if (state.waiting >= 3) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = state.waiting.toString() + " dice are waiting. Each 'roll next' does one.",
+                    text = state.waiting.toString() + " jobs are waiting. Each 'roll next' takes a whole app (all its dice together), or one case or proposal.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -113,15 +113,6 @@ fun AiCard(
                 Text(
                     text = if (state.casesWaiting == 1) "1 case waiting" else state.casesWaiting.toString() + " cases waiting",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            val limit = state.settings?.maxJobsPerDay
-            if (limit != null && state.waiting + state.answered + state.appliedToday > limit) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "There are many dice today. You may want to raise \"Jobs per day\" below.",
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -146,7 +137,8 @@ fun AiCard(
             )
             Text(
                 text = "1. Open Claude.\n2. Turn on the Neribo Group connector.\n3. Type: roll next.\n" +
-                    "Repeat later for the next dice.",
+                    "Each 'roll next' does one whole app. Repeat later for the next app. " +
+                    "Claude may ask you to wait a few minutes between jobs.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -213,7 +205,7 @@ private fun SettingsPart(
     Spacer(modifier = Modifier.height(8.dp))
     Stepper("Minutes between jobs", minutes, 1, 1440, 10) { minutes = it }
     Spacer(modifier = Modifier.height(8.dp))
-    Stepper("Jobs per day", jobs, 1, 500, 50) { jobs = it }
+    Stepper("Jobs per day (not used for apps)", jobs, 1, 500, 50) { jobs = it }
     Spacer(modifier = Modifier.height(8.dp))
     Stepper("Lease minutes (time Claude has for one job)", lease, 1, 240, 10) { lease = it }
 

@@ -1,6 +1,9 @@
 package com.westly.neribogroup.feature.software
 
 import androidx.activity.compose.BackHandler
+import com.westly.neribogroup.cloud.AiRollKind
+import com.westly.neribogroup.cloud.AiRollState
+import com.westly.neribogroup.feature.appdetail.AiRollCard
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -157,7 +160,13 @@ fun SoftwareClientsScreen(
     onSaveRate: (String, Double) -> Unit,
     onUseLiveRate: (String) -> Unit,
     /** True when opened from the "$ Account" tile on Home: shows only the $ account, rates and conversions. */
-    usdOnly: Boolean = false
+    usdOnly: Boolean = false,
+    /** Phase 6: AI mode on. The dice panel is replaced by the "Today's roll" card while Claude rolls. */
+    aiOn: Boolean = false,
+    aiStateFor: (Long) -> AiRollState = { AiRollState(AiRollKind.NO_JOBS) },
+    aiChecking: Boolean = false,
+    onAiCheck: () -> Unit = {},
+    onAiRollBuiltIn: () -> Unit = {}
 ) {
     val now = rememberNowMillis()
     val sw = ledger.software
@@ -246,12 +255,23 @@ fun SoftwareClientsScreen(
 
             // 2. Daily dice
             item(key = "dice") {
-                SoftwareDicePanel(
-                    now = now,
-                    canRoll = canRoll,
-                    todayRoll = todayRoll,
-                    onRoll = onRoll
-                )
+                if (aiOn) {
+                    AiRollCard(
+                        state = aiStateFor(now),
+                        now = now,
+                        canRollBuiltIn = canRoll,
+                        checking = aiChecking,
+                        onCheck = onAiCheck,
+                        onRollBuiltIn = onAiRollBuiltIn
+                    )
+                } else {
+                    SoftwareDicePanel(
+                        now = now,
+                        canRoll = canRoll,
+                        todayRoll = todayRoll,
+                        onRoll = onRoll
+                    )
+                }
             }
 
             // 3. Proposals waiting

@@ -355,6 +355,7 @@ object SelfCheck {
 
         lines.addAll(aiChecks(ledger))
         lines.addAll(CaseSelfCheck.run())
+        lines.addAll(SoftwareSelfCheck.run())
         return SelfCheckResult(lines, largest)
     }
 

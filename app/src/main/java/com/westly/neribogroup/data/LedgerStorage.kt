@@ -69,6 +69,7 @@ object LedgerStorage {
             o.put("playAdsBalance", app.playAdsBalance)
             o.put("rolls", rollsToJson(app.rolls))
             o.put("playTx", playTxToJson(app.playTx))
+            o.put("planHistory", planHistoryToJson(app.planHistory))
             o.put("googlePlayEnabled", app.googlePlayEnabled)
             o.put("googlePlaySinceMillis", app.googlePlaySinceMillis)
             o.put("manualTotalUsers", app.manualTotalUsers)
@@ -352,8 +353,48 @@ object LedgerStorage {
             manualNewUsersDayKey = o.optString("manualNewUsersDayKey"),
             manualPremiumToday = o.optLong("manualPremiumToday"),
             manualProToday = o.optLong("manualProToday"),
-            manualTodayKey = o.optString("manualTodayKey")
+            manualTodayKey = o.optString("manualTodayKey"),
+            planHistory = jsonToPlanHistory(o.optJSONArray("planHistory"))
         )
+    }
+
+    private fun planHistoryToJson(list: List<PlanEvent>): JSONArray {
+        val array = JSONArray()
+        for (e in list) {
+            val o = JSONObject()
+            o.put("id", e.id)
+            o.put("userId", e.userId)
+            o.put("kind", e.kind.name)
+            o.put("plan", e.plan.name)
+            o.put("atMillis", e.atMillis)
+            o.put("endMillis", e.endMillis)
+            array.put(o)
+        }
+        return array
+    }
+
+    private fun jsonToPlanHistory(array: JSONArray?): List<PlanEvent> {
+        if (array == null) return emptyList()
+        val list = ArrayList<PlanEvent>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val kind = PlanEventKind.values().firstOrNull { it.name == o.optString("kind") } ?: continue
+            val plan = Plan.values().firstOrNull { it.name == o.optString("plan") } ?: continue
+            val userId = o.optString("userId")
+            if (userId.isBlank()) continue
+            val at = o.optLong("atMillis")
+            list.add(
+                PlanEvent(
+                    id = o.optString("id").ifBlank { userId + "|" + kind.name + "|" + plan.name + "|" + at },
+                    userId = userId,
+                    kind = kind,
+                    plan = plan,
+                    atMillis = at,
+                    endMillis = o.optLong("endMillis")
+                )
+            )
+        }
+        return list
     }
 
     // ---- Cases ----

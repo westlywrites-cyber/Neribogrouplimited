@@ -306,6 +306,15 @@ fun SoftwareOfferScreen(
                 }
             }
 
+            if (offer.writer == "Claude" || offer.writer == "App") {
+                item(key = "writer") {
+                    Text(
+                        text = if (offer.writer == "Claude") "Written by Claude" else "Written by the app",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             item(key = "end") { Spacer(modifier = Modifier.height(8.dp)) }
         }
     }

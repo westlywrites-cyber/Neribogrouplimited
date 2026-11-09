@@ -458,7 +458,25 @@ object DiceEngine {
             .sortedBy { it.dayKey }
             .takeLast(30)
 
+        // Plan history: only writes down what this roll really did. It draws no random numbers.
+        val planEvents = ArrayList<PlanEvent>()
+        for (u in app.users.filter { it.id in dead }) {
+            planEvents.add(PlanHistory.event(u.id, PlanEventKind.EXPIRED, u.plan, now, u.planExpiryMillis))
+        }
+        for (u in premiumPicked + proPicked) {
+            val c = changed[u.id] ?: continue
+            planEvents.add(PlanHistory.event(c.id, PlanEventKind.STARTED, c.plan, c.planStartMillis, c.planExpiryMillis))
+        }
+        for (u in renewedUsers) {
+            val c = changed[u.id] ?: continue
+            planEvents.add(PlanHistory.event(c.id, PlanEventKind.RENEWED, c.plan, now, c.planExpiryMillis))
+        }
+        for (u in lostUsers) {
+            planEvents.add(PlanHistory.event(u.id, PlanEventKind.EXPIRED, u.plan, now, u.planExpiryMillis))
+        }
+
         val updated = app.copy(
+            planHistory = PlanHistory.merge(app.planHistory, planEvents),
             users = finalUsers,
             activeUsers = activeToday,
             activeUsersDayKey = today,

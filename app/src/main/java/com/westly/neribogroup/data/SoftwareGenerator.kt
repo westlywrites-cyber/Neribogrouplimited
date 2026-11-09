@@ -22,6 +22,7 @@ object SoftwareGenerator {
         val phones: MutableSet<String>
     )
 
+    /** The old entry point. Same random draws, in the same order, as before Phase 6. */
     fun createOffer(
         existingOffers: List<SoftwareOffer>,
         existingClients: List<SoftwareClient>,
@@ -30,18 +31,15 @@ object SoftwareGenerator {
         effectiveNow: Long,
         random: Random
     ): SoftwareOffer {
-        val taken = Taken(HashSet(), HashSet(), HashSet())
-        for (o in existingOffers) {
-            taken.names.add(o.clientName.trim().lowercase())
-            taken.emails.add(o.email.trim().lowercase())
-            taken.phones.add(digitsOf(o.phone))
-        }
-        for (c in existingClients) {
-            taken.names.add(c.name.trim().lowercase())
-            taken.emails.add(c.email.trim().lowercase())
-            taken.phones.add(digitsOf(c.phone))
-        }
+        val slot = planSlot(0, rates, random)
+        return createOfferFromSlot(existingOffers, existingClients, rates, number, effectiveNow, random, slot)
+    }
 
+    /**
+     * Steps 1 to 4 of the old createOffer (kind, project type, location, client type), with exactly the same
+     * random draws. The price and weeks limits need no random numbers.
+     */
+    fun planSlot(index: Int, rates: Map<String, RateInfo>, random: Random): ProposalSlot {
         // 1. Kind
         val kindRoll = random.nextInt(100)
         val kind = when {
@@ -71,6 +69,80 @@ object SoftwareGenerator {
             type.allowCompany -> ClientType.COMPANY
             else -> ClientType.INDIVIDUAL
         }
+
+        val isCode = kind == OfferKind.CODE_PURCHASE
+        val band = feeBand(isCode, currency, rates)
+        return ProposalSlot(
+            index = index,
+            kind = kind,
+            typeCode = type.code,
+            clientType = clientType,
+            country = countryName,
+            currency = currency,
+            minUnits = band.first,
+            maxUnits = band.second,
+            stepUnits = if (currency == "NGN") AI_NGN_STEP else AI_FOREIGN_STEP,
+            minWeeks = if (isCode) 1 else 2,
+            maxWeeks = if (isCode) 2 else 12
+        )
+    }
+
+    private const val AI_NGN_STEP = 5_000L
+    private const val AI_FOREIGN_STEP = 50L
+
+    /** The lowest and highest fee in [currency] units that Claude may choose. */
+    fun feeBand(isCode: Boolean, currency: String, rates: Map<String, RateInfo>): Pair<Long, Long> {
+        val low = if (isCode) CODE_MIN_NGN else BUILD_MIN_NGN
+        val high = if (isCode) CODE_MAX_NGN else BUILD_MAX_NGN
+        if (currency == "NGN") return Pair(low, high)
+        val step = AI_FOREIGN_STEP
+        var min = maxOf(step, Math.ceil(SoftwareEngine.unitsFromNgn(low, currency, rates) / step).toLong() * step)
+        var guard = 0
+        while (SoftwareEngine.ngnEstimateFor(min, currency, rates) < low && guard < 5000) {
+            min += step
+            guard++
+        }
+        while (min > step && SoftwareEngine.ngnEstimateFor(min - step, currency, rates) >= low && guard < 10000) {
+            min -= step
+            guard++
+        }
+        var max = Math.floor(SoftwareEngine.unitsFromNgn(high, currency, rates) / step).toLong() * step
+        while (max > min && SoftwareEngine.ngnEstimateFor(max, currency, rates) > high && guard < 20000) {
+            max -= step
+            guard++
+        }
+        if (max < min) max = min
+        return Pair(min, max)
+    }
+
+    /** Steps 5 to the end of the old createOffer, for a slot that was already decided. */
+    fun createOfferFromSlot(
+        existingOffers: List<SoftwareOffer>,
+        existingClients: List<SoftwareClient>,
+        rates: Map<String, RateInfo>,
+        number: Int,
+        effectiveNow: Long,
+        random: Random,
+        slot: ProposalSlot
+    ): SoftwareOffer {
+        val taken = Taken(HashSet(), HashSet(), HashSet())
+        for (o in existingOffers) {
+            taken.names.add(o.clientName.trim().lowercase())
+            taken.emails.add(o.email.trim().lowercase())
+            taken.phones.add(digitsOf(o.phone))
+        }
+        for (c in existingClients) {
+            taken.names.add(c.name.trim().lowercase())
+            taken.emails.add(c.email.trim().lowercase())
+            taken.phones.add(digitsOf(c.phone))
+        }
+        val kind = slot.kind
+        val type = SOFTWARE_TYPES.firstOrNull { it.code == slot.typeCode }
+            ?: SOFTWARE_TYPES.first { it.kind == kind || kind == OfferKind.CODE_PURCHASE }
+        val foreign: SoftwareCountry? = FOREIGN_COUNTRIES.firstOrNull { it.name == slot.country }
+        val countryName = foreign?.name ?: NIGERIA
+        val currency = foreign?.currency ?: "NGN"
+        val clientType = slot.clientType
 
         // 5. Names and contact details
         val clientName: String
@@ -178,7 +250,144 @@ object SoftwareGenerator {
             requirements = requirements,
             deliveryWeeks = deliveryWeeks,
             feeUnits = feeUnits,
-            ngnEstimate = ngnEstimate
+            ngnEstimate = ngnEstimate,
+            writer = "App"
+        )
+    }
+
+    /** A random time today between 08:00 and now. Draws one random number only when needed. */
+    private fun createdTimeToday(effectiveNow: Long, random: Random): Long {
+        val dayStart = dayStartMillis(effectiveNow)
+        val eight = dayStart + 8L * 3_600_000L
+        return if (effectiveNow <= eight) {
+            effectiveNow
+        } else {
+            minOf(effectiveNow, eight + random.nextLong(effectiveNow - eight + 1L))
+        }
+    }
+
+    private val EMAIL_RE = Regex("^[a-z0-9._-]+@[a-z0-9.-]+$")
+    private val PHONE_RE = Regex("^[+]?[0-9]{8,15}$")
+    private val BAD_WORDS = listOf("http", "www.", "lorem", "ipsum", "tbd", "xxx", "```", "**")
+
+    private fun cleanText(t: String): String = t.trim().replace(Regex("\\s+"), " ")
+
+    private fun hasBadChars(t: String): Boolean {
+        if (t.any { it.isISOControl() }) return true
+        val low = t.lowercase()
+        return BAD_WORDS.any { low.contains(it) }
+    }
+
+    private fun nameOk(t: String, allowDigits: Boolean): Boolean {
+        if (!t.all { it.isLetter() || it == ' ' || it == '\'' || it == '-' || it == '.' || it == '&' || it == ',' || (allowDigits && it.isDigit()) }) return false
+        return !Regex("[0-9]{4,}").containsMatchIn(t)
+    }
+
+    /** True when [email] ends with one of the [allowed] domains (null = not checked). */
+    private fun domainAllowed(email: String, allowed: List<String>?): Boolean {
+        if (allowed == null) return true
+        val domain = email.substringAfter('@').lowercase()
+        return allowed.any { d -> domain == d.lowercase() || domain.endsWith("." + d.lowercase()) }
+    }
+
+    /**
+     * Makes the proposal from what Claude wrote, or null when anything is wrong (the caller then uses the
+     * built-in text for the same slot). Kind, client type, currency and country always come from [slot].
+     */
+    fun createOfferFromAi(
+        slot: ProposalSlot,
+        ai: AiProposal,
+        existingOffers: List<SoftwareOffer>,
+        existingClients: List<SoftwareClient>,
+        rates: Map<String, RateInfo>,
+        number: Int,
+        effectiveNow: Long,
+        random: Random,
+        allowedDomains: List<String>? = null
+    ): SoftwareOffer? {
+        val clientName = cleanText(ai.clientName)
+        val contactName = if (slot.clientType == ClientType.INDIVIDUAL) clientName else cleanText(ai.contactName)
+        val email = ai.email.trim().lowercase()
+        val phone = ai.phone.filter { it.isDigit() || it == '+' }
+        val title = cleanText(ai.title)
+        val summary = cleanText(ai.summary)
+        val reqs = ai.requirements.map { cleanText(it) }
+
+        if (clientName.length !in 3..80 || contactName.length !in 3..60) return null
+        if (!nameOk(clientName, slot.clientType == ClientType.COMPANY) || !nameOk(contactName, false)) return null
+        if (email.length > 80 || !EMAIL_RE.matches(email) || !email.substringAfter('@').contains('.')) return null
+        if (!domainAllowed(email, allowedDomains)) return null
+        if (!PHONE_RE.matches(phone)) return null
+        if (title.length !in 8..100 || summary.length !in 40..400) return null
+        if (listOf(title, summary, clientName, contactName).any { hasBadChars(it) }) return null
+        if (reqs.size !in slot.minRequirements..slot.maxRequirements) return null
+        if (reqs.any { it.length !in 8..120 || hasBadChars(it) }) return null
+        if (reqs.map { it.lowercase() }.toSet().size != reqs.size) return null
+        if (ai.deliveryWeeks !in slot.minWeeks..slot.maxWeeks) return null
+
+        // Fee: inside the slot band and a whole step. If the rates moved, keep it inside the naira band.
+        val isCode = slot.kind == OfferKind.CODE_PURCHASE
+        var fee = ai.feeUnits
+        if (fee <= 0L || fee % slot.stepUnits != 0L) return null
+        if (fee < slot.minUnits || fee > slot.maxUnits) return null
+        val band = feeBand(isCode, slot.currency, rates)
+        fee = fee.coerceIn(band.first, band.second)
+        if (fee % slot.stepUnits != 0L) {
+            fee = (fee / slot.stepUnits) * slot.stepUnits
+            if (fee < band.first) fee += slot.stepUnits
+        }
+
+        // Nobody else may already use this name, email or phone.
+        val names = HashSet<String>()
+        val emails = HashSet<String>()
+        val phones = HashSet<String>()
+        for (o in existingOffers) {
+            names.add(o.clientName.trim().lowercase())
+            emails.add(o.email.trim().lowercase())
+            phones.add(digitsOf(o.phone))
+        }
+        for (c in existingClients) {
+            names.add(c.name.trim().lowercase())
+            emails.add(c.email.trim().lowercase())
+            phones.add(digitsOf(c.phone))
+        }
+        if (clientName.lowercase() in names || email in emails || digitsOf(phone) in phones) return null
+        if (existingOffers.any { it.title.trim().equals(title, ignoreCase = true) && it.clientName.equals(clientName, ignoreCase = true) }) return null
+
+        val requirements = ArrayList<String>(reqs)
+        if (isCode) {
+            requirements.add("Payment: 50% when you accept, 50% on handover.")
+            requirements.add("Full handoff. No maintenance after delivery.")
+        } else {
+            requirements.add("Payment: 50% when you accept, 50% on delivery.")
+            requirements.add(
+                "Monthly maintenance after delivery: " + formatMoney(fee / 10, slot.currency) +
+                    " every 30 days."
+            )
+        }
+        val created = createdTimeToday(effectiveNow, random)
+        return SoftwareOffer(
+            id = UUID.randomUUID().toString(),
+            ref = "SW-OFR-" + SoftwareEngine.yearOf(created) + "-" + number.toString().padStart(4, '0'),
+            createdMillis = created,
+            expiresMillis = created + SoftwareEngine.OFFER_VALID_DAYS * DAY_MILLIS,
+            status = OfferStatus.PENDING,
+            decidedMillis = 0L,
+            clientType = slot.clientType,
+            clientName = clientName,
+            contactName = contactName,
+            email = email,
+            phone = phone,
+            country = slot.country,
+            currency = slot.currency,
+            kind = slot.kind,
+            title = title,
+            summary = summary,
+            requirements = requirements,
+            deliveryWeeks = ai.deliveryWeeks,
+            feeUnits = fee,
+            ngnEstimate = SoftwareEngine.ngnEstimateFor(fee, slot.currency, rates),
+            writer = "Claude"
         )
     }
 

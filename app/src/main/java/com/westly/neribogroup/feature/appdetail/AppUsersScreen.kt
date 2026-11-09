@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppUser
+import com.westly.neribogroup.data.PlanEvent
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.matchesQuery
 import com.westly.neribogroup.ui.formatCount
@@ -55,8 +56,14 @@ private fun userMatches(query: String, user: AppUser): Boolean {
 fun AppUsersScreen(
     appName: String,
     users: List<AppUser>,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    planHistory: List<PlanEvent> = emptyList()
 ) {
+    var historyUserId by rememberSaveable { mutableStateOf<String?>(null) }
+    val historyUser = users.firstOrNull { it.id == historyUserId }
+    if (historyUser != null) {
+        PlanHistoryDialog(user = historyUser, history = planHistory, onClose = { historyUserId = null })
+    }
     var query by rememberSaveable { mutableStateOf("") }
     val sorted = remember(users) { users.sortedByDescending { it.addedMillis } }
     val visible = remember(sorted, query) { sorted.filter { userMatches(query, it) } }
@@ -131,7 +138,7 @@ fun AppUsersScreen(
                 }
             }
             items(visible, key = { "user-" + it.id }) { user ->
-                UserRow(user = user, clickable = false, onClick = {})
+                UserRow(user = user, clickable = true, onClick = { historyUserId = user.id })
             }
         }
     }

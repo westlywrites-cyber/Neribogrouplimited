@@ -147,14 +147,30 @@ object SoftwareEngine {
     fun canRoll(ledger: Ledger, now: Long): Boolean =
         dayKey(effectiveNow(ledger, now)) > ledger.software.lastRollDayKey
 
-    fun roll(ledger: Ledger, now: Long, random: Random): Ledger {
+    /** How many proposals the two faces ask for (before the inbox limit). */
+    fun wantedFor(contactFace: Int, offerFace: Int): Int =
+        offersFor(contactsForFace(contactFace), sharePercentForFace(offerFace))
+
+    /** How many proposals still fit in the inbox right now. */
+    fun roomFor(ledger: Ledger, now: Long): Int =
+        maxOf(0, MAX_WAITING - waitingCount(ledger, effectiveNow(ledger, now)))
+
+    /**
+     * Rolls the 2 software dice. With a [preset] (Claude's answers) the faces and proposals come from it. The
+     * random faces are always drawn first, so the later random numbers are the same with or without a preset.
+     */
+    fun roll(ledger: Ledger, now: Long, random: Random, preset: SoftwarePreset? = null): Ledger {
         val sw = ledger.software
         val eff = effectiveNow(ledger, now)
         val today = dayKey(eff)
         if (today <= sw.lastRollDayKey) return ledger
 
-        val contactFace = random.nextInt(0, 6)
-        val offerFace = random.nextInt(0, 6)
+        val drawnContact = random.nextInt(0, 6)
+        val drawnOffer = random.nextInt(0, 6)
+        val givenContact = preset?.faces?.getOrNull(0) ?: -1
+        val givenOffer = preset?.faces?.getOrNull(1) ?: -1
+        val contactFace = if (givenContact in 0..5) givenContact else drawnContact
+        val offerFace = if (givenOffer in 0..5) givenOffer else drawnOffer
         val contacts = contactsForFace(contactFace)
         val wanted = offersFor(contacts, sharePercentForFace(offerFace))
 
@@ -167,14 +183,43 @@ object SoftwareEngine {
             if (waiting >= MAX_WAITING) {
                 skipped++
             } else {
-                val offer = SoftwareGenerator.createOffer(
-                    existingOffers = offers,
-                    existingClients = sw.clients,
-                    rates = sw.rates,
-                    number = number,
-                    effectiveNow = eff,
-                    random = random
-                )
+                val slot = preset?.slots?.getOrNull(i)
+                val ai = preset?.proposals?.getOrNull(i)
+                var offer: SoftwareOffer? = null
+                if (slot != null && ai != null) {
+                    offer = SoftwareGenerator.createOfferFromAi(
+                        slot = slot,
+                        ai = ai,
+                        existingOffers = offers,
+                        existingClients = sw.clients,
+                        rates = sw.rates,
+                        number = number,
+                        effectiveNow = eff,
+                        random = random,
+                        allowedDomains = preset?.allowedDomains
+                    )
+                }
+                if (offer == null && slot != null) {
+                    offer = SoftwareGenerator.createOfferFromSlot(
+                        existingOffers = offers,
+                        existingClients = sw.clients,
+                        rates = sw.rates,
+                        number = number,
+                        effectiveNow = eff,
+                        random = random,
+                        slot = slot
+                    )
+                }
+                if (offer == null) {
+                    offer = SoftwareGenerator.createOffer(
+                        existingOffers = offers,
+                        existingClients = sw.clients,
+                        rates = sw.rates,
+                        number = number,
+                        effectiveNow = eff,
+                        random = random
+                    )
+                }
                 offers = offers + offer
                 number++
                 waiting++

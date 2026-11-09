@@ -280,7 +280,12 @@ private fun NeriboRoot(vm: AppViewModel) {
             onConvert = { cents, rate, requestId -> vm.convertUsdToNaira(cents, rate, requestId) },
             onRefreshRates = { vm.refreshRates() },
             onSaveRate = { code, value -> vm.saveRate(code, value) },
-            onUseLiveRate = { vm.useLiveRate(it) }
+            onUseLiveRate = { vm.useLiveRate(it) },
+            aiOn = vm.aiActive,
+            aiStateFor = { n -> vm.aiRollStateForSoftware(n) },
+            aiChecking = vm.aiRunning,
+            onAiCheck = { vm.runAiJobs() },
+            onAiRollBuiltIn = { vm.aiRollSoftwareBuiltIn() }
         )
     } else if (openApp != null) {
         AppDashboardScreen(

@@ -107,6 +107,8 @@ fun AppDashboardScreen(
     var editUserId by remember { mutableStateOf<String?>(null) }
     // The user (added by you) whose plan end date was tapped, to say if they renewed.
     var expiryUserId by remember { mutableStateOf<String?>(null) }
+    // The user whose plan history dialog is open.
+    var historyUserId by remember { mutableStateOf<String?>(null) }
     // Manual apps: the number boxes are redrawn when a button (not typing) changes their values.
     var fieldsKey by remember { mutableStateOf(0) }
     // Only the Total users box is redrawn while you type in "New users today" (the other box keeps its cursor).
@@ -127,11 +129,17 @@ fun AppDashboardScreen(
     val shown = if (editing) draft else app
     val activeDays = activeUsersWeek(shown, now)
 
+    val historyUser = app.users.firstOrNull { it.id == historyUserId }
+    if (historyUser != null) {
+        PlanHistoryDialog(user = historyUser, history = app.planHistory, onClose = { historyUserId = null })
+    }
+
     if (showUsers) {
         AppUsersScreen(
             appName = app.name,
             users = app.users,
-            onBack = { showUsers = false }
+            onBack = { showUsers = false },
+            planHistory = app.planHistory
         )
         return
     }
@@ -584,7 +592,8 @@ fun AppDashboardScreen(
                                 ExpiryRow(
                                     user = user,
                                     now = now,
-                                    onClick = { expiryUserId = user.id }
+                                    onClick = { expiryUserId = user.id },
+                                    onHistory = { historyUserId = user.id }
                                 )
                             }
                             if (paying.size > 15) {

@@ -197,6 +197,7 @@ object SoftwareJson {
         j.put("deliveryWeeks", o.deliveryWeeks)
         j.put("fee", o.feeUnits)
         j.put("ngnEstimate", o.ngnEstimate)
+        j.put("writer", o.writer)
         return j
     }
 
@@ -231,7 +232,8 @@ object SoftwareJson {
             requirements = jsonToStrings(j.optJSONArray("requirements")),
             deliveryWeeks = j.optInt("deliveryWeeks"),
             feeUnits = j.optLong("fee"),
-            ngnEstimate = j.optLong("ngnEstimate")
+            ngnEstimate = j.optLong("ngnEstimate"),
+            writer = j.optString("writer")
         )
     }
 

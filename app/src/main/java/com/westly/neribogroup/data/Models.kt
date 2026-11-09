@@ -120,7 +120,9 @@ data class AppData(
     val manualNewUsersDayKey: String = "",
     val manualPremiumToday: Long = 0,
     val manualProToday: Long = 0,
-    val manualTodayKey: String = ""
+    val manualTodayKey: String = "",
+    /** What happened to users' paid plans (started, renewed, ended). The newest 2000 are kept. */
+    val planHistory: List<PlanEvent> = emptyList()
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
@@ -211,7 +213,13 @@ data class AppData(
         } else {
             user.copy(planStartMillis = 0L, planExpiryMillis = 0L)
         }
-        return copy(users = users + fixed).withPlanCount(fixed.plan, 1L)
+        val started = if (fixed.plan != Plan.FREE) {
+            listOf(PlanHistory.event(fixed.id, PlanEventKind.STARTED, fixed.plan, fixed.planStartMillis, fixed.planExpiryMillis))
+        } else {
+            emptyList()
+        }
+        return copy(users = users + fixed, planHistory = PlanHistory.merge(planHistory, started))
+            .withPlanCount(fixed.plan, 1L)
     }
 
     /** Replaces a user you added (matched by id). Users made by the dice cannot be edited. */
@@ -233,6 +241,12 @@ data class AppData(
         var result = copy(users = users.map { if (it.id == fixed.id) fixed else it })
         if (old.plan != fixed.plan) {
             result = result.withPlanCount(old.plan, -1L).withPlanCount(fixed.plan, 1L)
+            val ev = if (fixed.plan == Plan.FREE) {
+                PlanHistory.event(fixed.id, PlanEventKind.MOVED_TO_FREE, old.plan, now, old.planExpiryMillis)
+            } else {
+                PlanHistory.event(fixed.id, PlanEventKind.STARTED, fixed.plan, fixed.planStartMillis, fixed.planExpiryMillis)
+            }
+            result = result.copy(planHistory = PlanHistory.merge(result.planHistory, listOf(ev)))
         }
         return result
     }
@@ -247,7 +261,13 @@ data class AppData(
         if (user.plan == Plan.FREE || user.simulated) return this
         val base = maxOf(now, user.planExpiryMillis)
         val renewed = user.copy(planExpiryMillis = base + PLAN_DAYS * DAY_MILLIS)
-        var result = copy(users = users.map { if (it.id == userId) renewed else it })
+        var result = copy(
+            users = users.map { if (it.id == userId) renewed else it },
+            planHistory = PlanHistory.merge(
+                planHistory,
+                listOf(PlanHistory.event(userId, PlanEventKind.RENEWED, user.plan, now, renewed.planExpiryMillis))
+            )
+        )
         if (!googlePlayEnabled) {
             val price = if (user.plan == Plan.PREMIUM) premiumPrice else proPrice
             if (price > 0L) {
@@ -267,10 +287,14 @@ data class AppData(
     }
 
     /** A user you added did not renew: moves them to Free (and lowers that plan's count in a Manual app). */
-    fun withPlanLapsed(userId: String): AppData {
+    fun withPlanLapsed(userId: String, now: Long = System.currentTimeMillis()): AppData {
         val user = users.firstOrNull { it.id == userId } ?: return this
         if (user.plan == Plan.FREE || user.simulated) return this
         return copy(
+            planHistory = PlanHistory.merge(
+                planHistory,
+                listOf(PlanHistory.event(userId, PlanEventKind.EXPIRED, user.plan, now, user.planExpiryMillis))
+            ),
             users = users.map {
                 if (it.id == userId) it.copy(plan = Plan.FREE, planStartMillis = 0L, planExpiryMillis = 0L)
                 else it
@@ -282,7 +306,10 @@ data class AppData(
     fun withUserRemoved(userId: String): AppData {
         val old = users.firstOrNull { it.id == userId } ?: return this
         if (old.simulated) return this
-        return copy(users = users.filter { it.id != userId }).withPlanCount(old.plan, -1L)
+        return copy(
+            users = users.filter { it.id != userId },
+            planHistory = planHistory.filter { it.userId != userId }
+        ).withPlanCount(old.plan, -1L)
     }
 
     /**
@@ -300,7 +327,8 @@ data class AppData(
         playTx = current.playTx,
         playSubsBalance = current.playSubsBalance,
         playAdsBalance = current.playAdsBalance,
-        campaign = current.campaign
+        campaign = current.campaign,
+        planHistory = PlanHistory.merge(current.planHistory, planHistory)
     )
 
     /** The copy used while editing a Manual app: today's typed numbers shown as they are right now. */

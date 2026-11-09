@@ -110,7 +110,9 @@ data class SoftwareOffer(
     /** The offered fee, in whole units of [currency]. */
     val feeUnits: Long,
     /** The fee in naira at the rates of the creation moment (display only). */
-    val ngnEstimate: Long
+    val ngnEstimate: Long,
+    /** Who wrote this proposal: "Claude" or "App". Empty on offers made before this was added. */
+    val writer: String = ""
 )
 
 data class SoftwareClient(

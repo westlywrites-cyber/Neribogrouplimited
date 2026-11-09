@@ -13,7 +13,12 @@ import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.PresetIdentity
 import com.westly.neribogroup.data.PresetRoll
 import com.westly.neribogroup.data.RollBlock
+import com.westly.neribogroup.data.ProposalSlot
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
+import com.westly.neribogroup.data.SOFTWARE_APP_NAME
+import com.westly.neribogroup.data.SoftwareEngine
+import com.westly.neribogroup.data.SoftwareGenerator
+import com.westly.neribogroup.data.SoftwarePreset
 import com.westly.neribogroup.data.dayKey
 import org.json.JSONArray
 import org.json.JSONObject
@@ -97,6 +102,12 @@ interface AiJobHost {
      * is already there.
      */
     fun applyCase(caseId: String, wallNow: Long, build: (Ledger, Long) -> ComplaintCase?): CaseApplyResult
+
+    /**
+     * Phase 6: rolls the 2 software dice on the main thread with [preset] (null = the built-in random dice).
+     * ledger.json is written first. ROLLED only when the roll happened and was saved.
+     */
+    fun rollSoftwareForJobs(preset: SoftwarePreset?, wallNow: Long): JobRollResult
 }
 
 class JobRollOutcome(val result: JobRollResult, val skeleton: CaseSkeleton?)
@@ -327,6 +338,8 @@ object AiJobRules {
         for (i in 0 until array.length()) {
             val o = array.optJSONObject(i) ?: continue
             if (text(o, "kind") != KIND) continue
+            // The two software dice are also DICE_ROLL jobs, but they have their own stages (Phase 6).
+            if (text(o, "app_id") == SOFTWARE_APP_ID) continue
             val id = text(o, "id")
             if (id.isEmpty()) continue
             val key = text(o, "dedupe_key")
@@ -371,8 +384,12 @@ object AiJobRules {
     }
 
     /** The state of the "Today's roll" card. */
-    fun stateFor(app: AppData, today: String, done: String?, counts: AiCounts?, offline: Boolean): AiRollState {
-        if (app.lastRollDayKey == today) {
+    fun stateFor(app: AppData, today: String, done: String?, counts: AiCounts?, offline: Boolean): AiRollState =
+        stateForKey(app.lastRollDayKey, today, done, counts, offline)
+
+    /** Same as [stateFor], for an app whose "last roll day" is kept elsewhere (the software dice). */
+    fun stateForKey(lastRollDayKey: String, today: String, done: String?, counts: AiCounts?, offline: Boolean): AiRollState {
+        if (lastRollDayKey == today) {
             val info = AiDone.parse(done)
             if (info != null && info.dayKey == today) {
                 return AiRollState(
@@ -437,11 +454,17 @@ class AiJobEngine(
         return result ?: AiRunResult(ran = false)
     }
 
-    private class Rows(val rows: List<JobRow>, val failure: ApiResult?, val cases: List<CaseJobRow> = emptyList())
+    private class Rows(
+        val rows: List<JobRow>,
+        val failure: ApiResult?,
+        val cases: List<CaseJobRow> = emptyList(),
+        val software: List<SwRow> = emptyList()
+    )
 
     private fun readRows(): Rows {
         val rows = ArrayList<JobRow>()
         val caseRows = ArrayList<CaseJobRow>()
+        val swRows = ArrayList<SwRow>()
         val lists = listOf(listOf("pending", "claimed"), listOf("submitted"))
         for (statuses in lists) {
             val asked = JSONArray()
@@ -450,11 +473,12 @@ class AiJobEngine(
             if (r is ApiResult.Ok) {
                 rows.addAll(AiJobRules.parseRows(r.json))
                 caseRows.addAll(AiJobRules.parseCaseRows(r.json))
+                swRows.addAll(SoftwareAiRules.parseRows(r.json))
             } else {
                 return Rows(emptyList(), r)
             }
         }
-        return Rows(rows, null, caseRows)
+        return Rows(rows, null, caseRows, swRows)
     }
 
     private fun failure(r: ApiResult): AiRunResult {
@@ -499,6 +523,7 @@ class AiJobEngine(
         if (firstFailure != null) return failure(firstFailure)
         var rows = first.rows
         var caseRows = first.cases
+        var swRows = first.software
 
         // 1. Publish today's jobs, once per app per day.
         val gpApps = ledger0.apps.filter { it.googlePlayEnabled && it.id != SOFTWARE_APP_ID }
@@ -542,6 +567,7 @@ class AiJobEngine(
             if (againFailure != null) return failure(againFailure)
             rows = again.rows
             caseRows = again.cases
+            swRows = again.software
         }
 
         // 2. Read Claude's answers and apply every group that is ready.
@@ -675,6 +701,17 @@ class AiJobEngine(
             }
         }
 
+        // Phase 6: Software Development Clients (two dice, then one job per proposal).
+        val swRun = processSoftware(host, swRows, notices, doneUpdates)
+        if (swRun.failure != null && !rolledAny && swRun.counts == null) return failure(swRun.failure)
+        if (swRun.rolled) rolledAny = true
+        if (swRun.counts != null) {
+            counts[SOFTWARE_APP_ID] = swRun.counts
+            waiting += swRun.counts.total - swRun.counts.answered
+            answered += swRun.counts.answered
+        }
+        if (swRun.publishProblem.isNotEmpty() && publishProblem.isEmpty()) publishProblem = swRun.publishProblem
+
         if (doneUpdates.isNotEmpty()) {
             val keep = ledger0.apps.map { it.id }.toSet()
             update { data ->
@@ -707,6 +744,224 @@ class AiJobEngine(
             complete = true,
             casesWaiting = caseRun.waiting
         )
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Phase 6: Software Development Clients
+    // Stage 0: the two dice jobs are published. Stage 1: when both are answered, the app plans the slots and
+    // publishes one WRITE_PROPOSAL job per proposal. Stage 2: when every proposal is answered (or 48 hours
+    // passed) the app rolls once with Claude's faces and proposals. A proposal that is missing or not valid is
+    // written by the built-in generator from the same slot, so a day is never lost.
+    // ---------------------------------------------------------------------------------------------
+
+    private class SoftwareRun(
+        val rolled: Boolean = false,
+        val counts: AiCounts? = null,
+        val failure: ApiResult? = null,
+        val publishProblem: String = ""
+    )
+
+    private fun facesFromContext(ctx: JSONObject?): List<Int>? {
+        val arr = ctx?.optJSONArray("faces") ?: return null
+        if (arr.length() < 2) return null
+        val out = ArrayList<Int>()
+        for (i in 0 until 2) {
+            val n = arr.opt(i) as? Number ?: return null
+            val v = n.toInt()
+            if (v !in 0..5) return null
+            out.add(v)
+        }
+        return out
+    }
+
+    private fun rejectSw(rows: List<SwRow>, reason: String) {
+        for (row in rows) rejectId(row.id, reason)
+    }
+
+    private fun processSoftware(
+        host: AiJobHost,
+        rows0: List<SwRow>,
+        notices: MutableList<String>,
+        doneUpdates: MutableMap<String, String>
+    ): SoftwareRun {
+        var rows = rows0
+        val ledger0 = host.currentLedger()
+        if (ledger0.apps.none { it.id == SOFTWARE_APP_ID }) return SoftwareRun()
+        val wall0 = System.currentTimeMillis()
+        val today0 = dayKey(SoftwareEngine.effectiveNow(ledger0, wall0))
+        var publishProblem = ""
+
+        // Stage 0: publish today's two dice (once; the cloud also refuses a second copy).
+        if (SoftwareEngine.canRoll(ledger0, wall0)) {
+            val ages = rows.mapNotNull { AiJobRules.ageDays(it.dayKey, today0) }
+            if (ages.none { it == 0L || it == 1L }) {
+                val list = JSONArray()
+                for (j in SoftwareAiRules.buildDiceJobs(ledger0, wall0)) list.put(j)
+                val r = api.rpc("publish_roll_jobs", body().put("p_jobs", list))
+                if (r is ApiResult.Ok) {
+                    val again = readRows()
+                    val againFailure = again.failure
+                    if (againFailure != null) return SoftwareRun(failure = againFailure)
+                    rows = again.software
+                } else if (r is ApiResult.AppError) {
+                    publishProblem = "Could not put the software dice jobs in the cloud (" +
+                        (if (r.code.isEmpty()) "error" else r.code) + ")."
+                } else {
+                    return SoftwareRun(failure = r)
+                }
+            }
+        }
+
+        var counts: AiCounts? = null
+        var rolled = false
+        var domains: List<String>? = null
+
+        for (day in rows.map { it.dayKey }.distinct().sorted()) {
+            val group = rows.filter { it.dayKey == day }
+            val dice = group.filter { it.isDice }
+            val props = group.filter { it.isProposal }
+            val submitted = group.filter { it.status == "submitted" }
+            val live = host.currentLedger()
+            val wallNow = System.currentTimeMillis()
+            val liveToday = dayKey(SoftwareEngine.effectiveNow(live, wallNow))
+            val age = AiJobRules.ageDays(day, liveToday)
+
+            if (age == null) {
+                rejectSw(submitted, "bad day")
+                continue
+            }
+            if (age < 0L) {
+                rejectSw(submitted, "future day")
+                continue
+            }
+            if (age > AiJobRules.MAX_AGE_DAYS) {
+                rejectSw(submitted, "too old")
+                continue
+            }
+            // Already rolled (here, or from another phone): nothing to apply, just close the jobs.
+            if (live.software.lastRollDayKey.isNotEmpty() && live.software.lastRollDayKey >= day) {
+                markAppliedIds(submitted.map { it.id })
+                continue
+            }
+            if (dice.isEmpty()) {
+                rejectSw(submitted, "no dice jobs")
+                continue
+            }
+
+            // The two dice are not all answered yet.
+            if (!AiJobRules.groupReady(dice.map { it.status })) {
+                if (age >= AiJobRules.FALLBACK_AGE_DAYS) {
+                    val wall = System.currentTimeMillis()
+                    if (host.rollSoftwareForJobs(null, wall) == JobRollResult.ROLLED) {
+                        rejectSw(submitted, "fallback to built-in dice")
+                        doneUpdates[SOFTWARE_APP_ID] = AiDone.encode(liveToday, wall, false, 0)
+                        notices.add(SOFTWARE_APP_NAME + " was rolled with the built-in dice (no answer in time).")
+                        rolled = true
+                        continue
+                    }
+                }
+                val answeredDice = dice.count { it.status == "submitted" }
+                counts = AiCounts(answeredDice, dice.size)
+                continue
+            }
+
+            // The faces. Once proposal jobs exist, the faces are read from them, so they never change.
+            val fromContext = props.firstNotNullOfOrNull { facesFromContext(it.context) }
+            val faces: List<Int>
+            if (fromContext != null) {
+                faces = fromContext
+            } else {
+                val f = intArrayOf(-1, -1)
+                for (row in dice) {
+                    if (row.status != "submitted") continue
+                    val idx = when (row.dice) {
+                        SoftwareAiRules.DICE_CONTACTS -> 0
+                        SoftwareAiRules.DICE_PROPOSALS -> 1
+                        else -> -1
+                    }
+                    val face = SoftwareAiRules.faceOf(row.result)
+                    if (idx < 0 || face < 0) {
+                        rejectId(row.id, "face not usable")
+                        continue
+                    }
+                    f[idx] = face
+                }
+                for (i in 0..1) if (f[i] !in 0..5) f[i] = Random.Default.nextInt(0, 6)
+                faces = listOf(f[0], f[1])
+            }
+
+            var preset: SoftwarePreset? = null
+
+            if (props.isEmpty()) {
+                // Stage 1: how many proposals, then one job for each.
+                val wanted = SoftwareEngine.wantedFor(faces[0], faces[1])
+                val n = minOf(wanted, SoftwareEngine.roomFor(live, wallNow))
+                if (n <= 0) {
+                    // Nothing to write: the day is applied at once.
+                    preset = SoftwarePreset(faces = faces)
+                } else {
+                    val slots = (0 until n).map { SoftwareGenerator.planSlot(it, live.software.rates, Random.Default) }
+                    val list = JSONArray()
+                    for (j in SoftwareAiRules.buildProposalJobs(live, slots, faces, day, wallNow)) list.put(j)
+                    val r = api.rpc("publish_roll_jobs", body().put("p_jobs", list))
+                    if (r is ApiResult.Ok) {
+                        counts = AiCounts(dice.size, dice.size + n)
+                    } else if (r is ApiResult.AppError) {
+                        publishProblem = "Could not put the software proposal jobs in the cloud (" +
+                            (if (r.code.isEmpty()) "error" else r.code) + ")."
+                        counts = AiCounts(dice.size, dice.size)
+                    } else {
+                        return SoftwareRun(rolled = rolled, counts = counts, failure = r, publishProblem = publishProblem)
+                    }
+                    continue
+                }
+            } else {
+                // Stage 2: wait for the proposals, or use what is there after 48 hours.
+                val open = props.count { it.status == "pending" || it.status == "claimed" }
+                if (open > 0 && age < AiJobRules.FALLBACK_AGE_DAYS) {
+                    val done = dice.size + props.count { it.status == "submitted" }
+                    counts = AiCounts(done, dice.size + props.size)
+                    continue
+                }
+                val slotsByIndex = HashMap<Int, ProposalSlot>()
+                for (row in props) {
+                    val slot = SoftwareAiRules.slotFromJson(row.context?.optJSONObject("slot"))
+                    if (slot != null && row.proposalIndex >= 0) slotsByIndex[row.proposalIndex] = slot
+                }
+                val top = slotsByIndex.keys.maxOrNull() ?: -1
+                val slotList = (0..top).map { slotsByIndex[it] }
+                val proposalList = (0..top).map { idx ->
+                    val row = props.firstOrNull { it.proposalIndex == idx && it.status == "submitted" }
+                    if (row == null) null else SoftwareAiRules.parseProposal(row.result)
+                }
+                var allowed = domains
+                if (allowed == null) {
+                    allowed = fetchDomains()
+                    domains = allowed
+                }
+                preset = SoftwarePreset(faces = faces, slots = slotList, proposals = proposalList, allowedDomains = allowed)
+            }
+
+            // Apply the day once.
+            val wall = System.currentTimeMillis()
+            when (host.rollSoftwareForJobs(preset, wall)) {
+                JobRollResult.ROLLED -> {
+                    markAppliedIds(submitted.map { it.id })
+                    doneUpdates[SOFTWARE_APP_ID] = AiDone.encode(liveToday, wall, true, submitted.size)
+                    val made = host.currentLedger().software.rolls.firstOrNull()?.offers ?: 0
+                    notices.add(
+                        "Claude rolled the software dice: " + made + " new proposal" + (if (made == 1) "" else "s")
+                    )
+                    rolled = true
+                }
+                JobRollResult.BLOCKED -> rejectSw(submitted, "roll blocked")
+                JobRollResult.FAILED -> {
+                    // The phone could not save. Nothing was marked: the next pass tries again.
+                    counts = AiCounts(submitted.size, submitted.size)
+                }
+            }
+        }
+        return SoftwareRun(rolled = rolled, counts = counts, publishProblem = publishProblem)
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -987,6 +1242,13 @@ class AiJobEngine(
                         val age = AiJobRules.ageDays(row.dayKey, today) ?: continue
                         if (age < 0L) continue
                         reject(row, "fallback to built-in dice")
+                    }
+                    if (appId == SOFTWARE_APP_ID) {
+                        for (row in read.software) {
+                            val age = AiJobRules.ageDays(row.dayKey, today) ?: continue
+                            if (age < 0L) continue
+                            rejectId(row.id, "fallback to built-in dice")
+                        }
                     }
                 }
             } catch (e: Throwable) {
