@@ -1241,11 +1241,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Claude's answers are looked at often while the app is open and AI mode is ON, so "roll next" can follow
+     * "roll next" with no long wait (the proposals of a software day, for example, are put in the cloud only
+     * after the app has read the two dice). It only reads the jobs; the 5-minute sync timer is unchanged.
+     */
+    private val aiTickRunnable = object : Runnable {
+        override fun run() {
+            if (!appInForeground) return
+            if (aiActive && !aiRunning && !cloudWorking) runAiJobs()
+            mainHandler.postDelayed(this, AI_TICK_MILLIS)
+        }
+    }
+
     /** MainActivity.onResume. Starts the 5-minute timer and syncs (the first time: resend first). */
     fun onAppResumed() {
         appInForeground = true
         mainHandler.removeCallbacks(tickRunnable)
         mainHandler.postDelayed(tickRunnable, FOREGROUND_TICK_MILLIS)
+        mainHandler.removeCallbacks(aiTickRunnable)
+        mainHandler.postDelayed(aiTickRunnable, AI_TICK_MILLIS)
         if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) return
         val now = SystemClock.elapsedRealtime()
         if (!startupSyncDone) {
@@ -1269,6 +1284,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         appInForeground = false
         syncAgainAfter = false
         mainHandler.removeCallbacks(tickRunnable)
+        mainHandler.removeCallbacks(aiTickRunnable)
         mainHandler.removeCallbacks(debounceRunnable)
         mainHandler.removeCallbacks(retryRunnable)
     }
@@ -1570,6 +1586,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         /** The foreground timer: one sync every 5 minutes while the app is open. */
         const val FOREGROUND_TICK_MILLIS = 5L * 60L * 1000L
+
+        /** While AI mode is ON and the app is open, Claude's jobs are looked at this often. */
+        const val AI_TICK_MILLIS = 20_000L
 
         /** Two resumes closer than this give one sync. */
         const val RESUME_SYNC_GAP_MILLIS = 5_000L

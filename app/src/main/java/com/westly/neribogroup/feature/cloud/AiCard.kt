@@ -137,8 +137,9 @@ fun AiCard(
             )
             Text(
                 text = "1. Open Claude.\n2. Turn on the Neribo Group connector.\n3. Type: roll next.\n" +
-                    "Each 'roll next' does one whole app. Repeat later for the next app. " +
-                    "Claude may ask you to wait a few minutes between jobs.",
+                    "Each 'roll next' does one whole app. With 0 minutes between rolls in the AI settings, " +
+                    "you can say 'roll next' again straight away, one after the other. " +
+                    "Keep the app open so it can read the answers and put the next jobs in the cloud.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -203,7 +204,7 @@ private fun SettingsPart(
         Switch(checked = paused, onCheckedChange = { paused = it })
     }
     Spacer(modifier = Modifier.height(8.dp))
-    Stepper("Minutes between jobs", minutes, 1, 1440, 10) { minutes = it }
+    Stepper("Minutes between rolls (0 = no waiting)", minutes, 0, 1440, 10) { minutes = it }
     Spacer(modifier = Modifier.height(8.dp))
     Stepper("Jobs per day (not used for apps)", jobs, 1, 500, 50) { jobs = it }
     Spacer(modifier = Modifier.height(8.dp))

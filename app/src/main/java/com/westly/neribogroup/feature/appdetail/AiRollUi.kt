@@ -70,7 +70,7 @@ fun AiRollCard(
             AiRollKind.ROLLED_CLAUDE -> "Rolled today by Claude ✔" + (if (timeText.isNotEmpty()) " at $timeText" else "")
             AiRollKind.ROLLED_BUILTIN -> "Rolled with built-in dice"
             AiRollKind.ROLLED_OTHER -> "Rolled today ✔"
-            AiRollKind.NO_JOBS -> "Not rolled yet — open Claude and say \"roll next\". It rolls one whole app each time."
+            AiRollKind.NO_JOBS -> "Not rolled yet — open Claude and say \"roll next\". It rolls one whole app each time; you can say it again straight away."
             AiRollKind.OFFLINE -> "Waiting for internet"
         }
         Text(
