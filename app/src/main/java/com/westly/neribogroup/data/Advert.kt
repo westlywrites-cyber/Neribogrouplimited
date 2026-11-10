@@ -68,10 +68,12 @@ object AdvertEngine {
      *
      * Measured with the real LedgerStorage.usersToJson code and the real name lists: a typical Free
      * user row is about 214 bytes of JSON, the longest possible row (longest names and a 4-digit email
-     * tail, on a paid plan) is 258 bytes. 20,000 rows x 258 bytes = 5,160,000 bytes in the worst case.
-     * The rest of an app document (entries, 200 Play lines, 2,000 plan events, 100 adverts) is
-     * reserved at 1,500,000 bytes, so a worst-case app document stays near 6,700,000 bytes: under the
-     * 8,000,000 we want and well under the 12,000,000 cloud limit per document.
+     * tail, on a paid plan) is 258 bytes. Last seen adds `"la":1731234567890,` = 19 bytes to a row, so the
+     * worst row is 277 bytes: 20,000 rows x 277 bytes = 5,540,000 bytes in the worst case.
+     * The rest of an app document (entries, 200 Play lines, 2,000 plan events, 100 adverts, and the two
+     * 30-day histories, about 2,000 bytes) is reserved at 1,500,000 bytes, so a worst-case app document
+     * stays near 7,042,000 bytes: under the 8,000,000 we want and well under the 12,000,000 cloud limit
+     * per document.
      */
     const val MAX_STORED_USER_ROWS_PER_APP = 20_000
 

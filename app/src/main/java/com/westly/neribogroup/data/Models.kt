@@ -69,8 +69,19 @@ data class AppUser(
     /** When the current paid plan started. 0 for Free users. */
     val planStartMillis: Long = 0,
     /** True for users made by the dice. Users you add yourself are false. */
-    val simulated: Boolean = false
+    val simulated: Boolean = false,
+    /** The last moment this user was active. 0 means unknown (then [addedMillis] is used). */
+    val lastActiveMillis: Long = 0
 ) {
+    /** The effective last active time: [lastActiveMillis] when known, otherwise the day the user was added. */
+    fun lastSeenMillis(): Long = if (lastActiveMillis > 0L) lastActiveMillis else addedMillis
+
+    /** Whole calendar days since this user was last active. 0 = today (or the clock went back). */
+    fun daysSinceSeen(now: Long): Long = maxOf(0L, -calendarDaysLeft(now, lastSeenMillis()))
+
+    /** True when this user was active on the day of [now]. */
+    fun isActiveToday(now: Long): Boolean = daysSinceSeen(now) == 0L
+
     /** Whole days until the paid plan ends. Null for Free users and users with no end date. */
     fun planDaysLeft(now: Long): Long? =
         if (plan == Plan.FREE || planExpiryMillis <= 0L) null
@@ -95,6 +106,8 @@ data class AppData(
     val activeUsersDayKey: String = "",
     /** Active users of earlier days (the last 30 are kept). */
     val activeHistory: List<DayCount> = emptyList(),
+    /** New users of earlier days (the last 30 are kept). */
+    val newHistory: List<DayCount> = emptyList(),
     /** True when Google Ads is switched on for this app. */
     val adsEnabled: Boolean = false,
     /** The last day the dice were rolled, "yyyy-MM-dd". Empty when never rolled. */
@@ -197,6 +210,27 @@ data class AppData(
         if (key == dayKey(now)) return activeUsersAt(now)
         return activeHistory.firstOrNull { it.dayKey == key }?.count ?: 0L
     }
+
+    /**
+     * New users on the day of [millis]: today's number, the number saved for an earlier day, or (for a
+     * Google Play app with nothing saved) the listed users added on that day. Otherwise 0.
+     */
+    fun newUsersOn(millis: Long, now: Long): Long {
+        val key = dayKey(millis)
+        if (key == dayKey(now)) return newUsersToday(now)
+        val saved = newHistory.firstOrNull { it.dayKey == key }
+        if (saved != null) return saved.count
+        if (!googlePlayEnabled) return 0L
+        val start = dayStartMillis(millis)
+        val end = start + DAY_MILLIS
+        return users.count { it.addedMillis >= start && it.addedMillis < end }.toLong()
+    }
+
+    /** Listed users who were active today. */
+    fun listedActiveToday(now: Long): Long = users.count { it.isActiveToday(now) }.toLong()
+
+    /** Listed users last seen 7 or more days ago. */
+    fun notSeenSevenDays(now: Long): Long = users.count { it.daysSinceSeen(now) >= 7L }.toLong()
 
     private fun withPlanCount(plan: Plan, delta: Long): AppData {
         if (googlePlayEnabled) return this
@@ -326,10 +360,19 @@ data class AppData(
      * the settings and the users you added from this copy.
      */
     fun keepingDiceData(current: AppData): AppData = copy(
-        users = current.users.filter { it.simulated } + users.filter { !it.simulated },
+        users = current.users.filter { it.simulated } + users.filter { !it.simulated }.map { mine ->
+            // A roll may have marked one of your users active while you were editing: keep the later time.
+            val saved = current.users.firstOrNull { it.id == mine.id }
+            if (saved != null && saved.lastActiveMillis > mine.lastActiveMillis) {
+                mine.copy(lastActiveMillis = saved.lastActiveMillis)
+            } else {
+                mine
+            }
+        },
         activeUsers = current.activeUsers,
         activeUsersDayKey = current.activeUsersDayKey,
         activeHistory = current.activeHistory,
+        newHistory = current.newHistory,
         lastRollDayKey = current.lastRollDayKey,
         rolls = current.rolls,
         playTx = current.playTx,
@@ -366,11 +409,16 @@ data class AppData(
         if (result.googlePlayEnabled) return result
 
         if (result.manualDailyNewUsers != previous.newUsersToday(now)) {
-            result = result.copy(manualNewUsersDayKey = today)
+            val newHist = (result.newHistory.filter { it.dayKey != today } +
+                DayCount(today, result.manualDailyNewUsers))
+                .sortedBy { it.dayKey }
+                .takeLast(30)
+            result = result.copy(manualNewUsersDayKey = today, newHistory = newHist)
         } else {
             result = result.copy(
                 manualDailyNewUsers = previous.manualDailyNewUsers,
-                manualNewUsersDayKey = previous.manualNewUsersDayKey
+                manualNewUsersDayKey = previous.manualNewUsersDayKey,
+                newHistory = previous.newHistory
             )
         }
 

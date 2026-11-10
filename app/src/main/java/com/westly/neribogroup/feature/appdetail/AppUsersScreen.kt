@@ -1,16 +1,20 @@
 package com.westly.neribogroup.feature.appdetail
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,7 +35,28 @@ import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.PlanEvent
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.matchesQuery
+import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
+
+/** The filter chips above the users list. */
+enum class UserFilter(val label: String) {
+    ALL("All"),
+    ACTIVE_TODAY("Active today"),
+    LAST_SEEN("Last seen"),
+    NOT_SEEN_7("Not seen 7+ days");
+
+    companion object {
+        fun fromName(name: String): UserFilter = values().firstOrNull { it.name == name } ?: ALL
+    }
+}
+
+/** True when [user] passes the chosen [filter] today. */
+private fun userPasses(filter: UserFilter, user: AppUser, now: Long): Boolean = when (filter) {
+    UserFilter.ALL -> true
+    UserFilter.ACTIVE_TODAY -> user.isActiveToday(now)
+    UserFilter.LAST_SEEN -> !user.isActiveToday(now)
+    UserFilter.NOT_SEEN_7 -> user.daysSinceSeen(now) >= 7L
+}
 
 /**
  * True when [query] matches the user's name, email, phone or plan.
@@ -49,6 +74,7 @@ private fun userMatches(query: String, user: AppUser): Boolean {
 
 /**
  * The full list of an app's users on its own page: every user (newest first) with a search box.
+ * Google Play apps also show Active / Last seen under each user, with filter chips.
  * Opened from the "App users" card on the app dashboard. Back returns to the dashboard.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,7 +85,11 @@ fun AppUsersScreen(
     onBack: () -> Unit,
     planHistory: List<PlanEvent> = emptyList(),
     /** Free users brought by adverts that are counted but not listed one by one. */
-    audienceFree: Long = 0L
+    audienceFree: Long = 0L,
+    /** The filter the list opens with (for example from the dashboard's Users activity card). */
+    initialFilter: UserFilter = UserFilter.ALL,
+    /** False for Manual apps: they have no Last seen. */
+    showLastSeen: Boolean = true
 ) {
     var historyUserId by rememberSaveable { mutableStateOf<String?>(null) }
     val historyUser = users.firstOrNull { it.id == historyUserId }
@@ -67,8 +97,13 @@ fun AppUsersScreen(
         PlanHistoryDialog(user = historyUser, history = planHistory, onClose = { historyUserId = null })
     }
     var query by rememberSaveable { mutableStateOf("") }
+    var filterName by rememberSaveable { mutableStateOf(initialFilter.name) }
+    val filter = if (showLastSeen) UserFilter.fromName(filterName) else UserFilter.ALL
+    val now = rememberNowMillis()
     val sorted = remember(users) { users.sortedByDescending { it.addedMillis } }
-    val visible = remember(sorted, query) { sorted.filter { userMatches(query, it) } }
+    val visible = remember(sorted, query, filter, now) {
+        sorted.filter { userPasses(filter, it, now) && userMatches(query, it) }
+    }
 
     BackHandler(onBack = onBack)
 
@@ -115,11 +150,28 @@ fun AppUsersScreen(
                     placeholder = "Search name, email, phone or plan"
                 )
             }
+            if (showLastSeen) {
+                item(key = "users-filters") {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (option in UserFilter.values()) {
+                            FilterChip(
+                                selected = filter == option,
+                                onClick = { filterName = option.name },
+                                label = { Text(option.label, maxLines = 1) }
+                            )
+                        }
+                    }
+                }
+            }
             item(key = "users-count") {
                 val total = users.size.toLong() + audienceFree
+                val filtering = query.isNotBlank() || filter != UserFilter.ALL
                 val text = when {
                     total == 0L -> "No users yet."
-                    query.isBlank() ->
+                    !filtering ->
                         if (total == 1L) "1 user" else formatCount(total) + " users"
                     else -> formatCount(visible.size.toLong()) + " of " +
                         formatCount(total) + " users"
@@ -132,24 +184,42 @@ fun AppUsersScreen(
             }
             if (audienceFree > 0L) {
                 item(key = "users-audience") {
-                    Text(
-                        text = "plus " + formatCount(audienceFree) + " more audience users not listed",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column {
+                        Text(
+                            text = "plus " + formatCount(audienceFree) + " more audience users not listed",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (showLastSeen) {
+                            Text(
+                                text = "Audience users are counted but have no last seen.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
             if (users.isNotEmpty() && visible.isEmpty()) {
                 item(key = "users-none") {
                     Text(
-                        text = "No users match your search.",
+                        text = if (filter != UserFilter.ALL && query.isBlank()) {
+                            "No users in this filter."
+                        } else {
+                            "No users match your search."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
             items(visible, key = { "user-" + it.id }) { user ->
-                UserRow(user = user, clickable = true, onClick = { historyUserId = user.id })
+                UserRow(
+                    user = user,
+                    clickable = true,
+                    onClick = { historyUserId = user.id },
+                    seenNow = if (showLastSeen) now else null
+                )
             }
         }
     }

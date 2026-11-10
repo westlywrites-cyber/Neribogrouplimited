@@ -1,5 +1,6 @@
 package com.westly.neribogroup.data
 
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
 import kotlin.math.max
@@ -457,7 +458,21 @@ object DiceEngine {
         val subsNet = lines.filter { it.kind != PlayTxKind.ADS }.sumOf { it.net }
         val adsNet = lines.filter { it.kind == PlayTxKind.ADS }.sumOf { it.net }
 
-        val finalUsers = users.map { changed[it.id] ?: it } + newUsers + advertRows
+        // Who was active today. Uses its OWN seeded random (never [random]), so every number this roll
+        // draws stays exactly the same. New users and advert users are active on the day they arrive.
+        val existingUsers = users.map { changed[it.id] ?: it }
+        val activeStamps = pickActiveUsers(
+            appId = app.id,
+            today = today,
+            pool = existingUsers,
+            need = max(0L, activeToday - newCount - advertTotal),
+            dayStart = dayStart,
+            now = now
+        )
+        val finalUsers = existingUsers.map { u ->
+            activeStamps[u.id]?.let { stamp -> u.copy(lastActiveMillis = stamp) } ?: u
+        } + newUsers.map { it.copy(lastActiveMillis = it.addedMillis) } +
+            advertRows.map { it.copy(lastActiveMillis = it.addedMillis) }
 
         val record = RollRecord(
             dayKey = today,
@@ -475,6 +490,13 @@ object DiceEngine {
         )
 
         val history = (app.activeHistory.filter { it.dayKey != today } + DayCount(today, activeToday))
+            .sortedBy { it.dayKey }
+            .takeLast(30)
+        // New users of today (listed rows added today plus counted audience users), kept for the chart.
+        val audienceAddedToday = (if (app.audienceTodayKey == today) app.audienceToday else 0L) + audienceAdded
+        val newToday = finalUsers.count { it.addedMillis >= dayStart && it.addedMillis < dayStart + DAY_MILLIS }
+            .toLong() + audienceAddedToday
+        val newHist = (app.newHistory.filter { it.dayKey != today } + DayCount(today, newToday))
             .sortedBy { it.dayKey }
             .takeLast(30)
 
@@ -501,6 +523,7 @@ object DiceEngine {
             activeUsers = activeToday,
             activeUsersDayKey = today,
             activeHistory = history,
+            newHistory = newHist,
             lastRollDayKey = today,
             rolls = (app.rolls + record).takeLast(30),
             playTx = (app.playTx + lines).takeLast(200),
@@ -526,6 +549,51 @@ object DiceEngine {
             adsEarned = adsGross > 0L
         )
         return Pair(rolled, facts)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Which listed users were active today (Last seen)
+    // -----------------------------------------------------------------------------------------
+
+    /** A stable 64-bit number from a text (the first 8 bytes of its SHA-256). Same text, same number. */
+    private fun stableSeed(text: String): Long {
+        val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+        var seed = 0L
+        for (i in 0 until 8) seed = (seed shl 8) or (digest[i].toLong() and 0xffL)
+        return seed
+    }
+
+    /**
+     * Chooses which of [pool] (the listed users that existed before this roll) were active today, and
+     * when. Returns user id to the time they were active. Draws from its own seeded random, so it never
+     * changes any number the rest of the roll produces, and the same app and day give the same answer.
+     * A user who is already active today (added by you today) counts toward [need] and is not picked again.
+     * If [need] is more than the pool, the difference stays unlisted audience users.
+     */
+    private fun pickActiveUsers(
+        appId: String,
+        today: String,
+        pool: List<AppUser>,
+        need: Long,
+        dayStart: Long,
+        now: Long
+    ): Map<String, Long> {
+        if (need <= 0L || pool.isEmpty()) return emptyMap()
+        val alreadyToday = pool.count { dayKey(it.lastSeenMillis()) == today }
+        val stillNeeded = need - alreadyToday
+        if (stillNeeded <= 0L) return emptyMap()
+        val rng = Random(stableSeed("active|$appId|$today"))
+        val candidates = pool
+            .filter { dayKey(it.lastSeenMillis()) != today }
+            .sortedBy { it.id }
+            .shuffled(rng)
+            .take(min(stillNeeded, pool.size.toLong()).toInt())
+        val result = HashMap<String, Long>()
+        for (u in candidates) {
+            val moment = dayStart + rng.nextLong(max(1L, now - dayStart))
+            result[u.id] = max(moment, u.addedMillis)
+        }
+        return result
     }
 
     // -----------------------------------------------------------------------------------------

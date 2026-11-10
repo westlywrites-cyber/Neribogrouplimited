@@ -2,15 +2,21 @@ package com.westly.neribogroup.feature.appdetail
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,6 +49,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,6 +76,7 @@ import com.westly.neribogroup.feature.common.TintedButton
 import com.westly.neribogroup.feature.common.profitColor
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
+import com.westly.neribogroup.ui.lastSeenText
 import com.westly.neribogroup.ui.formatNaira
 
 // The pages of an app dashboard in view mode. PAGE_MAIN is the short main page; every other
@@ -126,6 +135,8 @@ fun AppDashboardScreen(
     var queueIndex by remember { mutableStateOf(0) }
     // True while the full "App users" page (all users, with search) is showing.
     var showUsers by rememberSaveable { mutableStateOf(false) }
+    // The filter the users page opens with (a UserFilter name).
+    var usersFilter by rememberSaveable { mutableStateOf(UserFilter.ALL.name) }
     // Which page is showing in view mode (PAGE_MAIN = the short main page).
     var page by rememberSaveable { mutableStateOf(PAGE_MAIN) }
     // The advert whose details are open on the Adverts page (null = the list).
@@ -134,6 +145,7 @@ fun AppDashboardScreen(
     val now = rememberNowMillis()
     val shown = if (editing) draft else app
     val activeDays = activeUsersWeek(shown, now)
+    val newDays = newUsersWeek(app, now)
 
     val historyUser = app.users.firstOrNull { it.id == historyUserId }
     if (historyUser != null) {
@@ -146,7 +158,9 @@ fun AppDashboardScreen(
             users = app.users,
             onBack = { showUsers = false },
             planHistory = app.planHistory,
-            audienceFree = app.audienceFree
+            audienceFree = app.audienceFree,
+            initialFilter = UserFilter.fromName(usersFilter),
+            showLastSeen = app.googlePlayEnabled
         )
         return
     }
@@ -580,6 +594,68 @@ fun AppDashboardScreen(
                             )
                         }
 
+                        item { SectionTitle("Users activity") }
+                        item {
+                            Row(
+                                modifier = Modifier.height(IntrinsicSize.Min),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                StatTile(
+                                    "Active today",
+                                    formatCount(app.activeUsersAt(now)),
+                                    Modifier.weight(1f).fillMaxHeight()
+                                )
+                                StatTile(
+                                    "New today",
+                                    formatCount(app.newUsersToday(now)),
+                                    Modifier.weight(1f).fillMaxHeight()
+                                )
+                                if (app.googlePlayEnabled) {
+                                    StatTile(
+                                        "Not seen 7+ days",
+                                        formatCount(app.notSeenSevenDays(now)),
+                                        Modifier.weight(1f).fillMaxHeight()
+                                    )
+                                }
+                            }
+                        }
+                        item { NewUsersChart(days = newDays) }
+                        if (app.googlePlayEnabled) {
+                            val activeTotal = app.activeUsersAt(now)
+                            val unlisted = activeTotal - app.listedActiveToday(now)
+                            if (unlisted > 0L) {
+                                item {
+                                    Text(
+                                        text = formatCount(unlisted) + (if (unlisted == 1L) " active user is an audience user"
+                                        else " active users are audience users") + " that " +
+                                            (if (unlisted == 1L) "is" else "are") + " counted but not listed.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (app.users.isNotEmpty()) {
+                                item {
+                                    TintedButton(
+                                        text = "View active and inactive users",
+                                        onClick = {
+                                            usersFilter = UserFilter.NOT_SEEN_7.name
+                                            showUsers = true
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        } else {
+                            item {
+                                Text(
+                                    text = "Last seen is available for Google Play apps.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
                         if (paying.isNotEmpty()) {
                             item { SectionTitle("Plan expiry") }
                             item {
@@ -825,7 +901,10 @@ fun AppDashboardScreen(
                                     title = "App users",
                                     summary = (if (userCount == 1L) "1 user" else formatCount(userCount) + " users") +
                                         " · see everyone and search",
-                                    onClick = { showUsers = true }
+                                    onClick = {
+                                        usersFilter = UserFilter.ALL.name
+                                        showUsers = true
+                                    }
                                 )
                             }
                         }
@@ -1140,7 +1219,13 @@ private fun BenefitsBlock(label: String, text: String) {
 
 /** One user: name, email, phone (if given) and a small plan label. Tappable only when [clickable]. */
 @Composable
-internal fun UserRow(user: AppUser, clickable: Boolean, onClick: () -> Unit) {
+internal fun UserRow(
+    user: AppUser,
+    clickable: Boolean,
+    onClick: () -> Unit,
+    /** When given (Google Play apps), a status line shows Active or Last seen, judged at this time. */
+    seenNow: Long? = null
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1162,6 +1247,31 @@ internal fun UserRow(user: AppUser, clickable: Boolean, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            if (seenNow != null) {
+                if (user.isActiveToday(seenNow)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(ActiveGreen)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Active",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            color = ActiveGreen
+                        )
+                    }
+                } else {
+                    Text(
+                        text = lastSeenText(seenNow, user.lastSeenMillis()),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
         Text(
             text = planText(user.plan),
@@ -1173,6 +1283,9 @@ internal fun UserRow(user: AppUser, clickable: Boolean, onClick: () -> Unit) {
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
+
+/** The green of the "Active" dot (readable on light and dark cards). */
+private val ActiveGreen = Color(0xFF2E9E5B)
 
 /** A small "Manual" tag for entries made before Google Play was turned on. */
 private fun manualTag(app: AppData, entry: Entry): String? =

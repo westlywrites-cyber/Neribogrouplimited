@@ -1,5 +1,6 @@
 package com.westly.neribogroup.ui
 
+import com.westly.neribogroup.data.calendarDaysLeft
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -22,3 +23,18 @@ fun formatMonth(millis: Long): String =
 
 fun formatDate(millis: Long): String =
     SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(millis))
+
+/**
+ * The line shown under a user: "Active" when seen today, otherwise "Last seen yesterday",
+ * "Last seen 3 days ago", or the date and how long ago after 7 or more days ("Last seen 4 Nov · 12 days ago").
+ */
+fun lastSeenText(now: Long, lastSeenMillis: Long): String {
+    val days = maxOf(0L, -calendarDaysLeft(now, lastSeenMillis))
+    return when {
+        days == 0L -> "Active"
+        days == 1L -> "Last seen yesterday"
+        days < 7L -> "Last seen $days days ago"
+        else -> "Last seen " + SimpleDateFormat("d MMM", Locale.getDefault()).format(Date(lastSeenMillis)) +
+            " · $days days ago"
+    }
+}

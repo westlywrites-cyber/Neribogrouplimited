@@ -63,6 +63,7 @@ object LedgerStorage {
             o.put("activeUsers", app.activeUsers)
             o.put("activeUsersDayKey", app.activeUsersDayKey)
             o.put("activeHistory", historyToJson(app.activeHistory))
+            o.put("newHistory", historyToJson(app.newHistory))
             o.put("adsEnabled", app.adsEnabled)
             o.put("lastRollDayKey", app.lastRollDayKey)
             o.put("playSubsBalance", app.playSubsBalance)
@@ -342,6 +343,7 @@ object LedgerStorage {
             activeUsers = o.optLong("activeUsers"),
             activeUsersDayKey = o.optString("activeUsersDayKey"),
             activeHistory = jsonToHistory(o.optJSONArray("activeHistory")),
+            newHistory = jsonToHistory(o.optJSONArray("newHistory")),
             adsEnabled = adsOn,
             lastRollDayKey = lastRoll,
             rolls = rolls,
@@ -604,6 +606,8 @@ object LedgerStorage {
             o.put("planExpiry", u.planExpiryMillis)
             o.put("planStart", u.planStartMillis)
             o.put("simulated", u.simulated)
+            // Short key, left out when unknown, so every user row stays small.
+            if (u.lastActiveMillis > 0L) o.put("la", u.lastActiveMillis)
             array.put(o)
         }
         return array
@@ -628,7 +632,8 @@ object LedgerStorage {
                     addedMillis = o.optLong("addedMillis"),
                     planExpiryMillis = o.optLong("planExpiry"),
                     planStartMillis = o.optLong("planStart"),
-                    simulated = o.optBoolean("simulated")
+                    simulated = o.optBoolean("simulated"),
+                    lastActiveMillis = o.optLong("la")
                 )
             )
         }
