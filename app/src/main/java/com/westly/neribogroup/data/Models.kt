@@ -550,6 +550,18 @@ data class Payment(
     val itemName: String = ""
 )
 
+/**
+ * One photo of a staff member. Only this small description is saved in the ledger (and synced);
+ * the picture itself lives in a file on the phone and in the cloud's media storage.
+ */
+data class StaffImage(
+    /** Lowercase UUID (letters, digits and hyphens only). Also the file name. */
+    val id: String,
+    val addedMillis: Long,
+    val sizeBytes: Long,
+    val sha256: String
+)
+
 /** One staff member with contact details, pay and payment history. */
 data class Staff(
     val id: String = UUID.randomUUID().toString(),
@@ -561,7 +573,9 @@ data class Staff(
     val accountNumber: String = "",
     val monthlySalary: Long = 0,
     val allowances: List<Allowance> = emptyList(),
-    val payments: List<Payment> = emptyList()
+    val payments: List<Payment> = emptyList(),
+    /** Up to [MAX_STAFF_IMAGES] photos of this person. */
+    val images: List<StaffImage> = emptyList()
 ) {
     val allowancesTotal: Long get() = allowances.sumOf { it.amount }
     val monthlyTotal: Long get() = monthlySalary + allowancesTotal

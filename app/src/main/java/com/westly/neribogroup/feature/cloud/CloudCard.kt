@@ -63,7 +63,9 @@ data class CloudCardState(
     val pendingChanges: Int = 0,
     val unsyncedDocs: Int = 0,
     val backupBusy: Boolean = false,
-    val backupMessage: String = ""
+    val backupMessage: String = "",
+    /** Staff photos waiting to sync, or refused by the cloud. Empty when all is well. */
+    val mediaMessage: String = ""
 )
 
 /** What the "Show cloud history of…" window shows. [open] false = the window is closed. */
@@ -221,6 +223,13 @@ fun CloudCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (kind == CloudCardKind.LINKED && state.mediaMessage.isNotEmpty()) {
+                Text(
+                    text = state.mediaMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))

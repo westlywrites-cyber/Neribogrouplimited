@@ -1,6 +1,7 @@
 package com.westly.neribogroup.data
 
 import android.content.Context
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -132,6 +133,20 @@ object LedgerStorage {
             }
             o.put("payments", payments)
 
+            // Photos: only the small description (the picture files are not inside a backup).
+            if (s.images.isNotEmpty()) {
+                val imagesArray = JSONArray()
+                for (img in s.images.take(MAX_STAFF_IMAGES)) {
+                    val io = JSONObject()
+                    io.put("id", img.id)
+                    io.put("added", img.addedMillis)
+                    io.put("size", img.sizeBytes)
+                    io.put("sha256", img.sha256)
+                    imagesArray.put(io)
+                }
+                o.put("images", imagesArray)
+            }
+
             staffArray.put(o)
         }
         root.put("staff", staffArray)
@@ -226,6 +241,30 @@ object LedgerStorage {
                 )
             }
 
+            // Photos: optional. Bad ids are skipped and anything beyond the limit is ignored (and logged).
+            val images = ArrayList<StaffImage>()
+            val imagesArray = o.optJSONArray("images")
+            if (imagesArray != null) {
+                for (j in 0 until imagesArray.length()) {
+                    val io = imagesArray.optJSONObject(j) ?: continue
+                    val imageId = io.optString("id")
+                    if (!isValidMediaId(imageId)) continue
+                    if (images.any { it.id == imageId }) continue
+                    if (images.size >= MAX_STAFF_IMAGES) {
+                        Log.w("LedgerStorage", "A staff member has more than $MAX_STAFF_IMAGES photos; the extra ones are ignored.")
+                        break
+                    }
+                    images.add(
+                        StaffImage(
+                            id = imageId,
+                            addedMillis = io.optLong("added"),
+                            sizeBytes = io.optLong("size"),
+                            sha256 = io.optString("sha256")
+                        )
+                    )
+                }
+            }
+
             staff.add(
                 Staff(
                     id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
@@ -237,7 +276,8 @@ object LedgerStorage {
                     accountNumber = o.optString("accountNumber"),
                     monthlySalary = o.optLong("monthlySalary"),
                     allowances = allowances,
-                    payments = payments
+                    payments = payments,
+                    images = images
                 )
             )
         }

@@ -84,8 +84,8 @@ private fun NeriboRoot(vm: AppViewModel) {
             }.isSuccess
             Toast.makeText(
                 context,
-                if (ok) "Backup saved" else "Backup failed",
-                Toast.LENGTH_SHORT
+                if (ok) "Backup saved. Photos are not inside the backup file; they sync through the cloud." else "Backup failed",
+                if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
             ).show()
         }
     }
@@ -121,6 +121,15 @@ private fun NeriboRoot(vm: AppViewModel) {
         LaunchedEffect(aiNotice) {
             Toast.makeText(context, aiNotice, Toast.LENGTH_LONG).show()
             vm.consumeAiNotice()
+        }
+    }
+
+    // Staff photos: one toast when adding photos did not go fully as asked.
+    val photoNotice = vm.photoNotice
+    if (photoNotice.isNotEmpty()) {
+        LaunchedEffect(photoNotice) {
+            Toast.makeText(context, photoNotice, Toast.LENGTH_LONG).show()
+            vm.consumePhotoNotice()
         }
     }
 
@@ -202,7 +211,8 @@ private fun NeriboRoot(vm: AppViewModel) {
                         pendingChanges = vm.cloudPendingChanges,
                         unsyncedDocs = vm.cloudUnsyncedDocs,
                         backupBusy = vm.cloudBackupBusy,
-                        backupMessage = vm.cloudBackupMessage
+                        backupMessage = vm.cloudBackupMessage,
+                        mediaMessage = vm.mediaMessage
                     ),
                     selfCheckLines = vm.selfCheckLines,
                     onConnect = { vm.openLogin() },
@@ -318,7 +328,13 @@ private fun NeriboRoot(vm: AppViewModel) {
             onBack = { vm.openStaffId = null },
             onSave = { vm.saveStaff(it) },
             onPay = { vm.payStaff(openStaff.id) },
-            onDelete = { vm.deleteStaff(openStaff.id) }
+            onDelete = { vm.deleteStaff(openStaff.id) },
+            photoFile = { vm.staffImageFile(openStaff.id, it.id) },
+            mediaTick = vm.mediaTick,
+            photoBusy = vm.photoBusy,
+            waitingPhotoIds = vm.pendingPhotoIds,
+            onAddPhotos = { vm.addStaffPhotos(openStaff.id, it) },
+            onDeletePhoto = { vm.removeStaffPhoto(openStaff.id, it) }
         )
     } else {
         when (vm.openSection) {

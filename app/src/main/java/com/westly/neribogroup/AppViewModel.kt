@@ -2,6 +2,7 @@ package com.westly.neribogroup
 
 import android.app.Application
 import android.content.Context
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -31,6 +32,8 @@ import com.westly.neribogroup.cloud.HistoryDoc
 import com.westly.neribogroup.cloud.HistoryOutcome
 import com.westly.neribogroup.cloud.LinkOutcome
 import com.westly.neribogroup.cloud.LedgerSplitter
+import com.westly.neribogroup.cloud.MediaSync
+import com.westly.neribogroup.cloud.sha256Hex
 import com.westly.neribogroup.cloud.RestoreOutcome
 import com.westly.neribogroup.cloud.SupabaseApi
 import com.westly.neribogroup.cloud.SyncHost
@@ -57,7 +60,13 @@ import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SoftwareEngine
 import com.westly.neribogroup.data.SoftwarePreset
 import com.westly.neribogroup.data.SoftwareRates
+import com.westly.neribogroup.data.ImageProcessor
+import com.westly.neribogroup.data.MAX_STAFF_IMAGES
+import com.westly.neribogroup.data.ProcessedImage
 import com.westly.neribogroup.data.Staff
+import com.westly.neribogroup.data.StaffImage
+import com.westly.neribogroup.data.StaffMedia
+import com.westly.neribogroup.data.newImageId
 import com.westly.neribogroup.data.markCasePaid
 import com.westly.neribogroup.data.withCaseAdded
 import com.westly.neribogroup.data.withCaseNote
@@ -68,6 +77,7 @@ import com.westly.neribogroup.feature.cloud.CloudHistoryUi
 import com.westly.neribogroup.feature.cloud.LinkDialog
 import com.westly.neribogroup.feature.cloud.SelfCheck
 import com.westly.neribogroup.ui.formatDate
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -140,6 +150,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val cloudConfig = CloudConfig(application)
     private val cloudApi = SupabaseApi(cloudConfig)
     private val cloudEngine = SyncEngine(application, cloudConfig, cloudApi)
+    private val mediaSync = MediaSync(application, cloudConfig, cloudApi)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val startSync = SyncStore.loadIfExists(application)
 
@@ -1169,6 +1180,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cloudLastError = sync?.lastError ?: ""
         cloudPendingChanges = sync?.pending?.changes?.size ?: 0
         cloudConflicts = buildConflictInfos(sync)
+        refreshMediaState()
         cloudStatus = computeCloudStatus()
         if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) cancelCloudTimers()
     }
@@ -1196,6 +1208,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** "Sync now": resend, pull, apply, push. Ignores a second tap. With the cloud off nothing is sent. */
     fun syncNowAction() {
+        // A manual Sync now also gives photos the server refused one more chance.
+        manualMediaRetry = true
         runSyncTask { cloudEngine.syncNow(syncHost) }
     }
 
@@ -1226,7 +1240,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Throwable) {
                 SyncResult(true, CloudStatus.PROBLEM, "Sync problem — your data on the phone is safe.")
             }
-            mainHandler.post { finishSync(result) }
+            // Photos follow the documents: send waiting photos, fetch the ones other phones added.
+            val manual = manualMediaRetry
+            manualMediaRetry = false
+            val photosChanged = if (result.ran && result.status != CloudStatus.WAITING_INTERNET &&
+                result.status != CloudStatus.SIGN_IN_AGAIN && result.status != CloudStatus.NOT_CONNECTED
+            ) {
+                try {
+                    mediaSync.process({ ledger }, manual)
+                } catch (e: Throwable) {
+                    false
+                }
+            } else {
+                false
+            }
+            mainHandler.post {
+                if (photosChanged) mediaTick += 1
+                finishSync(result)
+            }
         }
     }
 
@@ -1599,14 +1630,146 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveStaff(updated: Staff) {
+        // Photos change only through addStaffPhotos / removeStaffPhoto, so an edit never loses or brings back one.
+        val current = ledger.staff.firstOrNull { it.id == updated.id }
+        val fixed = if (current != null) updated.copy(images = current.images) else updated
         saveLedger(
-            ledger.copy(staff = ledger.staff.map { if (it.id == updated.id) updated else it })
+            ledger.copy(staff = ledger.staff.map { if (it.id == fixed.id) fixed else it })
         )
     }
 
     fun deleteStaff(id: String) {
+        val gone = ledger.staff.firstOrNull { it.id == id }
         openStaffId = null
         saveLedger(ledger.copy(staff = ledger.staff.filter { it.id != id }))
+        if (gone != null && gone.images.isNotEmpty()) {
+            // Their photos go too: from the phone now, and from the cloud when it is available.
+            for (img in gone.images) mediaSync.enqueueRemoval(id, img.id)
+            StaffMedia.deleteStaffFolder(getApplication(), id)
+            refreshMediaState()
+        }
+    }
+
+    // ---- Staff photos (Part B). Saved on the phone first; the cloud copy follows when it is available. ----
+
+    /** Goes up when a photo file arrives from the cloud, so thumbnails redraw. */
+    var mediaTick by mutableStateOf(0)
+        private set
+
+    /** True while picked photos are being shrunk and saved. */
+    var photoBusy by mutableStateOf(false)
+        private set
+
+    /** A one-time message about adding photos. Empty when there is nothing to say. */
+    var photoNotice by mutableStateOf("")
+        private set
+
+    /** Ids of photos that are still waiting to be uploaded. */
+    var pendingPhotoIds by mutableStateOf<Set<String>>(emptySet())
+        private set
+
+    /** A short line for the Cloud card about waiting or refused photos. Empty when all is well. */
+    var mediaMessage by mutableStateOf("")
+        private set
+
+    @Volatile
+    private var manualMediaRetry = false
+
+    fun consumePhotoNotice() {
+        photoNotice = ""
+    }
+
+    fun staffImageFile(staffId: String, imageId: String): File =
+        StaffMedia.file(getApplication(), staffId, imageId)
+
+    private fun refreshMediaState() {
+        val s = mediaSync.summary()
+        pendingPhotoIds = s.uploadingImageIds
+        mediaMessage = when {
+            s.failedUploads == 1 -> "1 photo could not be uploaded"
+            s.failedUploads > 1 -> s.failedUploads.toString() + " photos could not be uploaded"
+            s.waiting > 0 && cloudConfig.cloudMode == CloudMode.ON ->
+                s.waiting.toString() + (if (s.waiting == 1) " photo change" else " photo changes") + " waiting to sync"
+            else -> ""
+        }
+    }
+
+    /** Shrinks and saves the picked photos for one staff member (never more than 5 in total). */
+    fun addStaffPhotos(staffId: String, uris: List<Uri>) {
+        if (uris.isEmpty() || photoBusy) return
+        val staff = ledger.staff.firstOrNull { it.id == staffId } ?: return
+        val room = MAX_STAFF_IMAGES - staff.images.size
+        if (room <= 0) {
+            photoNotice = "Maximum $MAX_STAFF_IMAGES photos. Delete one to add another."
+            return
+        }
+        val picked = uris.take(room)
+        val skippedForRoom = uris.size - picked.size
+        photoBusy = true
+        val app = getApplication<Application>()
+        thread(start = true) {
+            val added = ArrayList<StaffImage>()
+            var failed = 0
+            for (uri in picked) {
+                val result = ImageProcessor.process(app, uri)
+                if (result is ProcessedImage.Ok) {
+                    val id = newImageId()
+                    if (StaffMedia.write(app, staffId, id, result.bytes)) {
+                        added.add(StaffImage(id, System.currentTimeMillis(), result.bytes.size.toLong(), sha256Hex(result.bytes)))
+                    } else {
+                        failed += 1
+                    }
+                } else {
+                    failed += 1
+                }
+            }
+            mainHandler.post {
+                photoBusy = false
+                val latest = ledger.staff.firstOrNull { it.id == staffId }
+                if (latest == null) {
+                    // The staff member was deleted while the photos were being saved.
+                    for (img in added) StaffMedia.deleteImage(app, staffId, img.id)
+                    return@post
+                }
+                val roomNow = MAX_STAFF_IMAGES - latest.images.size
+                val keep = added.take(maxOf(0, roomNow))
+                for (img in added.drop(keep.size)) StaffMedia.deleteImage(app, staffId, img.id)
+                if (keep.isNotEmpty()) {
+                    saveLedger(
+                        ledger.copy(
+                            staff = ledger.staff.map {
+                                if (it.id == staffId) it.copy(images = it.images + keep) else it
+                            }
+                        )
+                    )
+                    mediaSync.enqueueUploads(staffId, keep.map { it.id })
+                    refreshMediaState()
+                }
+                photoNotice = when {
+                    keep.isEmpty() && failed > 0 -> "The photo could not be added."
+                    failed > 0 -> "Added " + keep.size + ". " + failed + " could not be added."
+                    skippedForRoom > 0 || added.size > keep.size ->
+                        "Maximum $MAX_STAFF_IMAGES photos. Only " + keep.size + " were added."
+                    else -> ""
+                }
+            }
+        }
+    }
+
+    /** Removes one photo from a staff member: the phone file now, the cloud file when it is available. */
+    fun removeStaffPhoto(staffId: String, imageId: String) {
+        val staff = ledger.staff.firstOrNull { it.id == staffId } ?: return
+        if (staff.images.none { it.id == imageId }) return
+        saveLedger(
+            ledger.copy(
+                staff = ledger.staff.map {
+                    if (it.id == staffId) it.copy(images = it.images.filter { img -> img.id != imageId }) else it
+                }
+            )
+        )
+        StaffMedia.deleteImage(getApplication(), staffId, imageId)
+        mediaSync.enqueueRemoval(staffId, imageId)
+        refreshMediaState()
     }
 
     fun payStaff(id: String) {

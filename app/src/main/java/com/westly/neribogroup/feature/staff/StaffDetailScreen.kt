@@ -46,7 +46,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import android.net.Uri
 import android.widget.Toast
+import java.io.File
+import com.westly.neribogroup.data.StaffImage
 import com.westly.neribogroup.data.Allowance
 import com.westly.neribogroup.data.PayItem
 import com.westly.neribogroup.data.SALARY_KEY
@@ -73,7 +76,16 @@ fun StaffDetailScreen(
     onBack: () -> Unit,
     onSave: (Staff) -> Unit,
     onPay: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    /** Where a photo of this staff member is stored on the phone. */
+    photoFile: (StaffImage) -> File = { File("") },
+    /** Goes up when a photo arrives from the cloud, so the pictures redraw. */
+    mediaTick: Int = 0,
+    photoBusy: Boolean = false,
+    /** Photos that are still waiting to be uploaded. */
+    waitingPhotoIds: Set<String> = emptySet(),
+    onAddPhotos: (List<Uri>) -> Unit = {},
+    onDeletePhoto: (String) -> Unit = {}
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(staff) }
@@ -249,6 +261,20 @@ fun StaffDetailScreen(
                             }
                         }
                     }
+                }
+            }
+
+            if (!editing) {
+                item {
+                    StaffPhotosSection(
+                        images = staff.images,
+                        fileFor = photoFile,
+                        mediaTick = mediaTick,
+                        busy = photoBusy,
+                        waitingIds = waitingPhotoIds,
+                        onAdd = onAddPhotos,
+                        onDelete = onDeletePhoto
+                    )
                 }
             }
 

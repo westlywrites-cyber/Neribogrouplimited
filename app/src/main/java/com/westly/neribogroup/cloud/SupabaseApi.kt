@@ -26,8 +26,25 @@ sealed class ApiResult {
     data class AppError(val code: String, val message: String) : ApiResult()
 }
 
+/** The answer of one media Storage call (upload, download, delete). */
+sealed class MediaResult {
+    class Ok(val bytes: ByteArray) : MediaResult()
+    object NotFound : MediaResult()
+    /** The object already exists (an upload without upsert). */
+    object Duplicate : MediaResult()
+    object Offline : MediaResult()
+    object AuthExpired : MediaResult()
+    /** [snippet] is only the server's short error message. */
+    data class Http(val code: Int, val snippet: String) : MediaResult()
+}
+
 /** A tiny HTTP client for Supabase Auth and RPC functions. Blocking: call it from a background thread. */
 class SupabaseApi(private val config: CloudConfig) {
+
+    private companion object {
+        const val STORAGE_OBJECT = "/storage/v1/object/neribo-media"
+        const val STORAGE_AUTH_OBJECT = "/storage/v1/object/authenticated/neribo-media"
+    }
 
     private class RawResponse(val code: Int, val body: String)
 
@@ -176,6 +193,115 @@ class SupabaseApi(private val config: CloudConfig) {
         } catch (e: Exception) {
             ApiResult.Http(-1, "unexpected error")
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Media Storage (bucket neribo-media, private, 2 MB, image/jpeg only)
+    // ---------------------------------------------------------------------------------------------
+
+    /** Uploads one JPEG. With [upsert] false an existing object is refused (staff photos); true replaces it. */
+    fun uploadMedia(path: String, bytes: ByteArray, upsert: Boolean): MediaResult =
+        storage("POST", "$STORAGE_OBJECT/$path", bytes, upsert, 90_000)
+
+    /** Downloads one object (needs the signed-in user's own path). */
+    fun downloadMedia(path: String): MediaResult =
+        storage("GET", "$STORAGE_AUTH_OBJECT/$path", null, false, 90_000)
+
+    /** Deletes one object. A missing object is reported as [MediaResult.NotFound]. */
+    fun deleteMedia(path: String): MediaResult =
+        storage("DELETE", "$STORAGE_OBJECT/$path", null, false, 30_000)
+
+    private class RawBytes(val code: Int, val bytes: ByteArray)
+
+    private fun storage(method: String, endpoint: String, body: ByteArray?, upsert: Boolean, readTimeoutMs: Int): MediaResult {
+        val url = config.projectUrl
+        val key = config.anonKey
+        if (url.isEmpty() || key.isEmpty() || !config.signedIn) return MediaResult.AuthExpired
+        return try {
+            if (config.expiresAtMillis - System.currentTimeMillis() < 60_000L) {
+                when (val r = refresh()) {
+                    AuthResult.Ok -> {}
+                    AuthResult.Offline -> return MediaResult.Offline
+                    AuthResult.InvalidCredentials -> return MediaResult.AuthExpired
+                    is AuthResult.ServerError -> return MediaResult.Http(r.code, "")
+                }
+            }
+            var raw = storageRaw(method, url + endpoint, key, body, upsert, readTimeoutMs)
+            if (needsNewToken(raw)) {
+                when (val r = refresh()) {
+                    AuthResult.Ok -> {}
+                    AuthResult.Offline -> return MediaResult.Offline
+                    AuthResult.InvalidCredentials -> return MediaResult.AuthExpired
+                    is AuthResult.ServerError -> return MediaResult.Http(r.code, "")
+                }
+                raw = storageRaw(method, url + endpoint, key, body, upsert, readTimeoutMs)
+                if (needsNewToken(raw)) return MediaResult.AuthExpired
+            }
+            classifyStorage(raw)
+        } catch (e: IOException) {
+            MediaResult.Offline
+        } catch (e: Exception) {
+            MediaResult.Http(-1, "unexpected error")
+        }
+    }
+
+    /** Storage answers an expired token with 401, or sometimes with 400/403 and a message about the JWT. */
+    private fun needsNewToken(raw: RawBytes): Boolean {
+        if (raw.code == 401) return true
+        if (raw.code == 400 || raw.code == 403) {
+            return String(raw.bytes.take(400).toByteArray(), Charsets.UTF_8).contains("jwt", ignoreCase = true)
+        }
+        return false
+    }
+
+    private fun storageRaw(
+        method: String,
+        fullUrl: String,
+        key: String,
+        body: ByteArray?,
+        upsert: Boolean,
+        readTimeoutMs: Int
+    ): RawBytes {
+        val conn = URL(fullUrl).openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = method
+            conn.connectTimeout = 10_000
+            conn.readTimeout = readTimeoutMs
+            conn.doInput = true
+            conn.setRequestProperty("apikey", key)
+            conn.setRequestProperty("Authorization", "Bearer " + config.accessToken)
+            if (body != null) {
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "image/jpeg")
+                conn.setRequestProperty("x-upsert", if (upsert) "true" else "false")
+                conn.setFixedLengthStreamingMode(body.size)
+                conn.outputStream.use { it.write(body) }
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+            return RawBytes(code, bytes)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun classifyStorage(raw: RawBytes): MediaResult {
+        if (raw.code in 200..299) return MediaResult.Ok(raw.bytes)
+        val text = String(raw.bytes.take(600).toByteArray(), Charsets.UTF_8)
+        if (raw.code == 404) return MediaResult.NotFound
+        // Storage reports a missing object or an existing one inside a 400 with a statusCode in the text.
+        if (text.contains("\"statusCode\":\"404\"") || text.contains("\"statusCode\":404") ||
+            text.contains("not_found", ignoreCase = true) || text.contains("Object not found", ignoreCase = true)
+        ) {
+            return MediaResult.NotFound
+        }
+        if (raw.code == 409 || text.contains("Duplicate", ignoreCase = true) ||
+            text.contains("already exists", ignoreCase = true)
+        ) {
+            return MediaResult.Duplicate
+        }
+        return MediaResult.Http(raw.code, errorSnippet(text))
     }
 
     private fun call(url: String, key: String, name: String, text: String, readTimeout: Int): RawResponse {
