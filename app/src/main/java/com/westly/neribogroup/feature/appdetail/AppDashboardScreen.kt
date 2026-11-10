@@ -110,7 +110,9 @@ fun AppDashboardScreen(
     aiStateFor: (Long) -> AiRollState = { AiRollState(AiRollKind.NO_JOBS) },
     aiChecking: Boolean = false,
     onAiCheck: () -> Unit = {},
-    onAiRollBuiltIn: () -> Unit = {}
+    onAiRollBuiltIn: () -> Unit = {},
+    /** Part C: names of the Socials accounts the owner added; the advert form gets a followers field for each. */
+    extraAdvertPlatforms: List<String> = emptyList()
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(app) }
@@ -839,7 +841,8 @@ fun AppDashboardScreen(
                             openAdvert = openAdvert,
                             onOpenAdvert = { openAdvertId = it },
                             onStartAdvert = onStartAdvert,
-                            onStopAdvert = onStopAdvert
+                            onStopAdvert = onStopAdvert,
+                            extraPlatformNames = extraAdvertPlatforms
                         )
                     }
 

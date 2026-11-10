@@ -115,6 +115,7 @@ object SyncRules {
         LedgerSplitter.DOC_STAFF -> "Staff"
         LedgerSplitter.DOC_CASES -> "Cases"
         LedgerSplitter.DOC_SOFTWARE -> "Software"
+        LedgerSplitter.DOC_SOCIALS -> "Socials"
         else -> appNames[key] ?: ("App " + key.removePrefix(LedgerSplitter.APP_PREFIX))
     }
 }

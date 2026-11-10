@@ -23,6 +23,7 @@ import com.westly.neribogroup.feature.cloud.ConflictDialog
 import com.westly.neribogroup.feature.cloud.cloudDotFor
 import com.westly.neribogroup.feature.cloud.LoginScreen
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
+import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.feature.group.AppsScreen
 import com.westly.neribogroup.feature.group.CaseDetailScreen
 import com.westly.neribogroup.feature.group.CasesScreen
@@ -31,6 +32,7 @@ import com.westly.neribogroup.feature.group.GroupDashboardScreen
 import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
+import com.westly.neribogroup.feature.group.SocialsScreen
 import com.westly.neribogroup.feature.group.StaffListScreen
 import com.westly.neribogroup.feature.software.SoftwareClientsScreen
 import com.westly.neribogroup.feature.software.SoftwareOfferScreen
@@ -320,7 +322,8 @@ private fun NeriboRoot(vm: AppViewModel) {
             aiStateFor = { n -> vm.aiRollStateFor(openApp, n) },
             aiChecking = vm.aiRunning,
             onAiCheck = { vm.runAiJobs() },
-            onAiRollBuiltIn = { vm.aiRollBuiltIn(openApp.id) }
+            onAiRollBuiltIn = { vm.aiRollBuiltIn(openApp.id) },
+            extraAdvertPlatforms = vm.extraAdvertPlatformNames()
         )
     } else if (openStaff != null) {
         StaffDetailScreen(
@@ -389,6 +392,19 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onSaveRate = { code, value -> vm.saveRate(code, value) },
                 onUseLiveRate = { vm.useLiveRate(it) },
                 usdOnly = true
+            )
+            Section.SOCIALS -> SocialsScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null },
+                rollInfoFor = { n -> vm.socialsRollInfo(n) },
+                todayKeyFor = { n -> dayKey(vm.socialsNow(n)) },
+                aiOn = vm.aiActive,
+                aiChecking = vm.aiRunning,
+                onAiCheck = { vm.runAiJobs() },
+                onAddAccount = { name, handle, display -> vm.addSocialAccount(name, handle, display) },
+                deleteBlockFor = { id, n -> vm.socialDeleteBlock(id, n) },
+                onDeleteAccount = { id -> vm.deleteSocialAccount(id) },
+                onSaveEdits = { vm.saveSocialEdits(it) }
             )
             null -> GroupDashboardScreen(
                 ledger = vm.ledger,

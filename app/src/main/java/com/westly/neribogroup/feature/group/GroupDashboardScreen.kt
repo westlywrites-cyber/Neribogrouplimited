@@ -46,6 +46,7 @@ import com.westly.neribogroup.Section
 import com.westly.neribogroup.data.CaseEngine
 import com.westly.neribogroup.data.DEFAULT_COMPANY_NAME
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.data.SocialsRules
 import com.westly.neribogroup.feature.cloud.CloudDot
 import com.westly.neribogroup.feature.cloud.CloudStatusDot
 import com.westly.neribogroup.feature.common.ConfirmDialog
@@ -393,6 +394,15 @@ fun GroupDashboardScreen(
                             subtitle = formatUsd(shown.software.usdBalanceCents) + " waiting to convert",
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenSection(Section.USD) }
+                        )
+                    }
+                    item {
+                        // The last tile: Socials, with the followers of all platforms added together.
+                        SectionTile(
+                            title = "Socials",
+                            subtitle = formatCount(SocialsRules.totalFollowers(shown.socials)) + " followers in total",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.SOCIALS) }
                         )
                     }
                 }

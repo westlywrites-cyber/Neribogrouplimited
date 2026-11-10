@@ -57,6 +57,10 @@ import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.data.ProjectStage
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
+import com.westly.neribogroup.data.SocialEdit
+import com.westly.neribogroup.data.SocialsEngine
+import com.westly.neribogroup.data.SocialsRollInfo
+import com.westly.neribogroup.data.SocialsRules
 import com.westly.neribogroup.data.SoftwareEngine
 import com.westly.neribogroup.data.SoftwarePreset
 import com.westly.neribogroup.data.SoftwareRates
@@ -86,7 +90,7 @@ import kotlin.concurrent.thread
 import kotlin.random.Random
 
 /** The pages that open from the home screen tiles. */
-enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES, USD }
+enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES, USD, SOCIALS }
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -1083,7 +1087,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             LedgerSplitter.DOC_COMPANY,
             LedgerSplitter.DOC_STAFF,
             LedgerSplitter.DOC_CASES,
-            LedgerSplitter.DOC_SOFTWARE
+            LedgerSplitter.DOC_SOFTWARE,
+            LedgerSplitter.DOC_SOCIALS
         )
         val keys = LinkedHashSet<String>()
         keys.addAll(fixed)
@@ -1463,10 +1468,56 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (appId == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == appId } ?: return
         val updated = AdvertEngine.create(
-            app, name, platforms, startInDays, lastsDays, System.currentTimeMillis(), Random.Default
+            app, name, platforms, startInDays, lastsDays, System.currentTimeMillis(), Random.Default,
+            SocialsRules.extraAdvertNames(ledger.socials)
         )
         if (updated === app) return
         saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == appId) updated else it }))
+    }
+
+    /** The extra advert platforms: one for every Socials account that is not one of the six fixed names. */
+    fun extraAdvertPlatformNames(): List<String> = SocialsRules.extraAdvertNames(ledger.socials)
+
+    // ---------------------------------------------------------------------------------------------
+    // Socials (Delivery C-1: accounts only; the social dice come in Delivery C-2)
+    // ---------------------------------------------------------------------------------------------
+
+    /** "Today" for Socials: never earlier than the highest time the app has seen (clock protection). */
+    fun socialsNow(nowMillis: Long): Long =
+        maxOf(nowMillis, ledger.casesClockMillis, ledger.software.clockMillis)
+
+    /** The state of the "Today's roll" card of Socials. */
+    fun socialsRollInfo(nowMillis: Long): SocialsRollInfo =
+        SocialsEngine.rollInfo(ledger, dayKey(socialsNow(nowMillis)), aiActive)
+
+    /** Adds an account. Returns one plain sentence when it is not allowed, or null when it was added. */
+    fun addSocialAccount(name: String, handle: String, displayName: String): String? {
+        val error = SocialsRules.addError(ledger.socials, name, handle)
+        if (error != null) return error
+        val added = SocialsRules.add(ledger.socials, name, handle, displayName, System.currentTimeMillis())
+        saveLedger(ledger.copy(socials = added))
+        return null
+    }
+
+    /** Why an account cannot be deleted now, or null when it can. */
+    fun socialDeleteBlock(accountId: String, nowMillis: Long): String? {
+        val account = ledger.socials.accounts.firstOrNull { it.id == accountId } ?: return null
+        return SocialsRules.deleteBlock(ledger, account, dayKey(socialsNow(nowMillis)))
+    }
+
+    /** Deletes an account (its follower history is lost). Refused while a running or upcoming advert lists it. */
+    fun deleteSocialAccount(accountId: String): String? {
+        val account = ledger.socials.accounts.firstOrNull { it.id == accountId } ?: return null
+        val block = SocialsRules.deleteBlock(ledger, account, dayKey(socialsNow(System.currentTimeMillis())))
+        if (block != null) return block
+        saveLedger(ledger.copy(socials = SocialsRules.delete(ledger.socials, accountId)))
+        return null
+    }
+
+    /** Saves the edited handle, display name, following, posts and likes. Followers are never typed. */
+    fun saveSocialEdits(edits: List<SocialEdit>) {
+        if (edits.isEmpty()) return
+        saveLedger(ledger.copy(socials = SocialsRules.applyEdits(ledger.socials, edits)))
     }
 
     fun stopAdvert(appId: String, advertId: String) {

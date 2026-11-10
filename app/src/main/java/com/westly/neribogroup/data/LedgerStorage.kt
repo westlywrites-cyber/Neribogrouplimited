@@ -14,13 +14,13 @@ object LedgerStorage {
 
     fun load(context: Context): Ledger {
         val file = File(context.filesDir, FILE_NAME)
-        if (!file.exists()) return Ledger().withSoftwareApp()
+        if (!file.exists()) return Ledger().withSoftwareApp().withSocialsSeeded(System.currentTimeMillis())
         return try {
             fromJson(file.readText())
         } catch (e: Exception) {
             // Keep the unreadable file instead of overwriting it.
             runCatching { file.renameTo(File(context.filesDir, "ledger.corrupt.json")) }
-            Ledger().withSoftwareApp()
+            Ledger().withSoftwareApp().withSocialsSeeded(System.currentTimeMillis())
         }
     }
 
@@ -185,6 +185,7 @@ object LedgerStorage {
         root.put("nextCaseNumber", ledger.nextCaseNumber)
         root.put("casesClockMillis", ledger.casesClockMillis)
         root.put("software", SoftwareJson.toJson(ledger.software))
+        root.put("socials", SocialsJson.toJson(ledger.socials))
 
         return root.toString(2)
     }
@@ -327,7 +328,9 @@ object LedgerStorage {
             cases.add(parsed)
         }
 
-        return Ledger(
+        // Older backups and older cloud data have no "socials": the four first accounts are made once.
+        val socialsObject = root.optJSONObject("socials")
+        val loaded = Ledger(
             company = company,
             apps = apps,
             staff = staff,
@@ -336,8 +339,10 @@ object LedgerStorage {
             cases = cases,
             nextCaseNumber = maxOf(root.optInt("nextCaseNumber", 1), cases.size + 1, 1),
             casesClockMillis = root.optLong("casesClockMillis"),
-            software = SoftwareJson.fromJson(root.optJSONObject("software"))
+            software = SoftwareJson.fromJson(root.optJSONObject("software")),
+            socials = if (socialsObject != null) SocialsJson.fromJson(socialsObject) else SocialsData()
         ).withSoftwareApp().withoutDuplicateLegalExpenses()
+        return if (socialsObject == null) loaded.withSocialsSeeded(System.currentTimeMillis()) else loaded
     }
 
     /**

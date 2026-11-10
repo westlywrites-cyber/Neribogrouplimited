@@ -701,7 +701,9 @@ data class Ledger(
     /** The highest "now" ever seen by the Cases screens. Protects against setting the phone clock back. */
     val casesClockMillis: Long = 0,
     /** Software Development Clients: proposals, projects, clients, the $ account and exchange rates. */
-    val software: SoftwareData = SoftwareData()
+    val software: SoftwareData = SoftwareData(),
+    /** Socials: the company's social accounts and their followers (made only by the social dice). */
+    val socials: SocialsData = SocialsData()
 ) {
     /** Renewals that are inside a reminder stage or expired, soonest first. */
     fun renewalsNeedingAttention(now: Long): List<Renewal> =

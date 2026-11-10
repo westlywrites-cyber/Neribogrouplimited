@@ -9,7 +9,10 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.random.Random
 
-/** The social platforms an advert can use. Exactly these names, in this order. */
+/**
+ * The fixed social platforms an advert can use. Exactly these names, in this order.
+ * Socials accounts the owner adds later are offered after these (see [AdvertEngine.allowedPlatformNames]).
+ */
 val ADVERT_PLATFORM_NAMES: List<String> = listOf("Instagram", "TikTok", "X", "YouTube", "Facebook", "Other")
 
 /** One social platform of a celebrity. */
@@ -100,6 +103,33 @@ object AdvertEngine {
         else -> AdvertStatus.FINISHED
     }
 
+    /**
+     * Part C: does this advert count on [day]? True from its start day to its end day (both inclusive),
+     * and only before the stop day when it was stopped. Unlike [statusOn] this is correct for past days:
+     * a stopped advert still counted on the days before it was stopped.
+     */
+    fun runningOn(advert: Advert, day: String): Boolean {
+        if (day < advert.startDayKey || day > advert.endDayKey) return false
+        return advert.stoppedDayKey.isEmpty() || day < advert.stoppedDayKey
+    }
+
+    /**
+     * Part C: the platform names an advert form may use: the six fixed names in their fixed order, then
+     * [extraNames] (the exact names of Socials accounts the owner added) in the order given. A name that
+     * equals a fixed name (ignoring case and spaces at the ends) or an earlier extra name is left out.
+     */
+    fun allowedPlatformNames(extraNames: List<String>): List<String> {
+        val result = ArrayList<String>(ADVERT_PLATFORM_NAMES)
+        val seen = HashSet<String>()
+        for (n in ADVERT_PLATFORM_NAMES) seen.add(n.trim().lowercase())
+        for (extra in extraNames) {
+            val clean = extra.trim()
+            if (clean.isEmpty()) continue
+            if (seen.add(clean.lowercase())) result.add(extra)
+        }
+        return result
+    }
+
     /** The last plan index that may ever be delivered (end of the advert, or the day before the stop). */
     fun lastDeliverableIndex(advert: Advert): Int {
         var last = advert.plan.size - 1
@@ -142,10 +172,13 @@ object AdvertEngine {
     fun advertError(
         app: AppData,
         name: String,
-        platforms: List<AdvertPlatform>,
+        allPlatforms: List<AdvertPlatform>,
         startInDays: Int,
-        lastsDays: Int
+        lastsDays: Int,
+        extraPlatformNames: List<String> = emptyList()
     ): String? {
+        val allowed = allowedPlatformNames(extraPlatformNames)
+        val platforms = allPlatforms.filter { it.name in allowed }
         if (!app.googlePlayEnabled) return "Adverts are only for Google Play apps."
         if (app.id == SOFTWARE_APP_ID) return "Adverts are only for Google Play apps."
         val clean = name.trim()
@@ -218,11 +251,12 @@ object AdvertEngine {
         startInDays: Int,
         lastsDays: Int,
         now: Long,
-        random: Random
+        random: Random,
+        extraPlatformNames: List<String> = emptyList()
     ): AppData {
-        if (advertError(app, name, platforms, startInDays, lastsDays) != null) return app
-        // Fixed names in the fixed order; only platforms with followers.
-        val clean = ADVERT_PLATFORM_NAMES.mapNotNull { platformName ->
+        if (advertError(app, name, platforms, startInDays, lastsDays, extraPlatformNames) != null) return app
+        // Fixed names in the fixed order, then the added Socials platforms; only platforms with followers.
+        val clean = allowedPlatformNames(extraPlatformNames).mapNotNull { platformName ->
             val followers = platforms.filter { it.name == platformName }.sumOf { max(0L, it.followers) }
             if (followers > 0L) AdvertPlatform(platformName, followers) else null
         }

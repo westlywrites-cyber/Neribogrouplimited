@@ -24,7 +24,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.westly.neribogroup.data.ADVERT_PLATFORM_NAMES
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Advert
 import com.westly.neribogroup.data.AdvertEngine
@@ -83,7 +82,9 @@ fun LazyListScope.advertsPageItems(
     openAdvert: Advert?,
     onOpenAdvert: (String) -> Unit,
     onStartAdvert: (String, List<AdvertPlatform>, Int, Int) -> Unit,
-    onStopAdvert: (String) -> Unit
+    onStopAdvert: (String) -> Unit,
+    /** Part C: the exact names of the Socials accounts added by the owner (one extra followers field each). */
+    extraPlatformNames: List<String> = emptyList()
 ) {
     val today = dayKey(now)
 
@@ -103,6 +104,7 @@ fun LazyListScope.advertsPageItems(
             NewAdvertDialog(
                 app = app,
                 now = now,
+                extraPlatformNames = extraPlatformNames,
                 onDismiss = { showNew = false },
                 onStart = { name, platforms, startIn, lasts ->
                     showNew = false
@@ -364,21 +366,24 @@ private fun LineRow(label: String, value: String, bold: Boolean = false) {
 private fun NewAdvertDialog(
     app: AppData,
     now: Long,
+    extraPlatformNames: List<String>,
     onDismiss: () -> Unit,
     onStart: (String, List<AdvertPlatform>, Int, Int) -> Unit
 ) {
+    // The six fixed platforms, then one more for every Socials account the owner added.
+    val platformNames = AdvertEngine.allowedPlatformNames(extraPlatformNames)
     var name by remember { mutableStateOf("") }
-    var followerTexts by remember { mutableStateOf(List(ADVERT_PLATFORM_NAMES.size) { "" }) }
+    var followerTexts by remember { mutableStateOf(emptyMap<String, String>()) }
     var startText by remember { mutableStateOf("0") }
     var daysText by remember { mutableStateOf("7") }
 
-    val platforms = ADVERT_PLATFORM_NAMES.mapIndexed { i, platformName ->
-        AdvertPlatform(platformName, followerTexts[i].toLongOrNull() ?: 0L)
+    val platforms = platformNames.map { platformName ->
+        AdvertPlatform(platformName, followerTexts[platformName]?.toLongOrNull() ?: 0L)
     }
     val total = platforms.sumOf { it.followers }
     val startIn = startText.toIntOrNull() ?: 0
     val lasts = daysText.toIntOrNull() ?: 0
-    val error = AdvertEngine.advertError(app, name, platforms, startIn, lasts)
+    val error = AdvertEngine.advertError(app, name, platforms, startIn, lasts, extraPlatformNames)
 
     val today = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).toLocalDate()
     val startDay = today.plusDays(startIn.toLong())
@@ -395,14 +400,14 @@ private fun NewAdvertDialog(
             onValueChange = { name = it.take(60) },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
         )
-        for ((i, platformName) in ADVERT_PLATFORM_NAMES.withIndex()) {
+        for (platformName in platformNames) {
             Spacer(modifier = Modifier.height(16.dp))
             LabeledField(
                 label = "$platformName followers (optional)",
-                value = followerTexts[i],
+                value = followerTexts[platformName] ?: "",
                 onValueChange = { raw ->
                     val clean = raw.filter { it.isDigit() }.take(10)
-                    followerTexts = followerTexts.mapIndexed { index, old -> if (index == i) clean else old }
+                    followerTexts = followerTexts + (platformName to clean)
                 },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )

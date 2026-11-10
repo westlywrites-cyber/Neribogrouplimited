@@ -32,13 +32,14 @@ object LedgerSplitter {
     const val DOC_STAFF = "staff"
     const val DOC_CASES = "cases"
     const val DOC_SOFTWARE = "software"
+    const val DOC_SOCIALS = "socials"
     const val APP_PREFIX = "app:"
 
     val KEY_REGEX = Regex("^[a-z0-9:_.-]{1,100}$")
 
     private val COMPANY_KEYS = listOf("version", "companyName", "companyExpenses", "renewals", "withdrawals")
     private val CASES_KEYS = listOf("cases", "nextCaseNumber", "casesClockMillis")
-    private val KNOWN_ROOT_KEYS = COMPANY_KEYS + CASES_KEYS + listOf("staff", "software", "apps")
+    private val KNOWN_ROOT_KEYS = COMPANY_KEYS + CASES_KEYS + listOf("staff", "software", "socials", "apps")
 
     /** Throws if the text is not a ledger. The same text always gives the same documents. */
     fun split(ledgerText: String): List<SplitDoc> {
@@ -89,6 +90,10 @@ object LedgerSplitter {
         if (root.has("software")) software.put("software", root.get("software"))
         result.add(makeDoc(DOC_SOFTWARE, software.toString()))
 
+        val socials = JSONObject()
+        if (root.has("socials")) socials.put("socials", root.get("socials"))
+        result.add(makeDoc(DOC_SOCIALS, socials.toString()))
+
         result.addAll(appDocs)
         return result
     }
@@ -102,6 +107,16 @@ object LedgerSplitter {
         val staff = parse(docs, DOC_STAFF)
         val cases = parse(docs, DOC_CASES)
         val software = parse(docs, DOC_SOFTWARE)
+        // Older cloud data has no socials document: that is not an error, the ledger simply has none.
+        val socials: JSONObject? = if (docs.containsKey(DOC_SOCIALS)) {
+            try {
+                JSONObject(docs.getValue(DOC_SOCIALS))
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            null
+        }
         if (!staff.has("staff")) throw IllegalArgumentException("The staff document is incomplete")
         if (!cases.has("cases")) throw IllegalArgumentException("The cases document is incomplete")
         if (!software.has("software")) throw IllegalArgumentException("The software document is incomplete")
@@ -148,6 +163,7 @@ object LedgerSplitter {
         }
         for (k in CASES_KEYS) if (cases.has(k)) root.put(k, cases.get(k))
         root.put("software", software.get("software"))
+        if (socials != null && socials.has("socials")) root.put("socials", socials.get("socials"))
         val names = company.keys()
         while (names.hasNext()) {
             val k = names.next()

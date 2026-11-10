@@ -3,6 +3,7 @@ package com.westly.neribogroup.cloud
 import android.content.Context
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.LedgerStorage
+import com.westly.neribogroup.data.SocialsData
 import com.westly.neribogroup.data.SoftwareEngine
 import com.westly.neribogroup.data.withClockAtLeast
 import com.westly.neribogroup.data.withSoftwareApp
@@ -1462,7 +1463,9 @@ class SyncEngine(
     /** True for a brand-new phone ledger (nothing entered yet). */
     private fun isFreshLedger(ledger: Ledger): Boolean {
         return try {
-            LedgerStorage.toJson(ledger) == LedgerStorage.toJson(Ledger().withSoftwareApp())
+            // The four first Socials accounts are made on every new phone, so they do not count as entered data.
+            LedgerStorage.toJson(ledger.copy(socials = SocialsData())) ==
+                LedgerStorage.toJson(Ledger().withSoftwareApp())
         } catch (e: Exception) {
             false
         }
