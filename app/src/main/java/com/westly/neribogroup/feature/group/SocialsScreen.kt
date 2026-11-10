@@ -1,8 +1,7 @@
 package com.westly.neribogroup.feature.group
 
-import androidx.compose.foundation.border
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -20,14 +18,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.westly.neribogroup.cloud.AiRollKind
+import com.westly.neribogroup.cloud.AiRollState
 import com.westly.neribogroup.data.AdvertEngine
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.SocialAccount
@@ -51,6 +51,7 @@ import com.westly.neribogroup.feature.common.TintedButton
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import com.westly.neribogroup.ui.formatFullDate
+import java.io.File
 
 /**
  * The Socials page: today's roll, one card for every social account and the adverts that count today.
@@ -70,7 +71,20 @@ fun SocialsScreen(
     /** Why an account cannot be deleted right now, or null when it can. */
     deleteBlockFor: (String, Long) -> String?,
     onDeleteAccount: (String) -> String?,
-    onSaveEdits: (List<SocialEdit>) -> Unit
+    onSaveEdits: (List<SocialEdit>) -> Unit,
+    /** The state of the Socials roll as the app cards show it (used for the "No internet" line). */
+    aiStateFor: (Long) -> AiRollState,
+    /** A plain line from the last Claude check (for example when Claude's answer could not be used). */
+    claudeMessage: String,
+    /** The profile picture file of an account on this phone. It may not exist. */
+    fileFor: (String) -> File,
+    /** Goes up when a picture file changed, so the circles draw again. */
+    mediaTick: Int,
+    photoBusy: Boolean,
+    /** Ids of accounts whose picture is still waiting to be uploaded. */
+    waitingPhotoIds: Set<String>,
+    onSetPhoto: (String, Uri) -> Unit,
+    onRemovePhoto: (String) -> Unit
 ) {
     val now = rememberNowMillis()
     val today = todayKeyFor(now)
@@ -82,6 +96,16 @@ fun SocialsScreen(
     var historyId by remember { mutableStateOf<String?>(null) }
     var deleteId by remember { mutableStateOf<String?>(null) }
     var blockedText by remember { mutableStateOf<String?>(null) }
+    var removePhotoId by remember { mutableStateOf<String?>(null) }
+    var pickFor by rememberSaveable { mutableStateOf<String?>(null) }
+    val openPicker = rememberSinglePhotoPicker { uri ->
+        val id = pickFor
+        if (id != null) onSetPhoto(id, uri)
+    }
+    fun pickPhoto(accountId: String) {
+        pickFor = accountId
+        openPicker()
+    }
 
     fun draftOf(a: SocialAccount): SocialEdit =
         drafts[a.id] ?: SocialEdit(a.id, a.handle, a.displayName, a.following, a.posts, a.likes)
@@ -110,6 +134,8 @@ fun SocialsScreen(
                     info = rollInfoFor(now),
                     now = now,
                     aiOn = aiOn,
+                    aiState = aiStateFor(now),
+                    claudeMessage = claudeMessage,
                     checking = aiChecking,
                     onCheck = onAiCheck
                 )
@@ -154,6 +180,12 @@ fun SocialsScreen(
                     EditCard(
                         account = account,
                         draft = draftOf(account),
+                        file = fileFor(account.id),
+                        mediaTick = mediaTick,
+                        photoBusy = photoBusy,
+                        waiting = account.id in waitingPhotoIds,
+                        onChangePhoto = { pickPhoto(account.id) },
+                        onRemovePhoto = { removePhotoId = account.id },
                         onChange = { drafts = drafts + (account.id to it) },
                         onDelete = {
                             val block = deleteBlockFor(account.id, now)
@@ -166,6 +198,11 @@ fun SocialsScreen(
                         account = account,
                         today = today,
                         baseLine = if (base == null) "" else SocialsEngine.baseLine(base),
+                        file = fileFor(account.id),
+                        mediaTick = mediaTick,
+                        photoBusy = photoBusy,
+                        waiting = account.id in waitingPhotoIds,
+                        onChangePhoto = { pickPhoto(account.id) },
                         onHistory = { historyId = account.id }
                     )
                 }
@@ -221,6 +258,21 @@ fun SocialsScreen(
         )
     }
 
+    val removing = socials.accounts.firstOrNull { it.id == removePhotoId }
+    if (removing != null) {
+        ConfirmDialog(
+            heading = "Remove the photo of " + removing.name + "?",
+            message = "It is removed from this phone and from the cloud. The profile circle becomes empty.",
+            confirmLabel = "Remove",
+            onConfirm = {
+                removePhotoId = null
+                onRemovePhoto(removing.id)
+            },
+            onDismiss = { removePhotoId = null },
+            destructive = true
+        )
+    }
+
     val blocked = blockedText
     if (blocked != null) {
         NeriboDialog(onDismiss = { blockedText = null }, title = "Cannot delete") {
@@ -236,22 +288,13 @@ fun SocialsScreen(
     }
 }
 
-/** The empty circle with a thin outline. No silhouette, no letters, no placeholder picture. */
-@Composable
-private fun EmptyProfileCircle() {
-    Box(
-        modifier = Modifier
-            .size(56.dp)
-            .clip(CircleShape)
-            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-    )
-}
-
 @Composable
 private fun RollCard(
     info: SocialsRollInfo,
     now: Long,
     aiOn: Boolean,
+    aiState: AiRollState,
+    claudeMessage: String,
     checking: Boolean,
     onCheck: () -> Unit
 ) {
@@ -310,6 +353,25 @@ private fun RollCard(
             )
         }
 
+        val waitingForClaude = info.kind == SocialsRollKind.WAITING_APPS ||
+            info.kind == SocialsRollKind.WAITING_CLAUDE ||
+            info.missedDays > 0
+        val note = when {
+            !aiOn -> ""
+            claudeMessage.isNotEmpty() -> claudeMessage
+            waitingForClaude && aiState.kind == AiRollKind.OFFLINE ->
+                "No internet. Claude's answers will be checked later."
+            else -> ""
+        }
+        if (note.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         val canCheck = aiOn && (
             info.kind == SocialsRollKind.WAITING_APPS ||
                 info.kind == SocialsRollKind.WAITING_CLAUDE ||
@@ -333,11 +395,16 @@ private fun AccountCard(
     account: SocialAccount,
     today: String,
     baseLine: String,
+    file: File,
+    mediaTick: Int,
+    photoBusy: Boolean,
+    waiting: Boolean,
+    onChangePhoto: () -> Unit,
     onHistory: () -> Unit
 ) {
     FlatCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            EmptyProfileCircle()
+            SocialProfileCircle(account = account, file = file, mediaTick = mediaTick)
             Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -389,7 +456,20 @@ private fun AccountCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        TextButton(onClick = onHistory) { Text("History") }
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onHistory) { Text("History") }
+            Spacer(modifier = Modifier.weight(1f))
+            TextButton(onClick = onChangePhoto, enabled = !photoBusy) {
+                Text(if (account.profileImage == null) "Add photo" else "Change photo")
+            }
+        }
+        if (waiting) {
+            Text(
+                text = "Photo waiting to upload",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -397,12 +477,23 @@ private fun AccountCard(
 private fun EditCard(
     account: SocialAccount,
     draft: SocialEdit,
+    file: File,
+    mediaTick: Int,
+    photoBusy: Boolean,
+    waiting: Boolean,
+    onChangePhoto: () -> Unit,
+    onRemovePhoto: () -> Unit,
     onChange: (SocialEdit) -> Unit,
     onDelete: () -> Unit
 ) {
     FlatCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            EmptyProfileCircle()
+            SocialProfileCircle(
+                account = account,
+                file = file,
+                mediaTick = mediaTick,
+                onClick = if (photoBusy) null else onChangePhoto
+            )
             Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -463,6 +554,21 @@ private fun EditCard(
                 SocialStat.FOLLOWERS -> {}
             }
         }
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onChangePhoto, enabled = !photoBusy) {
+                Text(if (account.profileImage == null) "Add photo" else "Change photo")
+            }
+            if (account.profileImage != null) {
+                TextButton(onClick = onRemovePhoto, enabled = !photoBusy) { Text("Remove photo") }
+            }
+        }
+        Text(
+            text = if (waiting) "Photo waiting to upload. Photo changes are saved at once."
+            else "Photo changes are saved at once. Pictures are not inside the backup file; they sync through the cloud.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(modifier = Modifier.height(16.dp))
         OutlinedButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
             Text("Delete account")

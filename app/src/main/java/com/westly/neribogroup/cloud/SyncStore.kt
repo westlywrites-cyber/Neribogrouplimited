@@ -46,7 +46,9 @@ data class SyncData(
     /** Phase 5: the WRITE_CASE jobs (JSON text) decided on this phone and not yet turned into a case. Optional. */
     val caseJobs: List<String> = emptyList(),
     /** Software roll: how many SOFTWARE_ROLL requests were made per day (yyyy-MM-dd to 1..3). The last 5 days. Optional. */
-    val softwareAttempts: Map<String, Int> = emptyMap()
+    val softwareAttempts: Map<String, Int> = emptyMap(),
+    /** Socials roll: how many SOCIAL_ROLL requests were made for each day (yyyy-MM-dd to 1..3). The last 40 days. Optional. */
+    val socialAttempts: Map<String, Int> = emptyMap()
 )
 
 /** Reads and writes cloud_sync.json. Writes are atomic (tmp file, then rename). */
@@ -194,6 +196,11 @@ object SyncStore {
             for ((k, v) in data.softwareAttempts) o.put(k, v)
             root.put("softwareAttempts", o)
         }
+        if (data.socialAttempts.isNotEmpty()) {
+            val o = JSONObject()
+            for ((k, v) in data.socialAttempts) o.put(k, v)
+            root.put("socialAttempts", o)
+        }
         return root.toString(2)
     }
 
@@ -278,6 +285,11 @@ object SyncStore {
         if (attemptsObject != null) {
             for (k in attemptsObject.keys()) attempts[k] = attemptsObject.optInt(k, 0)
         }
+        val socialAttempts = LinkedHashMap<String, Int>()
+        val socialAttemptsObject = root.optJSONObject("socialAttempts")
+        if (socialAttemptsObject != null) {
+            for (k in socialAttemptsObject.keys()) socialAttempts[k] = socialAttemptsObject.optInt(k, 0)
+        }
         return SyncData(
             schema = root.optInt("schema", 1),
             deviceId = root.optString("deviceId", ""),
@@ -292,7 +304,8 @@ object SyncStore {
             appliedPendingMark = marks,
             aiDone = done,
             caseJobs = caseJobs,
-            softwareAttempts = attempts
+            softwareAttempts = attempts,
+            socialAttempts = socialAttempts
         )
     }
 }

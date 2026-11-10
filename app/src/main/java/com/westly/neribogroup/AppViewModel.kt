@@ -56,8 +56,13 @@ import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.data.ProjectStage
+import com.westly.neribogroup.data.SOCIALS_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
+import com.westly.neribogroup.data.SOCIAL_PHOTO_MAX_SIDE
+import com.westly.neribogroup.data.SocialDice
 import com.westly.neribogroup.data.SocialEdit
+import com.westly.neribogroup.data.SocialImage
+import com.westly.neribogroup.data.SocialMedia
 import com.westly.neribogroup.data.SocialsEngine
 import com.westly.neribogroup.data.SocialsRollInfo
 import com.westly.neribogroup.data.SocialsRules
@@ -327,6 +332,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var aiWaiting by mutableStateOf(0)
         private set
 
+    /** Part C-2: a plain line for the Socials page from the last pass (for example "Claude's answer could not be used"). */
+    var aiSocialsMessage by mutableStateOf("")
+        private set
+
     /** Part C: how many SOFTWARE_ROLL requests were made per day (from the sync state). */
     var aiSoftwareAttempts by mutableStateOf<Map<String, Int>>(startSync?.softwareAttempts ?: emptyMap())
         private set
@@ -397,6 +406,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         val updated = build(current, wallNow)
                         if (updated == null || updated === current) {
+                            outcome.set(JobRollResult.BLOCKED)
+                        } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
+                            ledger = updated
+                            onLocalChange()
+                            outcome.set(JobRollResult.ROLLED)
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return if (finished) outcome.get() else JobRollResult.FAILED
+        }
+
+        override fun rollSocialsForJobs(day: String, wallNow: Long, faces: Map<String, Int>): JobRollResult {
+            val latch = CountDownLatch(1)
+            val outcome = AtomicReference(JobRollResult.FAILED)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    // A day after "today" (clock protection included) is never rolled.
+                    if (day > dayKey(SocialDice.nowFor(current, wallNow))) {
+                        outcome.set(JobRollResult.BLOCKED)
+                    } else {
+                        val updated = SocialDice.applyDay(current, day, faces)
+                        if (updated === current) {
                             outcome.set(JobRollResult.BLOCKED)
                         } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
                             ledger = updated
@@ -579,6 +619,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 aiCounts = result.counts
                 aiWaiting = result.waiting
                 aiAnswered = result.answered
+                aiSocialsMessage = result.socialsMessage
             }
             aiMessage = result.message
             if (result.casesWaiting >= 0) aiCasesWaiting = result.casesWaiting
@@ -608,6 +649,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             aiCounts[SOFTWARE_APP_ID], aiOffline
         )
     }
+
+    /** Part C-2: the state of the Socials roll (the same kinds as the app cards). */
+    fun aiRollStateForSocials(nowMillis: Long): AiRollState = AiJobRules.stateForKey(
+        ledger.socials.lastRollDayKey, dayKey(socialsNow(nowMillis)), aiDoneMap[SOCIALS_APP_ID],
+        aiCounts[SOCIALS_APP_ID], aiOffline
+    )
 
     /** Part C: how many times today's software roll was asked of Claude (0 to 3). */
     fun softwareAttemptsToday(nowMillis: Long): Int {
@@ -1510,8 +1557,78 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val account = ledger.socials.accounts.firstOrNull { it.id == accountId } ?: return null
         val block = SocialsRules.deleteBlock(ledger, account, dayKey(socialsNow(System.currentTimeMillis())))
         if (block != null) return block
+        val hadPicture = account.profileImage != null
         saveLedger(ledger.copy(socials = SocialsRules.delete(ledger.socials, accountId)))
+        // The picture goes too: from the phone now, and from the cloud when it is available.
+        SocialMedia.deleteAccountFolder(getApplication(), accountId)
+        if (hadPicture) mediaSync.enqueueSocialRemoval(accountId)
+        refreshMediaState()
         return null
+    }
+
+    // ---- Profile pictures of the social accounts (Part C-2). Saved on the phone first; the cloud copy follows. ----
+
+    fun socialPhotoFile(accountId: String): File = SocialMedia.file(getApplication(), accountId)
+
+    /**
+     * Shrinks the picked picture (longest side 512 pixels, JPEG), saves it on the phone, gives it the next
+     * version number and puts it in the upload queue. A new picture replaces the old one. The change is saved
+     * at once (it does not wait for the Save button of the page).
+     */
+    fun setSocialPhoto(accountId: String, uri: Uri) {
+        if (photoBusy) return
+        if (ledger.socials.accounts.none { it.id == accountId }) return
+        photoBusy = true
+        val app = getApplication<Application>()
+        thread(start = true) {
+            val processed = ImageProcessor.process(app, uri, SOCIAL_PHOTO_MAX_SIDE)
+            mainHandler.post {
+                photoBusy = false
+                val latest = ledger.socials.accounts.firstOrNull { it.id == accountId }
+                if (latest == null) return@post
+                if (processed !is ProcessedImage.Ok) {
+                    photoNotice = (processed as? ProcessedImage.Failed)?.message ?: "The photo could not be added."
+                    return@post
+                }
+                val version = (latest.profileImage?.version ?: 0) + 1
+                if (!SocialMedia.write(app, accountId, processed.bytes, version)) {
+                    photoNotice = "The photo could not be saved."
+                    return@post
+                }
+                val image = SocialImage(version, processed.bytes.size.toLong(), sha256Hex(processed.bytes))
+                saveLedger(
+                    ledger.copy(
+                        socials = ledger.socials.copy(
+                            accounts = ledger.socials.accounts.map {
+                                if (it.id == accountId) it.copy(profileImage = image) else it
+                            }
+                        )
+                    )
+                )
+                mediaSync.enqueueSocialUpload(accountId)
+                mediaTick += 1
+                refreshMediaState()
+            }
+        }
+    }
+
+    /** Removes the profile picture: the empty circle comes back. The phone file now, the cloud file when available. */
+    fun removeSocialPhoto(accountId: String) {
+        val account = ledger.socials.accounts.firstOrNull { it.id == accountId } ?: return
+        if (account.profileImage == null) return
+        saveLedger(
+            ledger.copy(
+                socials = ledger.socials.copy(
+                    accounts = ledger.socials.accounts.map {
+                        if (it.id == accountId) it.copy(profileImage = null) else it
+                    }
+                )
+            )
+        )
+        SocialMedia.deleteProfile(getApplication(), accountId)
+        mediaSync.enqueueSocialRemoval(accountId)
+        mediaTick += 1
+        refreshMediaState()
     }
 
     /** Saves the edited handle, display name, following, posts and likes. Followers are never typed. */
@@ -1719,6 +1836,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var pendingPhotoIds by mutableStateOf<Set<String>>(emptySet())
         private set
 
+    /** Ids of social accounts whose profile picture is still waiting to be uploaded. */
+    var pendingSocialPhotoIds by mutableStateOf<Set<String>>(emptySet())
+        private set
+
     /** A short line for the Cloud card about waiting or refused photos. Empty when all is well. */
     var mediaMessage by mutableStateOf("")
         private set
@@ -1736,6 +1857,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshMediaState() {
         val s = mediaSync.summary()
         pendingPhotoIds = s.uploadingImageIds
+        pendingSocialPhotoIds = s.uploadingSocialIds
         mediaMessage = when {
             s.failedUploads == 1 -> "1 photo could not be uploaded"
             s.failedUploads > 1 -> s.failedUploads.toString() + " photos could not be uploaded"

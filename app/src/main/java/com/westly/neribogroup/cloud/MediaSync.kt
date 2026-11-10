@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.MAX_STAFF_IMAGES
+import com.westly.neribogroup.data.SocialMedia
 import com.westly.neribogroup.data.StaffMedia
 import com.westly.neribogroup.data.isValidMediaId
 import org.json.JSONArray
@@ -12,7 +13,11 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** One waiting photo job. [type] is UPLOAD (send the local file) or DELETE (remove the cloud file). */
+/**
+ * One waiting photo job. [type] is UPLOAD (send the local file) or DELETE (remove the cloud file).
+ * [kind] says whose photo it is: a staff photo (staffId = staff id, imageId = photo id) or the profile picture of
+ * a social account (staffId = account id, imageId = "profile"). Jobs saved before Socials have no kind: staff.
+ */
 data class MediaJob(
     val id: String,
     val type: String,
@@ -23,7 +28,8 @@ data class MediaJob(
     val nextTryMillis: Long = 0L,
     /** True when the server refused it (for example "5 photos already"). Waits for a manual Sync now. */
     val failed: Boolean = false,
-    val message: String = ""
+    val message: String = "",
+    val kind: String = MediaSync.KIND_STAFF
 )
 
 /** What the photo queue looks like right now, for the screens. */
@@ -33,7 +39,9 @@ data class MediaSummary(
     /** Uploads the server refused. */
     val failedUploads: Int,
     /** Ids of photos that are waiting to be uploaded. */
-    val uploadingImageIds: Set<String>
+    val uploadingImageIds: Set<String>,
+    /** Ids of social accounts whose profile picture is waiting to be uploaded. */
+    val uploadingSocialIds: Set<String> = emptySet()
 )
 
 /**
@@ -71,7 +79,9 @@ class MediaSync(
                 val type = o.optString("t")
                 val staffId = o.optString("staff")
                 val imageId = o.optString("image")
+                val kind = if (o.optString("k") == KIND_SOCIAL) KIND_SOCIAL else KIND_STAFF
                 if ((type != UPLOAD && type != DELETE) || !isValidMediaId(staffId) || !isValidMediaId(imageId)) continue
+                if (kind == KIND_SOCIAL && imageId != SOCIAL_IMAGE_ID) continue
                 list.add(
                     MediaJob(
                         id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
@@ -81,7 +91,8 @@ class MediaSync(
                         attempts = o.optInt("attempts"),
                         nextTryMillis = o.optLong("next"),
                         failed = o.optBoolean("failed"),
-                        message = o.optString("msg")
+                        message = o.optString("msg"),
+                        kind = kind
                     )
                 )
             }
@@ -106,6 +117,7 @@ class MediaSync(
                 o.put("next", j.nextTryMillis)
                 o.put("failed", j.failed)
                 if (j.message.isNotEmpty()) o.put("msg", j.message)
+                if (j.kind == KIND_SOCIAL) o.put("k", KIND_SOCIAL)
                 array.put(o)
             }
             val text = JSONObject().put("jobs", array).toString()
@@ -125,7 +137,7 @@ class MediaSync(
         synchronized(lock) {
             val jobs = loadJobs()
             for (imageId in imageIds) {
-                if (jobs.any { it.type == UPLOAD && it.staffId == staffId && it.imageId == imageId }) continue
+                if (jobs.any { it.kind == KIND_STAFF && it.type == UPLOAD && it.staffId == staffId && it.imageId == imageId }) continue
                 jobs.add(MediaJob(UUID.randomUUID().toString(), UPLOAD, staffId, imageId))
             }
             saveJobs(jobs)
@@ -139,11 +151,40 @@ class MediaSync(
     fun enqueueRemoval(staffId: String, imageId: String) {
         synchronized(lock) {
             val jobs = loadJobs()
-            jobs.removeAll { it.type == UPLOAD && it.staffId == staffId && it.imageId == imageId }
+            jobs.removeAll { it.kind == KIND_STAFF && it.type == UPLOAD && it.staffId == staffId && it.imageId == imageId }
             if (config.ownerUid.isNotEmpty() &&
-                jobs.none { it.type == DELETE && it.staffId == staffId && it.imageId == imageId }
+                jobs.none { it.kind == KIND_STAFF && it.type == DELETE && it.staffId == staffId && it.imageId == imageId }
             ) {
                 jobs.add(MediaJob(UUID.randomUUID().toString(), DELETE, staffId, imageId))
+            }
+            saveJobs(jobs)
+        }
+    }
+
+    /**
+     * A new profile picture was saved for a social account: send it when the cloud is available. Any waiting upload
+     * or delete of this account's picture is replaced by one fresh upload (a new job id), so the newest file is
+     * always the one that goes up, even when the picture is changed while an older upload is in progress.
+     */
+    fun enqueueSocialUpload(accountId: String) {
+        synchronized(lock) {
+            val jobs = loadJobs()
+            jobs.removeAll { it.kind == KIND_SOCIAL && it.staffId == accountId }
+            jobs.add(MediaJob(UUID.randomUUID().toString(), UPLOAD, accountId, SOCIAL_IMAGE_ID, kind = KIND_SOCIAL))
+            saveJobs(jobs)
+        }
+    }
+
+    /**
+     * A profile picture was removed (or its account deleted): a waiting upload is cancelled, and (when the owner id
+     * is known, which means the cloud may hold it) the cloud file is deleted when the cloud is available.
+     */
+    fun enqueueSocialRemoval(accountId: String) {
+        synchronized(lock) {
+            val jobs = loadJobs()
+            jobs.removeAll { it.kind == KIND_SOCIAL && it.staffId == accountId }
+            if (config.ownerUid.isNotEmpty()) {
+                jobs.add(MediaJob(UUID.randomUUID().toString(), DELETE, accountId, SOCIAL_IMAGE_ID, kind = KIND_SOCIAL))
             }
             saveJobs(jobs)
         }
@@ -155,7 +196,8 @@ class MediaSync(
         return MediaSummary(
             waiting = jobs.size,
             failedUploads = jobs.count { it.type == UPLOAD && it.failed },
-            uploadingImageIds = jobs.filter { it.type == UPLOAD }.map { it.imageId }.toSet()
+            uploadingImageIds = jobs.filter { it.type == UPLOAD && it.kind == KIND_STAFF }.map { it.imageId }.toSet(),
+            uploadingSocialIds = jobs.filter { it.type == UPLOAD && it.kind == KIND_SOCIAL }.map { it.staffId }.toSet()
         )
     }
 
@@ -223,6 +265,10 @@ class MediaSync(
             val now = System.currentTimeMillis()
             if (job.failed) continue
             if (!manual && job.nextTryMillis > now) continue
+            if (job.kind == KIND_SOCIAL) {
+                if (runSocialJob(job, uid, ledger, now)) offline = true
+                continue
+            }
             val path = "$uid/staff/${job.staffId}/${job.imageId}.jpg"
             if (job.type == UPLOAD) {
                 val stillWanted = ledger.staff.firstOrNull { it.id == job.staffId }
@@ -284,8 +330,110 @@ class MediaSync(
             }
         }
 
+        // 3) Profile pictures other phones added or replaced: the version in the socials document is newer than the
+        // file here (or the file is missing).
+        if (!offline) {
+            val latest = ledgerNow()
+            val uploading = synchronized(lock) { loadJobs() }
+                .filter { it.kind == KIND_SOCIAL && it.type == UPLOAD }.map { it.staffId }.toSet()
+            for (account in latest.socials.accounts) {
+                val image = account.profileImage ?: continue
+                if (!isValidMediaId(account.id)) continue
+                // This phone's own newer picture is still going up: never replace it with an older one.
+                if (account.id in uploading) continue
+                val file = SocialMedia.file(app, account.id)
+                if (file.exists() && SocialMedia.readVersion(app, account.id) >= image.version) continue
+                when (val r = api.downloadMedia("$uid/socials/${account.id}/profile.jpg")) {
+                    is MediaResult.Ok -> {
+                        // The file must be exactly the one that was described, or it is thrown away.
+                        if (image.sha256.isNotEmpty() && sha256Hex(r.bytes) != image.sha256) {
+                            Log.w(TAG, "A downloaded profile picture did not match its checksum; it was discarded.")
+                        } else if (SocialMedia.write(app, account.id, r.bytes, image.version)) {
+                            changedFiles = true
+                        }
+                    }
+                    // The other phone may not have finished uploading yet: ask again at the next sync.
+                    MediaResult.NotFound, MediaResult.Duplicate -> {}
+                    MediaResult.Offline, MediaResult.AuthExpired -> {
+                        offline = true
+                        break
+                    }
+                    is MediaResult.Http -> {}
+                }
+            }
+        }
+
         cleanLeftovers(ledgerNow())
+        cleanSocialLeftovers(ledgerNow())
         return changedFiles
+    }
+
+    /**
+     * One waiting profile-picture job. Returns true when the cloud cannot be reached (so the pass stops).
+     * Cloud path: <owner_uid>/socials/<account_id>/profile.jpg (an upload replaces the old picture, x-upsert true).
+     */
+    private fun runSocialJob(job: MediaJob, uid: String, ledger: Ledger, now: Long): Boolean {
+        val path = "$uid/socials/${job.staffId}/profile.jpg"
+        val account = ledger.socials.accounts.firstOrNull { it.id == job.staffId }
+        val image = account?.profileImage
+        if (job.type == UPLOAD) {
+            val file = SocialMedia.file(app, job.staffId)
+            if (image == null || !file.exists()) {
+                removeJob(job.id)
+                return false
+            }
+            val bytes = try {
+                file.readBytes()
+            } catch (e: Exception) {
+                removeJob(job.id)
+                return false
+            }
+            // The file must be the picture the socials document describes. If it is not, the picture was changed
+            // (a fresh job exists) or another phone's newer picture won: this upload is no longer wanted.
+            if (image.sha256.isNotEmpty() && sha256Hex(bytes) != image.sha256) {
+                removeJob(job.id)
+                return false
+            }
+            when (val r = api.uploadMedia(path, bytes, upsert = true)) {
+                is MediaResult.Ok, MediaResult.Duplicate -> removeJob(job.id)
+                MediaResult.Offline, MediaResult.AuthExpired -> return true
+                MediaResult.NotFound -> replaceJob(backOff(job, now))
+                is MediaResult.Http -> replaceJob(afterHttpFailure(job, r, now))
+            }
+            return false
+        }
+        // DELETE: never remove the cloud file of an account that has a picture again.
+        if (image != null) {
+            removeJob(job.id)
+            return false
+        }
+        when (val r = api.deleteMedia(path)) {
+            is MediaResult.Ok, MediaResult.NotFound, MediaResult.Duplicate -> removeJob(job.id)
+            MediaResult.Offline, MediaResult.AuthExpired -> return true
+            is MediaResult.Http -> replaceJob(backOff(job, now).copy(message = r.snippet.take(80)))
+        }
+        return false
+    }
+
+    /** Removes profile picture files the ledger no longer describes (deleted accounts, pictures removed elsewhere). */
+    private fun cleanSocialLeftovers(ledger: Ledger) {
+        try {
+            val folders = SocialMedia.root(app).listFiles() ?: return
+            val cutoff = System.currentTimeMillis() - LEFTOVER_AGE_MILLIS
+            for (folder in folders) {
+                if (!folder.isDirectory) continue
+                val hasPicture = ledger.socials.accounts.firstOrNull { it.id == folder.name }?.profileImage != null
+                for (file in folder.listFiles() ?: emptyArray()) {
+                    // A young file may belong to a picture that is only now being saved: leave it alone.
+                    if (file.lastModified() > cutoff) continue
+                    val keep = hasPicture && (file.name == "profile.jpg" || file.name == "profile.ver")
+                    if (!keep) file.delete()
+                }
+                if ((folder.list()?.isEmpty()) == true) folder.delete()
+            }
+        } catch (e: Exception) {
+            // Cleaning up is optional.
+        }
     }
 
     private fun backOff(job: MediaJob, now: Long): MediaJob {
@@ -333,6 +481,10 @@ class MediaSync(
         private const val FILE_NAME = "media_queue.json"
         const val UPLOAD = "UPLOAD"
         const val DELETE = "DELETE"
+        const val KIND_STAFF = "staff"
+        const val KIND_SOCIAL = "social"
+        /** The image id used in the queue for a social profile picture (there is only one per account). */
+        const val SOCIAL_IMAGE_ID = "profile"
         private const val BASE_BACKOFF_MILLIS = 30_000L
         private const val MAX_BACKOFF_MILLIS = 3_600_000L
         private const val LEFTOVER_AGE_MILLIS = 10 * 60_000L

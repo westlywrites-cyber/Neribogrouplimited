@@ -14,8 +14,11 @@ import com.westly.neribogroup.data.PresetIdentity
 import com.westly.neribogroup.data.PresetRoll
 import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.ProposalSlot
+import com.westly.neribogroup.data.SOCIALS_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_NAME
+import com.westly.neribogroup.data.SocialDice
+import com.westly.neribogroup.data.SocialsEngine
 import com.westly.neribogroup.data.SoftwareAi
 import com.westly.neribogroup.data.SoftwareEngine
 import com.westly.neribogroup.data.SoftwareGenerator
@@ -75,7 +78,9 @@ data class AiRunResult(
     /** True only when the pass reached its end, so [counts] can be trusted. */
     val complete: Boolean = false,
     /** Phase 5: customer cases still waiting for their story. -1 = not known in this pass. */
-    val casesWaiting: Int = -1
+    val casesWaiting: Int = -1,
+    /** Part C-2: a plain line for the Socials page (for example when Claude's answer could not be used). Empty = nothing to say. */
+    val socialsMessage: String = ""
 )
 
 /** What the engine needs from the app. */
@@ -116,6 +121,14 @@ interface AiJobHost {
      * ledger.json is written first. Nothing is applied when today was already rolled.
      */
     fun applySoftwareRoll(dayKey: String, wallNow: Long, build: (Ledger, Long) -> Ledger?): JobRollResult
+
+    /**
+     * Part C-2: applies ONE day of the Socials roll on the main thread. [faces] maps a platform key to Claude's
+     * face; an empty map closes the day with nothing gained. ledger.json is written first. ROLLED only when the
+     * day was applied and saved; BLOCKED when it was already applied (or may not be applied); FAILED when saving
+     * failed.
+     */
+    fun rollSocialsForJobs(day: String, wallNow: Long, faces: Map<String, Int>): JobRollResult
 }
 
 class JobRollOutcome(val result: JobRollResult, val skeleton: CaseSkeleton?)
@@ -162,6 +175,9 @@ object AiDone {
         return Info(parts[0], millis, parts[2] == "C", parts.getOrNull(3)?.toIntOrNull() ?: 0)
     }
 }
+
+/** At most this many days are asked of Claude in one publish call (catch-up of missed days). */
+private const val MAX_SOCIAL_JOBS_PER_CALL = 8
 
 /** The pure rules: nothing here touches the network, the phone or the ledger. */
 object AiJobRules {
@@ -466,13 +482,15 @@ class AiJobEngine(
         val rows: List<JobRow>,
         val failure: ApiResult?,
         val cases: List<CaseJobRow> = emptyList(),
-        val software: List<SwRow> = emptyList()
+        val software: List<SwRow> = emptyList(),
+        val socials: List<SocialRow> = emptyList()
     )
 
     private fun readRows(): Rows {
         val rows = ArrayList<JobRow>()
         val caseRows = ArrayList<CaseJobRow>()
         val swRows = ArrayList<SwRow>()
+        val soRows = ArrayList<SocialRow>()
         val lists = listOf(listOf("pending", "claimed"), listOf("submitted"))
         for (statuses in lists) {
             val asked = JSONArray()
@@ -482,11 +500,12 @@ class AiJobEngine(
                 rows.addAll(AiJobRules.parseRows(r.json))
                 caseRows.addAll(AiJobRules.parseCaseRows(r.json))
                 swRows.addAll(SoftwareAiRules.parseRows(r.json))
+                soRows.addAll(SocialAiRules.parseRows(r.json))
             } else {
                 return Rows(emptyList(), r)
             }
         }
-        return Rows(rows, null, caseRows, swRows)
+        return Rows(rows, null, caseRows, swRows, soRows)
     }
 
     private fun failure(r: ApiResult): AiRunResult {
@@ -532,6 +551,7 @@ class AiJobEngine(
         var rows = first.rows
         var caseRows = first.cases
         val swRows = first.software
+        val socialRows = first.socials
 
         val counts = LinkedHashMap<String, AiCounts>()
         var waiting = 0
@@ -720,8 +740,20 @@ class AiJobEngine(
             }
         }
 
+        // 3. Socials (Part C-2): after the apps have rolled, because today's social roll waits for them.
+        // Socials are rolled only by Claude; there is no built-in fallback.
+        val soRun = processSocialsRoll(host, socialRows, notices, doneUpdates)
+        if (soRun.changed) rolledAny = true
+        if (soRun.counts != null) {
+            counts[SOCIALS_APP_ID] = soRun.counts
+            waiting += soRun.counts.total - soRun.counts.answered
+            answered += soRun.counts.answered
+        }
+        if (soRun.publishProblem.isNotEmpty() && publishProblem.isEmpty()) publishProblem = soRun.publishProblem
+        val soFailure = soRun.failure?.let { failure(it) }
+
         if (doneUpdates.isNotEmpty()) {
-            val keep = ledger0.apps.map { it.id }.toSet()
+            val keep = ledger0.apps.map { it.id }.toSet() + SOCIALS_APP_ID
             update { data ->
                 val merged = LinkedHashMap<String, String>()
                 for ((k, v) in data.aiDone) if (k in keep) merged[k] = v
@@ -737,12 +769,14 @@ class AiJobEngine(
         val message = when {
             publishProblem.isNotEmpty() -> publishProblem
             caseRun.failure != null && !rolledAny -> failure(caseRun.failure).message
+            soFailure != null && !rolledAny -> soFailure.message
             rolledAny -> ""
             waiting + answered > 0 -> "Checked just now. Claude has not finished yet."
             else -> "Checked just now. Nothing new from Claude yet."
         }
         return AiRunResult(
             ran = true,
+            offline = soFailure?.offline == true,
             message = message,
             counts = counts,
             waiting = waiting,
@@ -750,7 +784,8 @@ class AiJobEngine(
             notices = notices,
             rolledAny = rolledAny,
             complete = true,
-            casesWaiting = caseRun.waiting
+            casesWaiting = caseRun.waiting,
+            socialsMessage = soRun.message
         )
     }
 
@@ -1082,6 +1117,179 @@ class AiJobEngine(
             }
         }
         return SoftwareRun(rolled = rolled, counts = counts, publishProblem = publishProblem)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Part C-2: the Socials roll. ONE SOCIAL_ROLL job for every day that has followers to give. Claude gives one
+    // face 0 to 5 per platform; the app checks the answer again and turns the faces into followers. Days are
+    // applied oldest first and each at most once. Only Claude rolls: there is NO built-in fallback.
+    // ---------------------------------------------------------------------------------------------
+
+    private class SocialsRun(
+        /** True when the ledger changed (a day was applied or closed), so a sync should follow. */
+        val changed: Boolean = false,
+        val counts: AiCounts? = null,
+        val failure: ApiResult? = null,
+        val publishProblem: String = "",
+        val message: String = ""
+    )
+
+    private fun processSocialsRoll(
+        host: AiJobHost,
+        rows0: List<SocialRow>,
+        notices: MutableList<String>,
+        doneUpdates: MutableMap<String, String>
+    ): SocialsRun {
+        var changed = false
+        var counts: AiCounts? = null
+        var message = ""
+        var publishProblem = ""
+        var apiProblem: ApiResult? = null
+        var appliedDays = 0
+        var lastApplied = ""
+
+        val start = host.currentLedger()
+        val today = dayKey(SocialDice.nowFor(start, System.currentTimeMillis()))
+
+        // Answers that can no longer be used: too old, from the future, or for a day that is already rolled.
+        for (row in rows0) {
+            if (row.status != "submitted") continue
+            val age = AiJobRules.ageDays(row.dayKey, today)
+            when {
+                age == null -> rejectId(row.id, "bad day")
+                age < 0L -> rejectId(row.id, "future day")
+                age > SocialAiRules.MAX_AGE_DAYS -> rejectId(row.id, "too old")
+                row.dayKey <= start.socials.lastRollDayKey -> markAppliedIds(listOf(row.id))
+            }
+        }
+
+        val days = SocialsEngine.pendingDays(start.socials, today)
+        for ((index, day) in days.withIndex()) {
+            val live = host.currentLedger()
+            if (day <= live.socials.lastRollDayKey) continue
+            // Today waits until every app that has a running advert has rolled today. Past days do not wait.
+            if (day == today && SocialsEngine.waitingForApps(live, day)) break
+
+            val bases = SocialsEngine.basesOn(live, day).filter { it.base > 0L }
+            val dayRows = rows0.filter { it.dayKey == day }.sortedBy { it.attempt }
+
+            if (bases.isEmpty()) {
+                // No platform has followers to give that day: it is closed without contacting Claude.
+                for (row in dayRows) if (row.status == "submitted") rejectId(row.id, "nothing to roll")
+                val closed = host.rollSocialsForJobs(day, System.currentTimeMillis(), emptyMap())
+                if (closed == JobRollResult.FAILED) break
+                if (closed == JobRollResult.ROLLED) changed = true
+                continue
+            }
+
+            // Claude is still working on this day: the later days wait, so days are never applied out of order.
+            if (dayRows.any { it.status == "pending" || it.status == "claimed" }) {
+                counts = AiCounts(0, 1)
+                break
+            }
+
+            var dayDone = false
+            var saveFailed = false
+            for (row in dayRows) {
+                if (row.status != "submitted") continue
+                val expected = (SocialAiRules.keysOf(row.context) ?: bases.map { it.key }).toSet()
+                val check = SocialAiRules.validate(expected, row.result)
+                if (!check.ok) {
+                    // A bad answer is refused; the next attempt (at most 3 a day) is asked below.
+                    rejectId(row.id, check.reason)
+                    continue
+                }
+                when (host.rollSocialsForJobs(day, System.currentTimeMillis(), check.faces)) {
+                    JobRollResult.ROLLED -> {
+                        markAppliedIds(listOf(row.id))
+                        changed = true
+                        dayDone = true
+                        appliedDays += 1
+                        lastApplied = day
+                    }
+                    JobRollResult.BLOCKED -> {
+                        if (host.currentLedger().socials.lastRollDayKey >= day) {
+                            markAppliedIds(listOf(row.id))
+                            dayDone = true
+                        } else {
+                            rejectId(row.id, "roll blocked")
+                        }
+                    }
+                    // The phone could not save. Nothing is marked: the next pass tries again.
+                    JobRollResult.FAILED -> saveFailed = true
+                }
+                if (dayDone || saveFailed) break
+            }
+            if (saveFailed) {
+                counts = AiCounts(1, 1)
+                break
+            }
+            if (dayDone) continue
+
+            // Not rolled yet: ask Claude (again), up to 3 times for a day.
+            val used = load().socialAttempts[day] ?: 0
+            if (used >= SocialAiRules.MAX_ATTEMPTS) {
+                if (day == today) {
+                    message = "Claude's answer could not be used. Try again later."
+                    break
+                }
+                // All three requests of a past day are used (the cloud never takes a fourth), so it can never be
+                // answered. It is closed with nothing gained so that the later days can go on.
+                val closed = host.rollSocialsForJobs(day, System.currentTimeMillis(), emptyMap())
+                if (closed == JobRollResult.FAILED) break
+                if (closed == JobRollResult.ROLLED) changed = true
+                continue
+            }
+
+            // Publish this day and the later days that still need a job (a job that already exists is never made again).
+            val jobs = JSONArray()
+            val made = LinkedHashMap<String, Int>()
+            for (d in days.subList(index, days.size)) {
+                if (made.size >= MAX_SOCIAL_JOBS_PER_CALL) break
+                val l2 = host.currentLedger()
+                if (d <= l2.socials.lastRollDayKey) continue
+                if (d == today && SocialsEngine.waitingForApps(l2, d)) break
+                if (d != day && rows0.any { it.dayKey == d }) continue
+                val n = load().socialAttempts[d] ?: 0
+                if (n >= SocialAiRules.MAX_ATTEMPTS) continue
+                val job = SocialAiRules.buildJob(l2, d, n + 1) ?: continue
+                jobs.put(job)
+                made[d] = n + 1
+            }
+            if (jobs.length() > 0) {
+                val r = api.rpc("publish_roll_jobs", body().put("p_jobs", jobs))
+                if (r is ApiResult.Ok) {
+                    update { data ->
+                        val merged = LinkedHashMap(data.socialAttempts)
+                        merged.putAll(made)
+                        val keep = merged.keys.sortedDescending().take(40).toSet()
+                        data.copy(socialAttempts = merged.filterKeys { it in keep })
+                    }
+                    counts = AiCounts(0, 1)
+                } else if (r is ApiResult.AppError) {
+                    publishProblem = "Could not put the Socials roll job in the cloud (" +
+                        (if (r.code.isEmpty()) "error" else r.code) + ")."
+                } else {
+                    apiProblem = r
+                }
+            }
+            break
+        }
+
+        if (appliedDays > 0) {
+            notices.add(
+                if (appliedDays == 1) "Claude rolled the Socials for " + AiJobRules.prettyDay(lastApplied)
+                else "Claude rolled $appliedDays days of Socials."
+            )
+            doneUpdates[SOCIALS_APP_ID] = AiDone.encode(lastApplied, System.currentTimeMillis(), true, appliedDays)
+        }
+        return SocialsRun(
+            changed = changed,
+            counts = counts,
+            failure = apiProblem,
+            publishProblem = publishProblem,
+            message = message
+        )
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -404,7 +404,15 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onAddAccount = { name, handle, display -> vm.addSocialAccount(name, handle, display) },
                 deleteBlockFor = { id, n -> vm.socialDeleteBlock(id, n) },
                 onDeleteAccount = { id -> vm.deleteSocialAccount(id) },
-                onSaveEdits = { vm.saveSocialEdits(it) }
+                onSaveEdits = { vm.saveSocialEdits(it) },
+                aiStateFor = { n -> vm.aiRollStateForSocials(n) },
+                claudeMessage = vm.aiSocialsMessage,
+                fileFor = { id -> vm.socialPhotoFile(id) },
+                mediaTick = vm.mediaTick,
+                photoBusy = vm.photoBusy,
+                waitingPhotoIds = vm.pendingSocialPhotoIds,
+                onSetPhoto = { id, uri -> vm.setSocialPhoto(id, uri) },
+                onRemovePhoto = { id -> vm.removeSocialPhoto(id) }
             )
             null -> GroupDashboardScreen(
                 ledger = vm.ledger,

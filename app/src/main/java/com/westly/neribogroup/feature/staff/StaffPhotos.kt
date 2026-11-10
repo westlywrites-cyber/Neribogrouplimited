@@ -56,7 +56,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /** A small in-memory cache of decoded photos, so lists and the viewer scroll smoothly. */
-private object PhotoCache {
+internal object PhotoCache {
     private val cache = object : LruCache<String, Bitmap>(
         (Runtime.getRuntime().maxMemory() / 1024L / 12L).toInt().coerceAtLeast(4 * 1024)
     ) {
@@ -70,7 +70,7 @@ private object PhotoCache {
 }
 
 /** Decodes a photo file at about [maxSide] pixels (inSampleSize: never the full picture for a thumbnail). */
-private fun decodePhoto(file: File, maxSide: Int): Bitmap? {
+internal fun decodePhoto(file: File, maxSide: Int): Bitmap? {
     return try {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, bounds)
