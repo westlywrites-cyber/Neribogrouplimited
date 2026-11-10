@@ -94,13 +94,19 @@ object ImageProcessor {
         val resolver = context.applicationContext.contentResolver
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-                ?: return ProcessedImage.Failed("That photo could not be opened.")
+            // With inJustDecodeBounds, decodeStream always returns null (it only reads the size),
+            // so only check that the stream itself could be opened.
+            val opened = resolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+                true
+            } ?: false
+            if (!opened) return ProcessedImage.Failed("That photo could not be opened.")
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return ProcessedImage.Failed("That file is not a photo.")
             }
             var sample = 1
             while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
+
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.ARGB_8888
