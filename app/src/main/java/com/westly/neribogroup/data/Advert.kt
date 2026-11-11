@@ -6,8 +6,6 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
-import kotlin.random.Random
 
 /**
  * The fixed social platforms an advert can use. Exactly these names, in this order.
@@ -18,46 +16,73 @@ val ADVERT_PLATFORM_NAMES: List<String> = listOf("Instagram", "TikTok", "X", "Yo
 /** One social platform of a celebrity. */
 data class AdvertPlatform(val name: String, val followers: Long)
 
+/** Who makes the advert. A blog's followers are worth less than a celebrity's (the backend decides how much). */
+enum class AdvertType { CELEBRITY, BLOG }
+
+/**
+ * One day of an advert, exactly as the backend answered. Only final numbers are kept here: how many users
+ * arrived that day and how many of them started on Premium or Pro the same day. [delivered] becomes true
+ * when a roll has added those users to the app.
+ */
+data class AdvertDay(
+    val dayKey: String,
+    val users: Long,
+    val premium: Long,
+    val pro: Long,
+    /** Claude's short comment about the day. Empty until it is written. */
+    val comment: String = "",
+    val delivered: Boolean = false
+)
+
 /** One advert for one app. All day keys are "yyyy-MM-dd" (same as Campaign). */
 data class Advert(
     val id: String = UUID.randomUUID().toString(),
     val celebrityName: String,
+    val type: AdvertType = AdvertType.CELEBRITY,
     /** Only platforms with followers above 0, with the fixed names above. */
     val platforms: List<AdvertPlatform>,
     /** The stored sum of the platforms. */
     val totalFollowers: Long,
-    /** Random 100..3000 parts per million: 0.01% = 100, 0.30% = 3000. Drawn once, when the advert is made. */
-    val conversionPpm: Int,
-    /** How many users this advert brings in total. */
-    val targetUsers: Long,
     val startDayKey: String,
     /** Inclusive. */
     val endDayKey: String,
     /** Set when the advert is stopped. That day and later bring nothing. */
     val stoppedDayKey: String = "",
-    /** One entry per advert day. The sum is [targetUsers]. */
-    val plan: List<Long>,
-    /** plan[0 until deliveredDays] are already delivered. Only ever grows. */
-    val deliveredDays: Int = 0,
-    val deliveredUsers: Long = 0,
+    /** The days the backend has answered so far, oldest first. */
+    val days: List<AdvertDay> = emptyList(),
     val createdMillis: Long
 ) {
     val isStopped: Boolean get() = stoppedDayKey.isNotEmpty()
+
+    /** Users already added to the app. */
+    val deliveredUsers: Long get() = days.filter { it.delivered }.sumOf { it.users }
+
+    /** Users the backend has answered for, delivered or not. */
+    val receivedUsers: Long get() = days.sumOf { it.users }
 }
 
 enum class AdvertStatus { UPCOMING, RUNNING, FINISHED }
 
 /** The result of delivering every advert of an app for one roll day. */
-class AdvertDelivery(val updatedAdverts: List<Advert>, val users: Long)
+class AdvertDelivery(
+    val updatedAdverts: List<Advert>,
+    val users: Long,
+    /** Of [users]: how many start on Premium and on Pro the day they arrive. The rest are Free. */
+    val premium: Long = 0L,
+    val pro: Long = 0L
+)
+
+/** What the backend answered for one day of one advert. */
+class AdvertAnswer(val advertId: String, val day: AdvertDay)
 
 /**
- * Adverts: a celebrity's followers bring users. Everything here is a pure function of its inputs
- * (plain data and a Random); there is no Android code and no floating point in what is saved.
+ * Adverts: a celebrity's (or a blog's) followers bring users. The conversion is NOT done here: the backend
+ * rolls every advert day and answers with final numbers only (users, and how many of them are Premium or
+ * Pro). This object only registers adverts, asks which days are still missing, and adds the answers to the
+ * app on a roll. There is no conversion rate, no plan and no dice in the app or in what it saves.
  */
 object AdvertEngine {
 
-    const val MIN_PPM = 100
-    const val MAX_PPM = 3000
     const val MAX_FOLLOWERS_PER_PLATFORM = 2_000_000_000L
     const val MIN_TOTAL_FOLLOWERS = 100L
     const val MAX_TOTAL_FOLLOWERS = 2_000_000_000L
@@ -104,7 +129,7 @@ object AdvertEngine {
     }
 
     /**
-     * Part C: does this advert count on [day]? True from its start day to its end day (both inclusive),
+     * Does this advert count on [day]? True from its start day to its end day (both inclusive),
      * and only before the stop day when it was stopped. Unlike [statusOn] this is correct for past days:
      * a stopped advert still counted on the days before it was stopped.
      */
@@ -114,7 +139,7 @@ object AdvertEngine {
     }
 
     /**
-     * Part C: the platform names an advert form may use: the six fixed names in their fixed order, then
+     * The platform names an advert form may use: the six fixed names in their fixed order, then
      * [extraNames] (the exact names of Socials accounts the owner added) in the order given. A name that
      * equals a fixed name (ignoring case and spaces at the ends) or an earlier extra name is left out.
      */
@@ -130,25 +155,33 @@ object AdvertEngine {
         return result
     }
 
-    /** The last plan index that may ever be delivered (end of the advert, or the day before the stop). */
-    fun lastDeliverableIndex(advert: Advert): Int {
-        var last = advert.plan.size - 1
+    /** The last day that may ever bring users (the end day, or the day before the stop). "" when none. */
+    fun lastDeliverableDay(advert: Advert): String {
+        var last = advert.endDayKey
         if (advert.isStopped) {
-            val stopIndex = daysBetween(advert.startDayKey, advert.stoppedDayKey) ?: return -1
-            last = min(last.toLong(), stopIndex - 1L).toInt()
+            val before = parseDay(advert.stoppedDayKey)?.minusDays(1L)?.toString() ?: return ""
+            if (before < last) last = before
         }
-        return last
+        return if (last < advert.startDayKey) "" else last
+    }
+
+    /** How many days the advert lasts in total (start day to end day, both included), 1 to 30. */
+    fun lengthDays(advert: Advert): Int {
+        val n = daysBetween(advert.startDayKey, advert.endDayKey) ?: return 1
+        return (n + 1L).toInt().coerceIn(1, MAX_LASTS_DAYS)
     }
 
     /** True when nothing more can ever arrive from this advert. */
-    fun isSettled(advert: Advert): Boolean = advert.deliveredDays > lastDeliverableIndex(advert)
+    fun isSettled(advert: Advert): Boolean {
+        val last = lastDeliverableDay(advert)
+        if (last.isEmpty()) return true
+        val needed = (daysBetween(advert.startDayKey, last) ?: return true) + 1L
+        return advert.days.count { it.delivered && it.dayKey <= last }.toLong() >= needed
+    }
 
     // ---------------------------------------------------------------------------------------------
     // Showing numbers
     // ---------------------------------------------------------------------------------------------
-
-    /** 1,400 ppm is "0.14%". */
-    fun percentText(ppm: Int): String = String.format(Locale.US, "%.2f%%", ppm / 10_000.0)
 
     /** 1,240 -> "1,240", 240,000 -> "240K", 2,400,000 -> "2.4M". */
     fun compactFollowers(value: Long): String {
@@ -182,8 +215,8 @@ object AdvertEngine {
         if (!app.googlePlayEnabled) return "Adverts are only for Google Play apps."
         if (app.id == SOFTWARE_APP_ID) return "Adverts are only for Google Play apps."
         val clean = name.trim()
-        if (clean.length < 2) return "Type the celebrity's name (at least 2 letters)."
-        if (clean.length > 60) return "The celebrity's name can have at most 60 letters."
+        if (clean.length < 2) return "Type the name (at least 2 letters)."
+        if (clean.length > 60) return "The name can have at most 60 letters."
         for (p in platforms) {
             if (p.followers < 0L || p.followers > MAX_FOLLOWERS_PER_PLATFORM) {
                 return "Each platform can have 0 to 2,000,000,000 followers."
@@ -191,7 +224,7 @@ object AdvertEngine {
         }
         val total = platforms.sumOf { max(0L, it.followers) }
         if (platforms.none { it.followers > 0L }) return "Type the followers of at least one platform."
-        if (total < MIN_TOTAL_FOLLOWERS) return "The celebrity needs at least 100 followers in total."
+        if (total < MIN_TOTAL_FOLLOWERS) return "At least 100 followers in total are needed."
         if (total > MAX_TOTAL_FOLLOWERS) return "The total followers can be at most 2,000,000,000."
         if (startInDays < 0) return "An advert cannot start in the past."
         if (startInDays > MAX_START_IN_DAYS) return "An advert must start within the next 30 days."
@@ -204,54 +237,18 @@ object AdvertEngine {
     // Making an advert
     // ---------------------------------------------------------------------------------------------
 
-    /** Users from followers: total x ppm / 1,000,000, rounded half up, at least 1. Whole-number maths. */
-    fun targetFor(totalFollowers: Long, ppm: Int): Long =
-        max(1L, (totalFollowers * ppm + 500_000L) / 1_000_000L)
-
     /**
-     * Spreads [target] users over [days] days: biggest first, tapering (weights 0.8^i), each day moved
-     * by a random 0.85 to 1.15, then fixed so the parts add up to exactly [target] (largest remainder).
-     */
-    fun makePlan(target: Long, days: Int, random: Random): List<Long> {
-        if (days <= 1) return listOf(target)
-        val weights = DoubleArray(days) { i ->
-            0.8.pow(i.toDouble()) * (0.85 + random.nextDouble() * 0.30)
-        }
-        val sum = weights.sum()
-        val exact = DoubleArray(days) { i -> target.toDouble() * weights[i] / sum }
-        val parts = LongArray(days) { i -> exact[i].toLong() }
-        var left = target - parts.sum()
-        // Give the missing users to the parts with the biggest fractions (earlier day wins a tie).
-        val order = (0 until days).sortedWith(
-            compareByDescending<Int> { exact[it] - parts[it] }.thenBy { it }
-        )
-        var i = 0
-        while (left > 0L) {
-            parts[order[i % days]] += 1L
-            left -= 1L
-            i += 1
-        }
-        // Rounding can never overshoot, but be safe: take back from the biggest part.
-        while (left < 0L) {
-            val biggest = (0 until days).maxByOrNull { parts[it] } ?: 0
-            parts[biggest] -= 1L
-            left += 1L
-        }
-        return parts.toList()
-    }
-
-    /**
-     * Makes an advert and adds it to [app]. The conversion rate is drawn here, once, and saved.
+     * Makes an advert and adds it to [app]. Nothing is converted here: the backend does that, day by day.
      * Returns [app] unchanged when the advert is not allowed.
      */
     fun create(
         app: AppData,
         name: String,
+        type: AdvertType,
         platforms: List<AdvertPlatform>,
         startInDays: Int,
         lastsDays: Int,
         now: Long,
-        random: Random,
         extraPlatformNames: List<String> = emptyList()
     ): AppData {
         if (advertError(app, name, platforms, startInDays, lastsDays, extraPlatformNames) != null) return app
@@ -261,21 +258,16 @@ object AdvertEngine {
             if (followers > 0L) AdvertPlatform(platformName, followers) else null
         }
         val total = clean.sumOf { it.followers }
-        val ppm = random.nextInt(MIN_PPM, MAX_PPM + 1)
-        val target = targetFor(total, ppm)
-        val plan = makePlan(target, lastsDays, random)
         val today = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
         val start = today.plusDays(startInDays.toLong())
         val end = start.plusDays((lastsDays - 1).toLong())
         val advert = Advert(
             celebrityName = name.trim(),
+            type = type,
             platforms = clean,
             totalFollowers = total,
-            conversionPpm = ppm,
-            targetUsers = target,
             startDayKey = start.toString(),
             endDayKey = end.toString(),
-            plan = plan,
             createdMillis = now
         )
         return app.copy(adverts = pruneFinished(app.adverts + advert, dayKey(now)))
@@ -303,39 +295,100 @@ object AdvertEngine {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Delivering users on a roll
+    // Asking the backend, and delivering its answers on a roll
     // ---------------------------------------------------------------------------------------------
 
-    /**
-     * How many users one advert owes on [today], and the advert moved forward. Days that were missed
-     * (no roll) are caught up, including days after the advert's end that were never delivered.
-     */
-    fun due(advert: Advert, today: String): Pair<Advert, Long> {
-        if (advert.plan.isEmpty()) return Pair(advert, 0L)
-        if (today < advert.startDayKey) return Pair(advert, 0L)
-        val capped = if (today < advert.endDayKey) today else advert.endDayKey
-        val sinceStart = daysBetween(advert.startDayKey, capped) ?: return Pair(advert, 0L)
-        if (sinceStart < 0L) return Pair(advert, 0L)
-        val lastIndex = min(min(advert.plan.size - 1, sinceStart.toInt()), lastDeliverableIndex(advert))
-        val from = advert.deliveredDays
-        if (lastIndex < from) return Pair(advert, 0L)
-        var owed = 0L
-        for (i in from..lastIndex) owed += advert.plan[i]
-        return Pair(
-            advert.copy(deliveredDays = lastIndex + 1, deliveredUsers = advert.deliveredUsers + owed),
-            owed
-        )
+    /** The days of [advert] up to [today] that the backend has not answered yet, oldest first. */
+    fun daysToAsk(advert: Advert, today: String): List<String> {
+        val last = lastDeliverableDay(advert)
+        if (last.isEmpty()) return emptyList()
+        val upTo = if (today < last) today else last
+        if (upTo < advert.startDayKey) return emptyList()
+        val first = parseDay(advert.startDayKey) ?: return emptyList()
+        val end = parseDay(upTo) ?: return emptyList()
+        val have = advert.days.map { it.dayKey }.toSet()
+        val list = ArrayList<String>()
+        var d = first
+        while (!d.isAfter(end)) {
+            val key = d.toString()
+            if (key !in have) list.add(key)
+            d = d.plusDays(1L)
+        }
+        return list
     }
 
-    /** Every advert of the app, for the roll of [today]. Each advert moves only its own progress. */
+    /**
+     * Adds the backend's answers to the adverts. A day that is already there keeps its numbers and its
+     * delivered mark (a day is never changed once it is known); only a missing comment is filled in.
+     * Answers for a day outside the advert, or for an unknown advert, are ignored.
+     */
+    fun mergeAnswers(adverts: List<Advert>, answers: List<AdvertAnswer>): List<Advert> {
+        if (answers.isEmpty()) return adverts
+        return adverts.map { advert ->
+            val mine = answers.filter { it.advertId == advert.id }
+            if (mine.isEmpty()) return@map advert
+            val last = lastDeliverableDay(advert)
+            val byDay = LinkedHashMap<String, AdvertDay>()
+            for (d in advert.days) byDay[d.dayKey] = d
+            for (a in mine) {
+                val day = a.day
+                if (last.isEmpty() || day.dayKey < advert.startDayKey || day.dayKey > last) continue
+                val old = byDay[day.dayKey]
+                if (old == null) {
+                    byDay[day.dayKey] = day.copy(delivered = false)
+                } else if (old.comment.isEmpty() && day.comment.isNotEmpty()) {
+                    byDay[day.dayKey] = old.copy(comment = day.comment)
+                }
+            }
+            advert.copy(days = byDay.values.sortedBy { it.dayKey })
+        }
+    }
+
+    /** Fills in Claude's comments that arrived later. [comments] maps "advertId|dayKey" to the comment. */
+    fun applyComments(adverts: List<Advert>, comments: Map<String, String>): List<Advert> {
+        if (comments.isEmpty()) return adverts
+        return adverts.map { advert ->
+            var changed = false
+            val days = advert.days.map { d ->
+                val text = comments[advert.id + "|" + d.dayKey]
+                if (text != null && text.isNotEmpty() && d.comment.isEmpty()) {
+                    changed = true
+                    d.copy(comment = text)
+                } else {
+                    d
+                }
+            }
+            if (changed) advert.copy(days = days) else advert
+        }
+    }
+
+    /**
+     * Every advert of the app, for the roll of [today]: the answered days up to today (and up to the last
+     * deliverable day) that are not delivered yet are delivered now. Days that were missed are caught up.
+     */
     fun deliverAll(app: AppData, today: String): AdvertDelivery {
         if (app.adverts.isEmpty()) return AdvertDelivery(app.adverts, 0L)
-        var total = 0L
+        var users = 0L
+        var premium = 0L
+        var pro = 0L
         val updated = app.adverts.map { advert ->
-            val (next, owed) = due(advert, today)
-            total += owed
-            next
+            val last = lastDeliverableDay(advert)
+            if (last.isEmpty()) return@map advert
+            val limit = if (today < last) today else last
+            var changed = false
+            val days = advert.days.map { day ->
+                if (!day.delivered && day.dayKey >= advert.startDayKey && day.dayKey <= limit) {
+                    users += day.users
+                    premium += day.premium
+                    pro += day.pro
+                    changed = true
+                    day.copy(delivered = true)
+                } else {
+                    day
+                }
+            }
+            if (changed) advert.copy(days = days) else advert
         }
-        return AdvertDelivery(updated, total)
+        return AdvertDelivery(updated, users, premium, pro)
     }
 }

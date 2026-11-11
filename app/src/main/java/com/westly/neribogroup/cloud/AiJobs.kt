@@ -17,6 +17,8 @@ import com.westly.neribogroup.data.ProposalSlot
 import com.westly.neribogroup.data.SOCIALS_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_NAME
+import com.westly.neribogroup.data.AdvertAnswer
+import com.westly.neribogroup.data.AdvertEngine
 import com.westly.neribogroup.data.SocialDice
 import com.westly.neribogroup.data.SocialsEngine
 import com.westly.neribogroup.data.SoftwareAi
@@ -123,12 +125,25 @@ interface AiJobHost {
     fun applySoftwareRoll(dayKey: String, wallNow: Long, build: (Ledger, Long) -> Ledger?): JobRollResult
 
     /**
-     * Part C-2: applies ONE day of the Socials roll on the main thread. [faces] maps a platform key to Claude's
-     * face; an empty map closes the day with nothing gained. ledger.json is written first. ROLLED only when the
-     * day was applied and saved; BLOCKED when it was already applied (or may not be applied); FAILED when saving
-     * failed.
+     * Part C-2: applies ONE day of the Socials roll on the main thread. [gains] maps a platform key to the followers
+     * the BACKEND gave it (the backend rolls the faces; the app never sees them); an empty map closes the day with
+     * nothing gained. [comment] is Claude's comment when it is already written (or empty). ledger.json is written
+     * first. ROLLED only when the day was applied and saved; BLOCKED when it was already applied (or may not be
+     * applied); FAILED when saving failed.
      */
-    fun rollSocialsForJobs(day: String, wallNow: Long, faces: Map<String, Int>): JobRollResult
+    fun rollSocialsForJobs(day: String, wallNow: Long, gains: Map<String, Long>, comment: String): JobRollResult
+
+    /**
+     * Adds the backend's advert answers (final numbers per advert day) to the live ledger on the main thread.
+     * ledger.json is written first. True when the answers are in the ledger (or there was nothing new to add).
+     */
+    fun applyAdvertAnswers(answers: List<AdvertAnswer>): Boolean
+
+    /**
+     * Adds Claude's comments that arrived later (adverts: "advertId|dayKey" to comment; Socials: day to comment) to
+     * the live ledger on the main thread. Only empty comments are filled. True when saved or nothing changed.
+     */
+    fun applyRollNotes(advertComments: Map<String, String>, socialComments: Map<String, String>): Boolean
 }
 
 class JobRollOutcome(val result: JobRollResult, val skeleton: CaseSkeleton?)
@@ -654,6 +669,7 @@ class AiJobEngine(
                 if (age >= AiJobRules.FALLBACK_AGE_DAYS && live.lastRollDayKey != today) {
                     // Claude took more than 48 hours: the app rolls with the built-in dice.
                     val wall = System.currentTimeMillis()
+                    prepareAdverts(host, appId, wall)
                     if (host.rollForJobs(appId, null, wall) == JobRollResult.ROLLED) {
                         rejectAll(submitted, "fallback to built-in dice")
                         doneUpdates[appId] = AiDone.encode(today, wall, false, 0)
@@ -710,6 +726,7 @@ class AiJobEngine(
             }
 
             val wall = System.currentTimeMillis()
+            prepareAdverts(host, appId, wall)
             var skeleton: CaseSkeleton? = null
             val rollResult: JobRollResult
             if (preset != null) {
@@ -744,6 +761,7 @@ class AiJobEngine(
         // Socials are rolled only by Claude; there is no built-in fallback.
         val soRun = processSocialsRoll(host, socialRows, notices, doneUpdates)
         if (soRun.changed) rolledAny = true
+        refreshNotes(host)
         if (soRun.counts != null) {
             counts[SOCIALS_APP_ID] = soRun.counts
             waiting += soRun.counts.total - soRun.counts.answered
@@ -1120,9 +1138,9 @@ class AiJobEngine(
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Part C-2: the Socials roll. ONE SOCIAL_ROLL job for every day that has followers to give. Claude gives one
-    // face 0 to 5 per platform; the app checks the answer again and turns the faces into followers. Days are
-    // applied oldest first and each at most once. Only Claude rolls: there is NO built-in fallback.
+    // Part C-2: the Socials roll. The BACKEND rolls a real random face for every platform and every day that has
+    // followers to give, and answers with the followers gained. Claude only writes a short comment later. Days are
+    // applied oldest first and each at most once. The app never sees a face or a rate.
     // ---------------------------------------------------------------------------------------------
 
     private class SocialsRun(
@@ -1134,6 +1152,27 @@ class AiJobEngine(
         val message: String = ""
     )
 
+    /**
+     * Asks the backend for the advert days an app still needs (up to today) and adds them to the live ledger.
+     * A failure only means the days wait for the next pass.
+     */
+    private fun prepareAdverts(host: AiJobHost, appId: String, wall: Long) {
+        val live = host.currentLedger()
+        val target = live.apps.firstOrNull { it.id == appId } ?: return
+        if (target.adverts.isEmpty()) return
+        val today = dayKey(maxOf(wall, live.casesClockMillis))
+        val fetched = AdvertBackend.fetchAdvertDays(api, config.deviceId, target, today)
+        if (fetched.answers.isNotEmpty()) host.applyAdvertAnswers(fetched.answers)
+    }
+
+    /** Brings in the comments Claude wrote for adverts and Socials. Nothing breaks when this fails. */
+    private fun refreshNotes(host: AiJobHost) {
+        val fetched = AdvertBackend.fetchNotes(api)
+        if (fetched.failure != null) return
+        if (fetched.advertComments.isEmpty() && fetched.socialComments.isEmpty()) return
+        host.applyRollNotes(fetched.advertComments, fetched.socialComments)
+    }
+
     private fun processSocialsRoll(
         host: AiJobHost,
         rows0: List<SocialRow>,
@@ -1141,153 +1180,74 @@ class AiJobEngine(
         doneUpdates: MutableMap<String, String>
     ): SocialsRun {
         var changed = false
-        var counts: AiCounts? = null
         var message = ""
-        var publishProblem = ""
         var apiProblem: ApiResult? = null
         var appliedDays = 0
         var lastApplied = ""
 
         val start = host.currentLedger()
-        val today = dayKey(SocialDice.nowFor(start, System.currentTimeMillis()))
+        val wallNow = System.currentTimeMillis()
+        val today = dayKey(SocialDice.nowFor(start, wallNow))
 
-        // Answers that can no longer be used: too old, from the future, or for a day that is already rolled.
+        // Answers of the old way (Claude chose faces) are not used any more: they are closed.
         for (row in rows0) {
-            if (row.status != "submitted") continue
-            val age = AiJobRules.ageDays(row.dayKey, today)
-            when {
-                age == null -> rejectId(row.id, "bad day")
-                age < 0L -> rejectId(row.id, "future day")
-                age > SocialAiRules.MAX_AGE_DAYS -> rejectId(row.id, "too old")
-                row.dayKey <= start.socials.lastRollDayKey -> markAppliedIds(listOf(row.id))
-            }
+            if (row.status == "submitted") markAppliedIds(listOf(row.id))
         }
 
-        val days = SocialsEngine.pendingDays(start.socials, today)
-        for ((index, day) in days.withIndex()) {
-            val live = host.currentLedger()
+        for (day in SocialsEngine.pendingDays(start.socials, today)) {
+            var live = host.currentLedger()
             if (day <= live.socials.lastRollDayKey) continue
-            // Today waits until every app that has a running advert has rolled today. Past days do not wait.
-            if (day == today && SocialsEngine.waitingForApps(live, day)) break
+            if (day == today) {
+                // Today waits until the backend has rolled today's advert day of every app that has an advert running.
+                for (a in live.apps) {
+                    if (!a.googlePlayEnabled || a.id == SOFTWARE_APP_ID) continue
+                    val missing = a.adverts.any { adv ->
+                        AdvertEngine.runningOn(adv, today) && adv.days.none { it.dayKey == today }
+                    }
+                    if (missing) prepareAdverts(host, a.id, wallNow)
+                }
+                live = host.currentLedger()
+                if (SocialsEngine.waitingForApps(live, day)) break
+            }
 
             val bases = SocialsEngine.basesOn(live, day).filter { it.base > 0L }
-            val dayRows = rows0.filter { it.dayKey == day }.sortedBy { it.attempt }
-
             if (bases.isEmpty()) {
-                // No platform has followers to give that day: it is closed without contacting Claude.
-                for (row in dayRows) if (row.status == "submitted") rejectId(row.id, "nothing to roll")
-                val closed = host.rollSocialsForJobs(day, System.currentTimeMillis(), emptyMap())
+                // No platform has followers to give that day: it is closed without asking the backend.
+                val closed = host.rollSocialsForJobs(day, System.currentTimeMillis(), emptyMap(), "")
                 if (closed == JobRollResult.FAILED) break
                 if (closed == JobRollResult.ROLLED) changed = true
                 continue
             }
 
-            // Claude is still working on this day: the later days wait, so days are never applied out of order.
-            if (dayRows.any { it.status == "pending" || it.status == "claimed" }) {
-                counts = AiCounts(0, 1)
+            val fetched = AdvertBackend.fetchSocialDay(api, config.deviceId, day, bases)
+            if (fetched.failure != null) {
+                apiProblem = fetched.failure
                 break
             }
-
-            var dayDone = false
-            var saveFailed = false
-            for (row in dayRows) {
-                if (row.status != "submitted") continue
-                val expected = (SocialAiRules.keysOf(row.context) ?: bases.map { it.key }).toSet()
-                val check = SocialAiRules.validate(expected, row.result)
-                if (!check.ok) {
-                    // A bad answer is refused; the next attempt (at most 3 a day) is asked below.
-                    rejectId(row.id, check.reason)
-                    continue
-                }
-                when (host.rollSocialsForJobs(day, System.currentTimeMillis(), check.faces)) {
-                    JobRollResult.ROLLED -> {
-                        markAppliedIds(listOf(row.id))
-                        changed = true
-                        dayDone = true
-                        appliedDays += 1
-                        lastApplied = day
-                    }
-                    JobRollResult.BLOCKED -> {
-                        if (host.currentLedger().socials.lastRollDayKey >= day) {
-                            markAppliedIds(listOf(row.id))
-                            dayDone = true
-                        } else {
-                            rejectId(row.id, "roll blocked")
-                        }
-                    }
-                    // The phone could not save. Nothing is marked: the next pass tries again.
-                    JobRollResult.FAILED -> saveFailed = true
-                }
-                if (dayDone || saveFailed) break
-            }
-            if (saveFailed) {
-                counts = AiCounts(1, 1)
+            val result = host.rollSocialsForJobs(day, System.currentTimeMillis(), fetched.gains, fetched.comment)
+            if (result == JobRollResult.ROLLED) {
+                changed = true
+                appliedDays += 1
+                lastApplied = day
+            } else if (result == JobRollResult.FAILED) {
+                // The phone could not save. The backend keeps the day, so the next pass gets the same answer.
+                message = "The Socials roll could not be saved. It will be tried again."
                 break
             }
-            if (dayDone) continue
-
-            // Not rolled yet: ask Claude (again), up to 3 times for a day.
-            val used = load().socialAttempts[day] ?: 0
-            if (used >= SocialAiRules.MAX_ATTEMPTS) {
-                if (day == today) {
-                    message = "Claude's answer could not be used. Try again later."
-                    break
-                }
-                // All three requests of a past day are used (the cloud never takes a fourth), so it can never be
-                // answered. It is closed with nothing gained so that the later days can go on.
-                val closed = host.rollSocialsForJobs(day, System.currentTimeMillis(), emptyMap())
-                if (closed == JobRollResult.FAILED) break
-                if (closed == JobRollResult.ROLLED) changed = true
-                continue
-            }
-
-            // Publish this day and the later days that still need a job (a job that already exists is never made again).
-            val jobs = JSONArray()
-            val made = LinkedHashMap<String, Int>()
-            for (d in days.subList(index, days.size)) {
-                if (made.size >= MAX_SOCIAL_JOBS_PER_CALL) break
-                val l2 = host.currentLedger()
-                if (d <= l2.socials.lastRollDayKey) continue
-                if (d == today && SocialsEngine.waitingForApps(l2, d)) break
-                if (d != day && rows0.any { it.dayKey == d }) continue
-                val n = load().socialAttempts[d] ?: 0
-                if (n >= SocialAiRules.MAX_ATTEMPTS) continue
-                val job = SocialAiRules.buildJob(l2, d, n + 1) ?: continue
-                jobs.put(job)
-                made[d] = n + 1
-            }
-            if (jobs.length() > 0) {
-                val r = api.rpc("publish_roll_jobs", body().put("p_jobs", jobs))
-                if (r is ApiResult.Ok) {
-                    update { data ->
-                        val merged = LinkedHashMap(data.socialAttempts)
-                        merged.putAll(made)
-                        val keep = merged.keys.sortedDescending().take(40).toSet()
-                        data.copy(socialAttempts = merged.filterKeys { it in keep })
-                    }
-                    counts = AiCounts(0, 1)
-                } else if (r is ApiResult.AppError) {
-                    publishProblem = "Could not put the Socials roll job in the cloud (" +
-                        (if (r.code.isEmpty()) "error" else r.code) + ")."
-                } else {
-                    apiProblem = r
-                }
-            }
-            break
         }
 
         if (appliedDays > 0) {
             notices.add(
-                if (appliedDays == 1) "Claude rolled the Socials for " + AiJobRules.prettyDay(lastApplied)
-                else "Claude rolled $appliedDays days of Socials."
+                if (appliedDays == 1) "The Socials were rolled for " + AiJobRules.prettyDay(lastApplied)
+                else "The Socials were rolled for $appliedDays days."
             )
             doneUpdates[SOCIALS_APP_ID] = AiDone.encode(lastApplied, System.currentTimeMillis(), true, appliedDays)
         }
         return SocialsRun(
             changed = changed,
-            counts = counts,
+            counts = null,
             failure = apiProblem,
-            publishProblem = publishProblem,
+            publishProblem = "",
             message = message
         )
     }

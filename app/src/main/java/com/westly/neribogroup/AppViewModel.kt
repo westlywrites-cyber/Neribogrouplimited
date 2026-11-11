@@ -59,6 +59,9 @@ import com.westly.neribogroup.data.ProjectStage
 import com.westly.neribogroup.data.SOCIALS_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SOCIAL_PHOTO_MAX_SIDE
+import com.westly.neribogroup.cloud.AdvertBackend
+import com.westly.neribogroup.data.AdvertAnswer
+import com.westly.neribogroup.data.AdvertType
 import com.westly.neribogroup.data.SocialDice
 import com.westly.neribogroup.data.SocialEdit
 import com.westly.neribogroup.data.SocialImage
@@ -425,7 +428,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return if (finished) outcome.get() else JobRollResult.FAILED
         }
 
-        override fun rollSocialsForJobs(day: String, wallNow: Long, faces: Map<String, Int>): JobRollResult {
+        override fun rollSocialsForJobs(day: String, wallNow: Long, gains: Map<String, Long>, comment: String): JobRollResult {
             val latch = CountDownLatch(1)
             val outcome = AtomicReference(JobRollResult.FAILED)
             mainHandler.post {
@@ -435,7 +438,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (day > dayKey(SocialDice.nowFor(current, wallNow))) {
                         outcome.set(JobRollResult.BLOCKED)
                     } else {
-                        val updated = SocialDice.applyDay(current, day, faces)
+                        val updated = SocialDice.applyDay(current, day, gains, comment)
                         if (updated === current) {
                             outcome.set(JobRollResult.BLOCKED)
                         } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
@@ -454,6 +457,90 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 false
             }
             return if (finished) outcome.get() else JobRollResult.FAILED
+        }
+
+        override fun applyAdvertAnswers(answers: List<AdvertAnswer>): Boolean {
+            if (answers.isEmpty()) return true
+            val latch = CountDownLatch(1)
+            val ok = AtomicReference(false)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    var changed = false
+                    val apps = current.apps.map { app ->
+                        if (app.adverts.isEmpty()) {
+                            app
+                        } else {
+                            val merged = AdvertEngine.mergeAnswers(app.adverts, answers)
+                            if (merged != app.adverts) {
+                                changed = true
+                                app.copy(adverts = merged)
+                            } else {
+                                app
+                            }
+                        }
+                    }
+                    if (!changed) {
+                        ok.set(true)
+                    } else {
+                        val updated = current.copy(apps = apps)
+                        if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
+                            ledger = updated
+                            onLocalChange()
+                            ok.set(true)
+                        }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return finished && ok.get()
+        }
+
+        override fun applyRollNotes(advertComments: Map<String, String>, socialComments: Map<String, String>): Boolean {
+            val latch = CountDownLatch(1)
+            val ok = AtomicReference(false)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    var changed = false
+                    val apps = current.apps.map { app ->
+                        if (app.adverts.isEmpty()) {
+                            app
+                        } else {
+                            val filled = AdvertEngine.applyComments(app.adverts, advertComments)
+                            if (filled != app.adverts) {
+                                changed = true
+                                app.copy(adverts = filled)
+                            } else {
+                                app
+                            }
+                        }
+                    }
+                    val withApps = if (changed) current.copy(apps = apps) else current
+                    val updated = SocialDice.applyComments(withApps, socialComments)
+                    if (updated === current) {
+                        ok.set(true)
+                    } else if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
+                        ledger = updated
+                        onLocalChange()
+                        ok.set(true)
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return finished && ok.get()
         }
 
         override fun rollForJobs(appId: String, preset: PresetRoll?, wallNow: Long): JobRollResult {
@@ -1481,7 +1568,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Rolls every dice of one app for today. Allowed once per calendar day. */
     fun rollApp(id: String) {
         if (id == SOFTWARE_APP_ID) return
-        saveLedger(DiceEngine.roll(ledger, id, System.currentTimeMillis()))
+        val target = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (target.adverts.isEmpty() || !cloudSignedIn) {
+            saveLedger(DiceEngine.roll(ledger, id, System.currentTimeMillis()))
+            return
+        }
+        // The backend decides what the adverts bring, so it is asked first (off the main thread); then the app rolls.
+        // Without a connection the adverts simply wait: their days are delivered on a later roll.
+        val today = dayKey(maxOf(System.currentTimeMillis(), ledger.casesClockMillis))
+        Thread {
+            val fetched = AdvertBackend.fetchAdvertDays(cloudApi, cloudConfig.deviceId, target, today)
+            mainHandler.post {
+                if (fetched.answers.isNotEmpty()) {
+                    val current = ledger
+                    ledger = current.copy(
+                        apps = current.apps.map { a ->
+                            if (a.id == id) a.copy(adverts = AdvertEngine.mergeAnswers(a.adverts, fetched.answers)) else a
+                        }
+                    )
+                }
+                saveLedger(DiceEngine.roll(ledger, id, System.currentTimeMillis()))
+            }
+        }.start()
     }
 
     /** Moves one app's Google Play Balance into profit. */
@@ -1511,11 +1619,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
     }
 
-    fun startAdvert(appId: String, name: String, platforms: List<AdvertPlatform>, startInDays: Int, lastsDays: Int) {
+    fun startAdvert(
+        appId: String,
+        name: String,
+        type: AdvertType,
+        platforms: List<AdvertPlatform>,
+        startInDays: Int,
+        lastsDays: Int
+    ) {
         if (appId == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == appId } ?: return
         val updated = AdvertEngine.create(
-            app, name, platforms, startInDays, lastsDays, System.currentTimeMillis(), Random.Default,
+            app, name, type, platforms, startInDays, lastsDays, System.currentTimeMillis(),
             SocialsRules.extraAdvertNames(ledger.socials)
         )
         if (updated === app) return

@@ -42,10 +42,10 @@ data class SocialCelebrity(
 data class SocialRoll(
     val dayKey: String,
     val base: Long,
-    val face: Int,
-    val ppm: Int,
     val gain: Long,
-    val celebrities: List<SocialCelebrity> = emptyList()
+    val celebrities: List<SocialCelebrity> = emptyList(),
+    /** Claude's short comment about the day. Empty until it is written. */
+    val comment: String = ""
 )
 
 /**
@@ -354,12 +354,14 @@ object SocialsEngine {
 
     private fun anyBase(ledger: Ledger, day: String): Boolean = basesOn(ledger, day).any { it.base > 0L }
 
-    /** True when a Google Play app with an advert counting on [today] has not rolled today yet. */
+    /** True when a Google Play app has an advert counting on [today] that the backend has not rolled for today yet. */
     fun waitingForApps(ledger: Ledger, today: String): Boolean {
         for (app in ledger.apps) {
             if (!app.googlePlayEnabled || app.id == SOFTWARE_APP_ID) continue
-            val counts = app.adverts.any { AdvertEngine.runningOn(it, today) }
-            if (counts && app.lastRollDayKey != today) return true
+            val waiting = app.adverts.any { advert ->
+                AdvertEngine.runningOn(advert, today) && advert.days.none { it.dayKey == today }
+            }
+            if (waiting) return true
         }
         return false
     }
@@ -443,9 +445,8 @@ object SocialsJson {
             val ro = JSONObject()
             ro.put("day", r.dayKey)
             ro.put("base", r.base)
-            ro.put("face", r.face)
-            ro.put("ppm", r.ppm)
             ro.put("gain", r.gain)
+            if (r.comment.isNotEmpty()) ro.put("comment", r.comment)
             val celebrities = JSONArray()
             for (c in r.celebrities) celebrities.put(JSONObject().put("name", c.name).put("followers", c.followers))
             ro.put("celebrities", celebrities)
@@ -511,10 +512,9 @@ object SocialsJson {
                 SocialRoll(
                     dayKey = day,
                     base = r.optLong("base", 0L),
-                    face = r.optInt("face", 0),
-                    ppm = r.optInt("ppm", 0),
                     gain = r.optLong("gain", 0L),
-                    celebrities = celebrities
+                    celebrities = celebrities,
+                    comment = r.optString("comment", "")
                 )
             )
         }

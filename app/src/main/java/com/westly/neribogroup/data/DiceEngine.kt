@@ -338,11 +338,14 @@ object DiceEngine {
             emptyList()
         }
 
-        // Adverts: users that celebrities' followers bring. They come on top of the dice and are NOT
-        // multiplied by the Campaign. No random numbers are drawn when the app has no advert users.
+        // Adverts: users that celebrities' and blogs' followers bring. The backend already decided how many
+        // arrive and how many of them start on Premium or Pro the same day; they come on top of the dice and
+        // are NOT multiplied by the Campaign. No random numbers are drawn when the app has no advert users.
         val delivery = AdvertEngine.deliverAll(app, today)
         val advertTotal = delivery.users
         var advertRows: List<AppUser> = emptyList()
+        var advertPremium = 0
+        var advertPro = 0
         if (advertTotal > 0L) {
             val room = max(0, AdvertEngine.MAX_STORED_USER_ROWS_PER_APP - (app.users.size + newCount))
             val rowsToMake = min(
@@ -351,6 +354,51 @@ object DiceEngine {
             ).toInt()
             if (rowsToMake > 0) {
                 advertRows = IdentityGenerator.make(rowsToMake, ledger, now, dayStart, random, newUsers)
+            }
+            // Paid users must be listed one by one. A plan without a price does not exist, so those users stay Free.
+            advertPremium = if (app.premiumPrice > 0L) min(delivery.premium, advertRows.size.toLong()).toInt() else 0
+            advertPro = if (app.proPrice > 0L) {
+                min(delivery.pro, (advertRows.size - advertPremium).toLong()).toInt()
+            } else {
+                0
+            }
+            if (advertPremium + advertPro > 0) {
+                // They upgrade on the day they arrive: the plan starts when the user joined.
+                advertRows = advertRows.mapIndexed { index, u ->
+                    when {
+                        index < advertPremium -> u.copy(
+                            plan = Plan.PREMIUM,
+                            planStartMillis = u.addedMillis,
+                            planExpiryMillis = u.addedMillis + PLAN_DAYS * DAY_MILLIS
+                        )
+                        index < advertPremium + advertPro -> u.copy(
+                            plan = Plan.PRO,
+                            planStartMillis = u.addedMillis,
+                            planExpiryMillis = u.addedMillis + PLAN_DAYS * DAY_MILLIS
+                        )
+                        else -> u
+                    }
+                }
+                if (advertPremium > 0) {
+                    val gross = advertPremium * app.premiumPrice
+                    lines.add(
+                        tx(
+                            PlayTxKind.SUBSCRIPTION,
+                            plural(advertPremium, "new Premium subscription from adverts", "new Premium subscriptions from adverts"),
+                            gross, playSubscriptionFee(gross), now
+                        )
+                    )
+                }
+                if (advertPro > 0) {
+                    val gross = advertPro * app.proPrice
+                    lines.add(
+                        tx(
+                            PlayTxKind.SUBSCRIPTION,
+                            plural(advertPro, "new Pro subscription from adverts", "new Pro subscriptions from adverts"),
+                            gross, playSubscriptionFee(gross), now
+                        )
+                    )
+                }
             }
         }
         // The rest is only counted (Free users that are not listed one by one).
@@ -479,8 +527,8 @@ object DiceEngine {
             faces = faces,
             newUsers = newCount.toLong(),
             active = activeToday,
-            premium = premiumPicked.size.toLong(),
-            pro = proPicked.size.toLong(),
+            premium = (premiumPicked.size + advertPremium).toLong(),
+            pro = (proPicked.size + advertPro).toLong(),
             renewed = renewedUsers.size.toLong(),
             lapsed = lapsed.toLong(),
             subsNet = subsNet,
@@ -508,6 +556,10 @@ object DiceEngine {
         for (u in premiumPicked + proPicked) {
             val c = changed[u.id] ?: continue
             planEvents.add(PlanHistory.event(c.id, PlanEventKind.STARTED, c.plan, c.planStartMillis, c.planExpiryMillis))
+        }
+        for (u in advertRows) {
+            if (u.plan == Plan.FREE) continue
+            planEvents.add(PlanHistory.event(u.id, PlanEventKind.STARTED, u.plan, u.planStartMillis, u.planExpiryMillis))
         }
         for (u in renewedUsers) {
             val c = changed[u.id] ?: continue

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +30,7 @@ import com.westly.neribogroup.data.Advert
 import com.westly.neribogroup.data.AdvertEngine
 import com.westly.neribogroup.data.AdvertPlatform
 import com.westly.neribogroup.data.AdvertStatus
+import com.westly.neribogroup.data.AdvertType
 import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.DialogActions
@@ -58,6 +60,8 @@ fun advertsSummary(app: AppData, now: Long): String {
     return parts.joinToString(" · ")
 }
 
+private fun typeLabel(type: AdvertType): String = if (type == AdvertType.BLOG) "Blog" else "Celebrity"
+
 private fun statusLabel(advert: Advert, today: String): String {
     if (advert.isStopped) return "Stopped"
     return when (AdvertEngine.statusOn(advert, today)) {
@@ -81,7 +85,7 @@ fun LazyListScope.advertsPageItems(
     now: Long,
     openAdvert: Advert?,
     onOpenAdvert: (String) -> Unit,
-    onStartAdvert: (String, List<AdvertPlatform>, Int, Int) -> Unit,
+    onStartAdvert: (String, AdvertType, List<AdvertPlatform>, Int, Int) -> Unit,
     onStopAdvert: (String) -> Unit,
     /** Part C: the exact names of the Socials accounts added by the owner (one extra followers field each). */
     extraPlatformNames: List<String> = emptyList()
@@ -106,9 +110,9 @@ fun LazyListScope.advertsPageItems(
                 now = now,
                 extraPlatformNames = extraPlatformNames,
                 onDismiss = { showNew = false },
-                onStart = { name, platforms, startIn, lasts ->
+                onStart = { name, type, platforms, startIn, lasts ->
                     showNew = false
-                    onStartAdvert(name, platforms, startIn, lasts)
+                    onStartAdvert(name, type, platforms, startIn, lasts)
                 }
             )
         }
@@ -172,13 +176,13 @@ private fun AdvertRow(advert: Advert, today: String, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = AdvertEngine.compactFollowers(advert.totalFollowers) + " followers",
+                    text = typeLabel(advert.type) + " · " + AdvertEngine.compactFollowers(advert.totalFollowers) + " followers",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
                     text = prettyDay(advert.startDayKey) + " to " + prettyDay(advert.endDayKey) + " · " +
-                        formatCount(advert.deliveredUsers) + " / " + formatCount(advert.targetUsers) + " users",
+                        formatCount(advert.deliveredUsers) + " users arrived",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -195,7 +199,7 @@ private fun daysBetweenKeys(from: String, to: String): Long? = runCatching {
     ChronoUnit.DAYS.between(LocalDate.parse(from), LocalDate.parse(to))
 }.getOrNull()
 
-/** The details of one advert: followers, conversion, users, dates, the daily plan and Stop. */
+/** The details of one advert: followers, users, dates, the daily results and Stop. */
 private fun LazyListScope.advertDetailItems(advert: Advert, today: String, onStop: (String) -> Unit) {
     val status = AdvertEngine.statusOn(advert, today)
 
@@ -205,6 +209,12 @@ private fun LazyListScope.advertDetailItems(advert: Advert, today: String, onSto
                 text = advert.celebrityName,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = typeLabel(advert.type),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(4.dp))
             StatusDot(text = statusLabel(advert, today), color = statusColor(advert, today))
@@ -227,21 +237,6 @@ private fun LazyListScope.advertDetailItems(advert: Advert, today: String, onSto
         }
     }
 
-    item(key = "adv-d-conversion") {
-        FlatCard {
-            Text(
-                text = "Conversion",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "This advert converts " + AdvertEngine.percentText(advert.conversionPpm) + " of followers",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-    }
-
     item(key = "adv-d-users") {
         FlatCard {
             Text(
@@ -250,10 +245,12 @@ private fun LazyListScope.advertDetailItems(advert: Advert, today: String, onSto
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(modifier = Modifier.height(8.dp))
-            LineRow("Expected in total", formatCount(advert.targetUsers))
-            LineRow("Delivered so far", formatCount(advert.deliveredUsers))
-            val left = maxOf(0L, advert.targetUsers - advert.deliveredUsers)
-            LineRow(if (AdvertEngine.isSettled(advert)) "Not delivered" else "Remaining", formatCount(left))
+            LineRow("Arrived so far", formatCount(advert.deliveredUsers))
+            val paid = advert.days.filter { it.delivered }
+            val premium = paid.sumOf { it.premium }
+            val pro = paid.sumOf { it.pro }
+            if (premium > 0L) LineRow("Started on Premium", formatCount(premium))
+            if (pro > 0L) LineRow("Started on Pro", formatCount(pro))
         }
     }
 
@@ -283,17 +280,19 @@ private fun LazyListScope.advertDetailItems(advert: Advert, today: String, onSto
         }
     }
 
-    item(key = "adv-d-plan-title") { SectionTitle("Daily plan") }
+    item(key = "adv-d-plan-title") { SectionTitle("Daily results") }
     item(key = "adv-d-plan") {
         FlatCard {
             val start = runCatching { LocalDate.parse(advert.startDayKey) }.getOrNull()
-            val lastDeliverable = AdvertEngine.lastDeliverableIndex(advert)
-            for ((index, planned) in advert.plan.withIndex()) {
+            val length = AdvertEngine.lengthDays(advert)
+            for (index in 0 until length) {
                 val dayKeyText = start?.plusDays(index.toLong())?.toString() ?: ""
+                val entry = advert.days.firstOrNull { it.dayKey == dayKeyText }
                 val state = when {
-                    index < advert.deliveredDays -> "Delivered"
-                    advert.isStopped && index > lastDeliverable -> "Not delivered (stopped)"
-                    dayKeyText.isNotEmpty() && dayKeyText <= today -> "Due on next roll"
+                    entry != null && entry.delivered -> "Arrived"
+                    entry != null -> "Arrives on the next roll"
+                    advert.isStopped && dayKeyText.isNotEmpty() && dayKeyText >= advert.stoppedDayKey -> "Not delivered (stopped)"
+                    dayKeyText.isNotEmpty() && dayKeyText <= today -> "Waiting for the next roll"
                     else -> "Upcoming"
                 }
                 Row(
@@ -310,14 +309,31 @@ private fun LazyListScope.advertDetailItems(advert: Advert, today: String, onSto
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (entry != null && (entry.premium > 0L || entry.pro > 0L)) {
+                            val parts = ArrayList<String>()
+                            if (entry.premium > 0L) parts.add(formatCount(entry.premium) + " Premium")
+                            if (entry.pro > 0L) parts.add(formatCount(entry.pro) + " Pro")
+                            Text(
+                                text = parts.joinToString(" · ") + " the same day",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (entry != null && entry.comment.isNotEmpty()) {
+                            Text(
+                                text = entry.comment,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                     Text(
-                        text = formatCount(planned) + " users",
+                        text = if (entry == null) "-" else formatCount(entry.users) + " users",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
                 }
-                if (index < advert.plan.size - 1) Spacer(modifier = Modifier.height(8.dp))
+                if (index < length - 1) Spacer(modifier = Modifier.height(8.dp))
             }
         }
     }
@@ -361,17 +377,18 @@ private fun LineRow(label: String, value: String, bold: Boolean = false) {
     }
 }
 
-/** The New advert form. The conversion rate is not asked here: it is drawn when the advert starts. */
+/** The New advert form. Celebrity or Blog is chosen here; how many users arrive is decided by the backend, day by day. */
 @Composable
 private fun NewAdvertDialog(
     app: AppData,
     now: Long,
     extraPlatformNames: List<String>,
     onDismiss: () -> Unit,
-    onStart: (String, List<AdvertPlatform>, Int, Int) -> Unit
+    onStart: (String, AdvertType, List<AdvertPlatform>, Int, Int) -> Unit
 ) {
     // The six fixed platforms, then one more for every Socials account the owner added.
     val platformNames = AdvertEngine.allowedPlatformNames(extraPlatformNames)
+    var type by remember { mutableStateOf(AdvertType.CELEBRITY) }
     var name by remember { mutableStateOf("") }
     var followerTexts by remember { mutableStateOf(emptyMap<String, String>()) }
     var startText by remember { mutableStateOf("0") }
@@ -394,8 +411,22 @@ private fun NewAdvertDialog(
         title = "New advert",
         subtitle = "It costs nothing in the app. Followers decide how many users arrive."
     ) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (type == AdvertType.CELEBRITY) {
+                TintedButton(text = "Celebrity", onClick = { type = AdvertType.CELEBRITY }, modifier = Modifier.weight(1f))
+            } else {
+                OutlinedButton(onClick = { type = AdvertType.CELEBRITY }, modifier = Modifier.weight(1f)) { Text("Celebrity") }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            if (type == AdvertType.BLOG) {
+                TintedButton(text = "Blog", onClick = { type = AdvertType.BLOG }, modifier = Modifier.weight(1f))
+            } else {
+                OutlinedButton(onClick = { type = AdvertType.BLOG }, modifier = Modifier.weight(1f)) { Text("Blog") }
+            }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
         LabeledField(
-            label = "Celebrity name",
+            label = if (type == AdvertType.BLOG) "Blog name" else "Celebrity name",
             value = name,
             onValueChange = { name = it.take(60) },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
@@ -443,7 +474,7 @@ private fun NewAdvertDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
             TintedButton(
                 text = "Start",
-                onClick = { onStart(name.trim(), platforms.filter { it.followers > 0L }, startIn, lasts) },
+                onClick = { onStart(name.trim(), type, platforms.filter { it.followers > 0L }, startIn, lasts) },
                 enabled = error == null
             )
         }

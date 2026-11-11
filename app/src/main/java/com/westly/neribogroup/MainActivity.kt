@@ -311,8 +311,8 @@ private fun NeriboRoot(vm: AppViewModel) {
                 vm.startCampaign(openApp.id, size, startIn, lasts)
             },
             onStopCampaign = { vm.stopCampaign(openApp.id) },
-            onStartAdvert = { name, platforms, startIn, lasts ->
-                vm.startAdvert(openApp.id, name, platforms, startIn, lasts)
+            onStartAdvert = { name, type, platforms, startIn, lasts ->
+                vm.startAdvert(openApp.id, name, type, platforms, startIn, lasts)
             },
             onStopAdvert = { advertId -> vm.stopAdvert(openApp.id, advertId) },
             chargedToCompany = vm.ledger.company.expenses.filter { it.appId == openApp.id },

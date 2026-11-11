@@ -414,36 +414,49 @@ object LedgerStorage {
         )
     }
 
-    /** Adverts as JSON. The plan is a JSON array of whole numbers; nothing here is a floating point. */
+    /**
+     * Adverts as JSON. Only final numbers are saved: the days the backend answered (users, Premium, Pro, comment).
+     * There is no conversion rate, no plan and no target in the file.
+     */
     private fun advertsToJson(list: List<Advert>): JSONArray {
         val array = JSONArray()
         for (a in list) {
             val o = JSONObject()
             o.put("id", a.id)
             o.put("celebrityName", a.celebrityName)
+            o.put("type", a.type.name)
             val platforms = JSONArray()
             for (p in a.platforms) {
                 platforms.put(JSONObject().put("name", p.name).put("followers", p.followers))
             }
             o.put("platforms", platforms)
             o.put("totalFollowers", a.totalFollowers)
-            o.put("conversionPpm", a.conversionPpm)
-            o.put("targetUsers", a.targetUsers)
             o.put("startDayKey", a.startDayKey)
             o.put("endDayKey", a.endDayKey)
             o.put("stoppedDayKey", a.stoppedDayKey)
-            val plan = JSONArray()
-            for (n in a.plan) plan.put(n)
-            o.put("plan", plan)
-            o.put("deliveredDays", a.deliveredDays)
-            o.put("deliveredUsers", a.deliveredUsers)
+            val days = JSONArray()
+            for (d in a.days) {
+                val dobj = JSONObject()
+                dobj.put("day", d.dayKey)
+                dobj.put("users", d.users)
+                dobj.put("premium", d.premium)
+                dobj.put("pro", d.pro)
+                if (d.comment.isNotEmpty()) dobj.put("comment", d.comment)
+                dobj.put("delivered", d.delivered)
+                days.put(dobj)
+            }
+            o.put("days", days)
             o.put("createdMillis", a.createdMillis)
             array.put(o)
         }
         return array
     }
 
-    /** Reads adverts. Older files have none. A broken advert (no days, no plan) is skipped. */
+    /**
+     * Reads adverts. Older files have none. An advert saved by an older version (it has a "plan" and no "days")
+     * keeps the days it had already delivered; its other days are answered by the backend like any new day.
+     * Nothing from the old conversion (rate, target, plan) is kept.
+     */
     private fun jsonToAdverts(array: JSONArray?): List<Advert> {
         if (array == null) return emptyList()
         val list = ArrayList<Advert>()
@@ -451,10 +464,7 @@ object LedgerStorage {
             val o = array.optJSONObject(i) ?: continue
             val start = o.optString("startDayKey")
             val end = o.optString("endDayKey")
-            val planArray = o.optJSONArray("plan")
-            if (start.isBlank() || end.isBlank() || planArray == null || planArray.length() == 0) continue
-            val plan = ArrayList<Long>()
-            for (j in 0 until planArray.length()) plan.add(planArray.optLong(j))
+            if (start.isBlank() || end.isBlank()) continue
             val platforms = ArrayList<AdvertPlatform>()
             val platformArray = o.optJSONArray("platforms")
             if (platformArray != null) {
@@ -465,20 +475,57 @@ object LedgerStorage {
                     platforms.add(AdvertPlatform(name, po.optLong("followers")))
                 }
             }
+            val days = ArrayList<AdvertDay>()
+            val dayArray = o.optJSONArray("days")
+            if (dayArray != null) {
+                for (j in 0 until dayArray.length()) {
+                    val d = dayArray.optJSONObject(j) ?: continue
+                    val key = d.optString("day")
+                    if (key.isBlank()) continue
+                    days.add(
+                        AdvertDay(
+                            dayKey = key,
+                            users = d.optLong("users"),
+                            premium = d.optLong("premium"),
+                            pro = d.optLong("pro"),
+                            comment = d.optString("comment", ""),
+                            delivered = d.optBoolean("delivered", false)
+                        )
+                    )
+                }
+            } else {
+                // Older file: the days that were already delivered stay delivered (they must never arrive twice).
+                val planArray = o.optJSONArray("plan")
+                val delivered = o.optInt("deliveredDays")
+                val first = runCatching { java.time.LocalDate.parse(start) }.getOrNull()
+                if (planArray != null && first != null) {
+                    for (j in 0 until minOf(delivered, planArray.length())) {
+                        days.add(
+                            AdvertDay(
+                                dayKey = first.plusDays(j.toLong()).toString(),
+                                users = planArray.optLong(j),
+                                premium = 0L,
+                                pro = 0L,
+                                comment = "",
+                                delivered = true
+                            )
+                        )
+                    }
+                }
+            }
+            val type = runCatching { AdvertType.valueOf(o.optString("type", "CELEBRITY")) }
+                .getOrDefault(AdvertType.CELEBRITY)
             list.add(
                 Advert(
                     id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
                     celebrityName = o.optString("celebrityName"),
+                    type = type,
                     platforms = platforms,
                     totalFollowers = o.optLong("totalFollowers"),
-                    conversionPpm = o.optInt("conversionPpm"),
-                    targetUsers = o.optLong("targetUsers"),
                     startDayKey = start,
                     endDayKey = end,
                     stoppedDayKey = o.optString("stoppedDayKey"),
-                    plan = plan,
-                    deliveredDays = o.optInt("deliveredDays"),
-                    deliveredUsers = o.optLong("deliveredUsers"),
+                    days = days.sortedBy { it.dayKey },
                     createdMillis = o.optLong("createdMillis")
                 )
             )

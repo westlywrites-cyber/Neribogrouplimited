@@ -314,9 +314,9 @@ private fun RollCard(
         val headline = when (info.kind) {
             SocialsRollKind.ROLLED_TODAY -> "Rolled by Claude today ✔"
             SocialsRollKind.NOTHING_TO_ROLL -> "Nothing to roll today (no running adverts)"
-            SocialsRollKind.AI_OFF -> "Turn on cloud sign-in and AI mode in Settings so Claude can roll"
-            SocialsRollKind.WAITING_APPS -> "Waiting for the apps to roll first"
-            SocialsRollKind.WAITING_CLAUDE -> "Waiting for Claude"
+            SocialsRollKind.AI_OFF -> "Turn on cloud sign-in and AI mode in Settings so the Socials can roll"
+            SocialsRollKind.WAITING_APPS -> "Waiting for the adverts of the apps"
+            SocialsRollKind.WAITING_CLAUDE -> "Waiting for the backend"
         }
         Text(
             text = headline,
@@ -691,10 +691,17 @@ private fun HistoryDialog(account: SocialAccount, onDismiss: () -> Unit) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(text = prettyDay(roll.dayKey), style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                text = "Face " + roll.face + " · base " + AdvertEngine.compactFollowers(roll.base),
+                                text = "Base " + AdvertEngine.compactFollowers(roll.base),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            if (roll.comment.isNotEmpty()) {
+                                Text(
+                                    text = roll.comment,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                         Text(
                             text = "+" + formatCount(roll.gain),

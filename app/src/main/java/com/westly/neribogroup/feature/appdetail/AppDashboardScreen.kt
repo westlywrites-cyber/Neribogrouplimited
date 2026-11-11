@@ -61,6 +61,7 @@ import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.AdvertPlatform
+import com.westly.neribogroup.data.AdvertType
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.Entry
 import com.westly.neribogroup.data.Plan
@@ -99,7 +100,7 @@ fun AppDashboardScreen(
     onWithdraw: () -> Unit,
     onStartCampaign: (CampaignSize, Int, Int) -> Unit,
     onStopCampaign: () -> Unit,
-    onStartAdvert: (String, List<AdvertPlatform>, Int, Int) -> Unit,
+    onStartAdvert: (String, AdvertType, List<AdvertPlatform>, Int, Int) -> Unit,
     onStopAdvert: (String) -> Unit,
     /** Company expenses charged by this (Google Play) app, newest first is applied here. */
     chargedToCompany: List<Entry>,
