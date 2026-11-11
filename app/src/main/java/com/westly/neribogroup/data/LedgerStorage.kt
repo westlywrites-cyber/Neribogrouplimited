@@ -86,6 +86,29 @@ object LedgerStorage {
             o.put("audienceFree", app.audienceFree)
             o.put("audienceTodayKey", app.audienceTodayKey)
             o.put("audienceToday", app.audienceToday)
+            o.put("playOn", app.playOn)
+            o.put("appleOn", app.appleOn)
+            o.put("websiteOn", app.websiteOn)
+            o.put("appleSubsBalance", app.appleSubsBalance)
+            o.put("paystackSubsBalance", app.paystackSubsBalance)
+            o.put("appleTx", playTxToJson(app.appleTx))
+            o.put("paystackTx", playTxToJson(app.paystackTx))
+            o.put("audienceApple", app.audienceApple)
+            o.put("audienceWebsite", app.audienceWebsite)
+            val dr = app.dayRolls
+            if (dr != null) {
+                o.put(
+                    "dayRolls",
+                    JSONObject().put("day", dr.dayKey).put("play", dr.playBp).put("apple", dr.appleBp)
+                        .put("website", dr.websiteBp).put("sites", dr.sitesTenths).put("storage", dr.storageBp)
+                )
+            }
+            o.put("deployTracking", app.deployTracking)
+            o.put("storageFreeMb", app.storageFreeMb)
+            o.put("storageProMb", app.storageProMb)
+            o.put("storagePremiumMb", app.storagePremiumMb)
+            o.put("storageSiteMb", app.storageSiteMb)
+            o.put("storageUsedKb", app.storageUsedKb)
             val campaign = app.campaign
             if (campaign != null) {
                 val co = JSONObject()
@@ -174,6 +197,7 @@ object LedgerStorage {
             o.put("date", w.dateMillis)
             o.put("amount", w.amount)
             o.put("label", w.label)
+            if (w.channel != Channel.PLAY) o.put("channel", w.channel.name)
             o.put("note", w.note)
             withdrawalsArray.put(o)
         }
@@ -186,6 +210,7 @@ object LedgerStorage {
         root.put("casesClockMillis", ledger.casesClockMillis)
         root.put("software", SoftwareJson.toJson(ledger.software))
         root.put("socials", SocialsJson.toJson(ledger.socials))
+        root.put("assets", assetsToJson(ledger.assets))
 
         return root.toString(2)
     }
@@ -315,7 +340,8 @@ object LedgerStorage {
                     dateMillis = o.optLong("date"),
                     amount = o.optLong("amount"),
                     label = o.optString("label"),
-                    note = o.optString("note")
+                    note = o.optString("note"),
+                    channel = runCatching { Channel.valueOf(o.optString("channel", "PLAY")) }.getOrDefault(Channel.PLAY)
                 )
             )
         }
@@ -340,7 +366,8 @@ object LedgerStorage {
             nextCaseNumber = maxOf(root.optInt("nextCaseNumber", 1), cases.size + 1, 1),
             casesClockMillis = root.optLong("casesClockMillis"),
             software = SoftwareJson.fromJson(root.optJSONObject("software")),
-            socials = if (socialsObject != null) SocialsJson.fromJson(socialsObject) else SocialsData()
+            socials = if (socialsObject != null) SocialsJson.fromJson(socialsObject) else SocialsData(),
+            assets = jsonToAssets(root.optJSONObject("assets"))
         ).withSoftwareApp().withoutDuplicateLegalExpenses()
         return if (socialsObject == null) loaded.withSocialsSeeded(System.currentTimeMillis()) else loaded
     }
@@ -410,7 +437,33 @@ object LedgerStorage {
             adverts = adverts,
             audienceFree = o.optLong("audienceFree"),
             audienceTodayKey = o.optString("audienceTodayKey"),
-            audienceToday = o.optLong("audienceToday")
+            audienceToday = o.optLong("audienceToday"),
+            // Older files have no channels: the app stays a Google Play app.
+            playOn = if (o.has("playOn")) o.optBoolean("playOn") else true,
+            appleOn = o.optBoolean("appleOn"),
+            websiteOn = o.optBoolean("websiteOn"),
+            appleSubsBalance = o.optLong("appleSubsBalance"),
+            paystackSubsBalance = o.optLong("paystackSubsBalance"),
+            appleTx = jsonToPlayTx(o.optJSONArray("appleTx")),
+            paystackTx = jsonToPlayTx(o.optJSONArray("paystackTx")),
+            audienceApple = o.optLong("audienceApple"),
+            audienceWebsite = o.optLong("audienceWebsite"),
+            dayRolls = o.optJSONObject("dayRolls")?.let { d ->
+                DayRolls(
+                    dayKey = d.optString("day"),
+                    playBp = d.optInt("play"),
+                    appleBp = d.optInt("apple"),
+                    websiteBp = d.optInt("website"),
+                    sitesTenths = d.optInt("sites"),
+                    storageBp = d.optInt("storage")
+                )
+            },
+            deployTracking = o.optBoolean("deployTracking"),
+            storageFreeMb = o.optLong("storageFreeMb"),
+            storageProMb = o.optLong("storageProMb"),
+            storagePremiumMb = o.optLong("storagePremiumMb"),
+            storageSiteMb = o.optLong("storageSiteMb"),
+            storageUsedKb = o.optLong("storageUsedKb")
         )
     }
 
@@ -425,6 +478,7 @@ object LedgerStorage {
             o.put("id", a.id)
             o.put("celebrityName", a.celebrityName)
             o.put("type", a.type.name)
+            if (a.channel != Channel.PLAY) o.put("channel", a.channel.name)
             val platforms = JSONArray()
             for (p in a.platforms) {
                 platforms.put(JSONObject().put("name", p.name).put("followers", p.followers))
@@ -520,6 +574,7 @@ object LedgerStorage {
                     id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
                     celebrityName = o.optString("celebrityName"),
                     type = type,
+                    channel = runCatching { Channel.valueOf(o.optString("channel", "PLAY")) }.getOrDefault(Channel.PLAY),
                     platforms = platforms,
                     totalFollowers = o.optLong("totalFollowers"),
                     startDayKey = start,
@@ -685,6 +740,71 @@ object LedgerStorage {
         )
     }
 
+    private fun assetsToJson(assets: CompanyAssets): JSONObject {
+        val o = JSONObject()
+        o.put("storageTotalMb", assets.storageTotalMb)
+        val docs = JSONArray()
+        for (d in assets.documents) {
+            docs.put(
+                JSONObject().put("id", d.id).put("title", d.title).put("kind", d.kind).put("note", d.note)
+                    .put("added", d.addedMillis).put("photo", d.hasPhoto)
+            )
+        }
+        o.put("documents", docs)
+        val tools = JSONArray()
+        for (t in assets.tools) {
+            tools.put(
+                JSONObject().put("id", t.id).put("name", t.name).put("qty", t.quantity).put("note", t.note)
+                    .put("added", t.addedMillis).put("photo", t.hasPhoto)
+            )
+        }
+        o.put("tools", tools)
+        return o
+    }
+
+    private fun jsonToAssets(o: JSONObject?): CompanyAssets {
+        if (o == null) return CompanyAssets()
+        val docs = ArrayList<CompanyDoc>()
+        val da = o.optJSONArray("documents")
+        if (da != null) {
+            for (i in 0 until da.length()) {
+                val d = da.optJSONObject(i) ?: continue
+                val title = d.optString("title").trim()
+                if (title.isEmpty()) continue
+                docs.add(
+                    CompanyDoc(
+                        id = d.optString("id").ifBlank { UUID.randomUUID().toString() },
+                        title = title,
+                        kind = d.optString("kind"),
+                        note = d.optString("note"),
+                        addedMillis = d.optLong("added"),
+                        hasPhoto = d.optBoolean("photo")
+                    )
+                )
+            }
+        }
+        val tools = ArrayList<ToolItem>()
+        val ta = o.optJSONArray("tools")
+        if (ta != null) {
+            for (i in 0 until ta.length()) {
+                val t = ta.optJSONObject(i) ?: continue
+                val name = t.optString("name").trim()
+                if (name.isEmpty()) continue
+                tools.add(
+                    ToolItem(
+                        id = t.optString("id").ifBlank { UUID.randomUUID().toString() },
+                        name = name,
+                        quantity = maxOf(1, t.optInt("qty", 1)),
+                        note = t.optString("note"),
+                        addedMillis = t.optLong("added"),
+                        hasPhoto = t.optBoolean("photo")
+                    )
+                )
+            }
+        }
+        return CompanyAssets(docs, tools, maxOf(0L, o.optLong("storageTotalMb")))
+    }
+
     private fun usersToJson(users: List<AppUser>): JSONArray {
         val array = JSONArray()
         for (u in users) {
@@ -700,6 +820,8 @@ object LedgerStorage {
             o.put("simulated", u.simulated)
             // Short key, left out when unknown, so every user row stays small.
             if (u.lastActiveMillis > 0L) o.put("la", u.lastActiveMillis)
+            if (u.channel != Channel.PLAY) o.put("ch", u.channel.name)
+            if (u.sites > 0) o.put("st", u.sites)
             array.put(o)
         }
         return array
@@ -725,7 +847,9 @@ object LedgerStorage {
                     planExpiryMillis = o.optLong("planExpiry"),
                     planStartMillis = o.optLong("planStart"),
                     simulated = o.optBoolean("simulated"),
-                    lastActiveMillis = o.optLong("la")
+                    lastActiveMillis = o.optLong("la"),
+                    channel = runCatching { Channel.valueOf(o.optString("ch", "PLAY")) }.getOrDefault(Channel.PLAY),
+                    sites = o.optInt("st")
                 )
             )
         }

@@ -376,6 +376,22 @@ fun GroupDashboardScreen(
                         )
                     }
                     item {
+                        SectionTile(
+                            title = "Apple Store Balance",
+                            subtitle = formatNaira(shown.appleBalanceTotal) + " waiting to withdraw",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.APPLE) }
+                        )
+                    }
+                    item {
+                        SectionTile(
+                            title = "Paystack Balance",
+                            subtitle = formatNaira(shown.paystackBalanceTotal) + " waiting to withdraw",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.PAYSTACK) }
+                        )
+                    }
+                    item {
                         val openCases = shown.cases.count {
                             !CaseEngine.isFinal(CaseEngine.statusAt(it, effectiveNow))
                         }
@@ -403,6 +419,39 @@ fun GroupDashboardScreen(
                             subtitle = formatCount(SocialsRules.totalFollowers(shown.socials)) + " followers in total",
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenSection(Section.SOCIALS) }
+                        )
+                    }
+                    item {
+                        SectionTile(
+                            title = "Company documents",
+                            subtitle = shown.assets.documents.size.toString() + " documents",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.DOCS) }
+                        )
+                    }
+                    item {
+                        SectionTile(
+                            title = "Tools and appliances",
+                            subtitle = shown.assets.tools.size.toString() + " items",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.TOOLS) }
+                        )
+                    }
+                    item {
+                        SectionTile(
+                            title = "Neribo Deploy sites",
+                            subtitle = formatCount(shown.apps.filter { it.googlePlayEnabled && it.deployTracking }.sumOf { it.totalSites }) + " sites deployed",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.DEPLOY) }
+                        )
+                    }
+                    item {
+                        SectionTile(
+                            title = "Storage",
+                            subtitle = formatStorageKb(shown.apps.sumOf { it.storageUsedKb }) + " used" +
+                                (if (shown.assets.storageTotalMb > 0L) " of " + formatStorageKb(shown.assets.storageTotalMb * 1024L) else ""),
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.STORAGE) }
                         )
                     }
                 }
@@ -589,3 +638,5 @@ private fun ResultRow(title: String, subtitle: String, onClick: () -> Unit) {
         }
     }
 }
+
+private fun formatStorageKb(kb: Long): String = storageText(kb)

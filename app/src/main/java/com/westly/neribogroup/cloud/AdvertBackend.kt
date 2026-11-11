@@ -5,6 +5,8 @@ import com.westly.neribogroup.data.AdvertAnswer
 import com.westly.neribogroup.data.AdvertDay
 import com.westly.neribogroup.data.AdvertEngine
 import com.westly.neribogroup.data.AppData
+import com.westly.neribogroup.data.ChannelRules
+import com.westly.neribogroup.data.DayRolls
 import com.westly.neribogroup.data.PlatformBase
 import org.json.JSONArray
 import org.json.JSONObject
@@ -14,6 +16,9 @@ class AdvertFetch(val answers: List<AdvertAnswer>, val failure: ApiResult? = nul
 
 /** The backend's answer for one Socials day: followers gained per platform key, and Claude's comment if it is already written. */
 class SocialFetch(val gains: Map<String, Long>, val comment: String, val failure: ApiResult? = null)
+
+/** What the backend decided for one app and one day (channel split, sites per user, storage growth). */
+class AppDayFetch(val rolls: DayRolls?, val failure: ApiResult? = null)
 
 /** Claude's comments written since. Adverts: "advertId|dayKey" to comment. Socials: dayKey to comment. */
 class NotesFetch(
@@ -90,6 +95,46 @@ object AdvertBackend {
             }
         }
         return AdvertFetch(answers)
+    }
+
+    /** True when an app needs the backend's decisions before its roll (adverts, several channels, sites or storage). */
+    fun needsBackend(app: AppData): Boolean =
+        app.adverts.isNotEmpty() || ChannelRules.enabled(app).size > 1 || app.deployTracking || app.storageCapacityMb > 0L
+
+    /**
+     * Asks for the day's channel split (and the sites per user and storage growth when the app needs them). The
+     * answer is kept for the day: it is only asked again when a channel was switched on since.
+     */
+    fun fetchAppDay(api: SupabaseApi, deviceId: String, app: AppData, today: String): AppDayFetch {
+        val channels = ChannelRules.enabled(app)
+        if (channels.isEmpty()) return AppDayFetch(null)
+        val needSites = app.deployTracking
+        val needStorage = app.storageCapacityMb > 0L
+        if (channels.size == 1 && !needSites && !needStorage) return AppDayFetch(null)
+        val have = app.dayRolls
+        if (have != null && have.dayKey == today) {
+            val stale = channels.size > 1 && channels.any { have.bpOf(it) == 0 }
+            if (!stale) return AppDayFetch(have)
+        }
+        val list = JSONArray()
+        for (c in channels) list.put(c.name)
+        val r = api.rpc(
+            "app_day_rolls",
+            JSONObject().put("p_device_id", deviceId).put("p_app_id", app.id).put("p_day", today)
+                .put("p_channels", list).put("p_sites", needSites).put("p_storage", needStorage)
+        )
+        if (r !is ApiResult.Ok) return AppDayFetch(null, r)
+        if (!r.json.has("play_bp")) return AppDayFetch(null, badAnswer)
+        return AppDayFetch(
+            DayRolls(
+                dayKey = today,
+                playBp = r.json.optInt("play_bp"),
+                appleBp = r.json.optInt("apple_bp"),
+                websiteBp = r.json.optInt("website_bp"),
+                sitesTenths = r.json.optInt("sites_tenths"),
+                storageBp = r.json.optInt("storage_bp")
+            )
+        )
     }
 
     /** Asks for one Socials day. Only platforms with a base above 0 are sent. */

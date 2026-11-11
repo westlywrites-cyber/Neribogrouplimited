@@ -28,7 +28,9 @@ data class PlayTx(
     val gross: Long,
     val fee: Long,
     val net: Long,
-    val dateMillis: Long
+    val dateMillis: Long,
+    /** Which balance this line belongs to while a roll is working. Saved lines sit in their own balance's list. */
+    val channel: Channel = Channel.PLAY
 )
 
 /** One withdrawal from the Google Play Balance into profit. */
@@ -39,7 +41,9 @@ data class Withdrawal(
     /** An app name, or "All apps". */
     val label: String,
     /** For "All apps": which app gave how much. */
-    val note: String = ""
+    val note: String = "",
+    /** Which balance the money came from. */
+    val channel: Channel = Channel.PLAY
 )
 
 enum class CampaignSize(val label: String, val factor: Double) {

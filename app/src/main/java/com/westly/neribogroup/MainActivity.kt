@@ -29,6 +29,12 @@ import com.westly.neribogroup.feature.group.CaseDetailScreen
 import com.westly.neribogroup.feature.group.CasesScreen
 import com.westly.neribogroup.feature.group.CompanyCostsScreen
 import com.westly.neribogroup.feature.group.GroupDashboardScreen
+import com.westly.neribogroup.data.Channel
+import com.westly.neribogroup.feature.group.ChannelBalanceScreen
+import com.westly.neribogroup.feature.group.DeploySitesScreen
+import com.westly.neribogroup.feature.group.DocumentsScreen
+import com.westly.neribogroup.feature.group.StorageScreen
+import com.westly.neribogroup.feature.group.ToolsScreen
 import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
@@ -311,12 +317,15 @@ private fun NeriboRoot(vm: AppViewModel) {
                 vm.startCampaign(openApp.id, size, startIn, lasts)
             },
             onStopCampaign = { vm.stopCampaign(openApp.id) },
-            onStartAdvert = { name, type, platforms, startIn, lasts ->
-                vm.startAdvert(openApp.id, name, type, platforms, startIn, lasts)
+            onStartAdvert = { name, type, channel, platforms, startIn, lasts ->
+                vm.startAdvert(openApp.id, name, type, channel, platforms, startIn, lasts)
             },
             onStopAdvert = { advertId -> vm.stopAdvert(openApp.id, advertId) },
             chargedToCompany = vm.ledger.company.expenses.filter { it.appId == openApp.id },
-            onEnableGooglePlay = { vm.enableGooglePlay(openApp.id) },
+            onEnableLive = { play, apple, website -> vm.enableLive(openApp.id, play, apple, website) },
+            onSetChannels = { play, apple, website -> vm.setChannels(openApp.id, play, apple, website) },
+            onSetDeploy = { vm.setDeployTracking(openApp.id, it) },
+            onSetStorage = { free, pro, premium, site -> vm.setStorageOffer(openApp.id, free, pro, premium, site) },
             onAddCompanyExpense = { title, amount -> vm.addAppExpense(openApp.id, title, amount) },
             aiOn = vm.aiActive,
             aiStateFor = { n -> vm.aiRollStateFor(openApp, n) },
@@ -392,6 +401,47 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onSaveRate = { code, value -> vm.saveRate(code, value) },
                 onUseLiveRate = { vm.useLiveRate(it) },
                 usdOnly = true
+            )
+            Section.APPLE -> ChannelBalanceScreen(
+                ledger = vm.ledger,
+                channel = Channel.APPLE,
+                onBack = { vm.openSection = null },
+                onWithdrawApp = { vm.withdrawChannelApp(it, Channel.APPLE) },
+                onWithdrawAll = { vm.withdrawChannelAll(Channel.APPLE) }
+            )
+            Section.PAYSTACK -> ChannelBalanceScreen(
+                ledger = vm.ledger,
+                channel = Channel.WEBSITE,
+                onBack = { vm.openSection = null },
+                onWithdrawApp = { vm.withdrawChannelApp(it, Channel.WEBSITE) },
+                onWithdrawAll = { vm.withdrawChannelAll(Channel.WEBSITE) }
+            )
+            Section.DOCS -> DocumentsScreen(
+                ledger = vm.ledger,
+                photoFile = { vm.assetPhotoFile("doc", it) },
+                photoTick = vm.assetPhotoTick,
+                onBack = { vm.openSection = null },
+                onSave = { vm.saveAssets(it) },
+                onPickPhoto = { id, uri, done -> vm.saveAssetPhoto("doc", id, uri, done) },
+                onDeletePhoto = { vm.deleteAssetPhoto("doc", it) }
+            )
+            Section.TOOLS -> ToolsScreen(
+                ledger = vm.ledger,
+                photoFile = { vm.assetPhotoFile("tool", it) },
+                photoTick = vm.assetPhotoTick,
+                onBack = { vm.openSection = null },
+                onSave = { vm.saveAssets(it) },
+                onPickPhoto = { id, uri, done -> vm.saveAssetPhoto("tool", id, uri, done) },
+                onDeletePhoto = { vm.deleteAssetPhoto("tool", it) }
+            )
+            Section.DEPLOY -> DeploySitesScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null }
+            )
+            Section.STORAGE -> StorageScreen(
+                ledger = vm.ledger,
+                onBack = { vm.openSection = null },
+                onSave = { vm.saveAssets(it) }
             )
             Section.SOCIALS -> SocialsScreen(
                 ledger = vm.ledger,

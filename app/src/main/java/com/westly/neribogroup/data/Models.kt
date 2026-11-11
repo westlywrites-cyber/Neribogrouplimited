@@ -71,7 +71,11 @@ data class AppUser(
     /** True for users made by the dice. Users you add yourself are false. */
     val simulated: Boolean = false,
     /** The last moment this user was active. 0 means unknown (then [addedMillis] is used). */
-    val lastActiveMillis: Long = 0
+    val lastActiveMillis: Long = 0,
+    /** Where this user came from (Google Play, Apple Store or Website). */
+    val channel: Channel = Channel.PLAY,
+    /** Neribo Deploy style apps: how many sites this user has deployed. 0 = not set (counts as 1). */
+    val sites: Int = 0
 ) {
     /** The effective last active time: [lastActiveMillis] when known, otherwise the day the user was added. */
     fun lastSeenMillis(): Long = if (lastActiveMillis > 0L) lastActiveMillis else addedMillis
@@ -142,7 +146,31 @@ data class AppData(
     val audienceFree: Long = 0,
     /** How many audience users were added on the day named by [audienceTodayKey]. */
     val audienceTodayKey: String = "",
-    val audienceToday: Long = 0
+    val audienceToday: Long = 0,
+    /** The channels this app is on (only meaningful for a live app, see googlePlayEnabled). Google Play is the old default. */
+    val playOn: Boolean = true,
+    val appleOn: Boolean = false,
+    val websiteOn: Boolean = false,
+    /** Subscription and renewal money in the Apple Store Balance, after Apple's share. */
+    val appleSubsBalance: Long = 0,
+    /** Subscription and renewal money in the Paystack Balance, after Paystack's fees. */
+    val paystackSubsBalance: Long = 0,
+    val appleTx: List<PlayTx> = emptyList(),
+    val paystackTx: List<PlayTx> = emptyList(),
+    /** Of [audienceFree]: how many belong to the Apple Store and to the Website (the rest are Google Play). */
+    val audienceApple: Long = 0,
+    val audienceWebsite: Long = 0,
+    /** What the backend decided for the last day it was asked about. */
+    val dayRolls: DayRolls? = null,
+    /** True for a Neribo Deploy style app: users have sites. */
+    val deployTracking: Boolean = false,
+    /** What each plan offers, in MB per user, and per deployed site. 0 = nothing offered. */
+    val storageFreeMb: Long = 0,
+    val storageProMb: Long = 0,
+    val storagePremiumMb: Long = 0,
+    val storageSiteMb: Long = 0,
+    /** Storage used so far, in KB. Grows by itself on every roll. */
+    val storageUsedKb: Long = 0
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
@@ -160,6 +188,33 @@ data class AppData(
 
     /** Everything waiting in the Google Play Balance. It is not profit until it is withdrawn. */
     val playBalance: Long get() = playSubsBalance + playAdsBalance
+
+    /** Waiting in the Apple Store Balance and in the Paystack Balance. Not profit until withdrawn. */
+    val appleBalance: Long get() = appleSubsBalance
+    val paystackBalance: Long get() = paystackSubsBalance
+
+    /** Users that came through one channel: the listed users plus the counted audience of that channel. */
+    fun usersOfChannel(channel: Channel): Long {
+        if (!googlePlayEnabled) return 0L
+        val rows = users.count { it.channel == channel }.toLong()
+        val audience = when (channel) {
+            Channel.APPLE -> audienceApple
+            Channel.WEBSITE -> audienceWebsite
+            Channel.PLAY -> maxOf(0L, audienceFree - audienceApple - audienceWebsite)
+        }
+        return rows + audience
+    }
+
+    /** Neribo Deploy: all sites. Everybody has at least 1 site, so this is never less than the user count. */
+    val totalSites: Long
+        get() = users.sumOf { maxOf(1, it.sites).toLong() } + audienceFree
+
+    /** What the app's users and sites could fill in total, in MB, from what each plan offers. */
+    val storageCapacityMb: Long
+        get() = freeUsers * storageFreeMb + proUsers * storageProMb + premiumUsers * storagePremiumMb +
+            (if (deployTracking) totalSites * storageSiteMb else 0L)
+
+    val storageUsedMb: Long get() = storageUsedKb / 1024L
 
     fun newUsersToday(now: Long): Long {
         if (!googlePlayEnabled) {
@@ -383,6 +438,14 @@ data class AppData(
         audienceFree = current.audienceFree,
         audienceTodayKey = current.audienceTodayKey,
         audienceToday = current.audienceToday,
+        appleSubsBalance = current.appleSubsBalance,
+        paystackSubsBalance = current.paystackSubsBalance,
+        appleTx = current.appleTx,
+        paystackTx = current.paystackTx,
+        audienceApple = current.audienceApple,
+        audienceWebsite = current.audienceWebsite,
+        dayRolls = current.dayRolls,
+        storageUsedKb = current.storageUsedKb,
         planHistory = PlanHistory.merge(current.planHistory, planHistory)
     )
 
@@ -488,6 +551,18 @@ data class AppData(
             manualPremiumToday = 0L,
             manualProToday = 0L,
             manualTodayKey = ""
+        )
+    }
+
+    /** Moves the whole Apple Store Balance or Paystack Balance into this app's income. */
+    fun withdrawnChannel(channel: Channel, now: Long): AppData {
+        val amount = if (channel == Channel.APPLE) appleBalance else paystackBalance
+        if (amount <= 0L || channel == Channel.PLAY) return this
+        val title = if (channel == Channel.APPLE) "Apple Store withdrawal" else "Paystack withdrawal"
+        return copy(
+            appleSubsBalance = if (channel == Channel.APPLE) 0L else appleSubsBalance,
+            paystackSubsBalance = if (channel == Channel.WEBSITE) 0L else paystackSubsBalance,
+            entries = entries + Entry(title = title, amount = amount, isIncome = true, dateMillis = now, auto = true)
         )
     }
 
@@ -703,7 +778,9 @@ data class Ledger(
     /** Software Development Clients: proposals, projects, clients, the $ account and exchange rates. */
     val software: SoftwareData = SoftwareData(),
     /** Socials: the company's social accounts and their followers (made only by the social dice). */
-    val socials: SocialsData = SocialsData()
+    val socials: SocialsData = SocialsData(),
+    /** Company documents, tools and the total storage the company has. */
+    val assets: CompanyAssets = CompanyAssets()
 ) {
     /** Renewals that are inside a reminder stage or expired, soonest first. */
     fun renewalsNeedingAttention(now: Long): List<Renewal> =
@@ -743,6 +820,10 @@ data class Ledger(
     fun proToday(now: Long): Long = apps.sumOf { it.proTodayAt(now) }
     /** Money waiting in every app's Google Play Balance. It is not in profit until it is withdrawn. */
     val playBalanceTotal: Long get() = apps.sumOf { it.playBalance }
+
+    /** Money waiting in every app's Apple Store Balance and Paystack Balance. */
+    val appleBalanceTotal: Long get() = apps.sumOf { it.appleBalance }
+    val paystackBalanceTotal: Long get() = apps.sumOf { it.paystackBalance }
 
     fun playEarningsToday(now: Long): Long = apps.sumOf { it.playEarningsToday(now) }
 

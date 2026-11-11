@@ -143,8 +143,58 @@ object DiceEngine {
         return min(pool, max(1, (pool * share).roundToInt()))
     }
 
-    private fun tx(kind: PlayTxKind, label: String, gross: Long, fee: Long, now: Long): PlayTx =
-        PlayTx(kind = kind, label = label, gross = gross, fee = fee, net = gross - fee, dateMillis = now)
+    private fun tx(kind: PlayTxKind, label: String, gross: Long, fee: Long, now: Long, channel: Channel = Channel.PLAY): PlayTx =
+        PlayTx(kind = kind, label = label, gross = gross, fee = fee, net = gross - fee, dateMillis = now, channel = channel)
+
+    /**
+     * One balance line per channel for users who each paid their own price. The money goes to the balance of the
+     * channel the user came through, after that channel's own fee (Google Play, Apple Store or Paystack).
+     */
+    private fun channelLines(
+        kind: PlayTxKind,
+        users: List<AppUser>,
+        priceOf: (AppUser) -> Long,
+        one: String,
+        many: String,
+        now: Long
+    ): List<PlayTx> {
+        val out = ArrayList<PlayTx>()
+        for (channel in Channel.values()) {
+            val group = users.filter { it.channel == channel }
+            if (group.isEmpty()) continue
+            val payments = group.map { priceOf(it) }
+            val label = plural(group.size, one, many) + (if (channel == Channel.PLAY) "" else " (" + channel.label + ")")
+            out.add(tx(kind, label, payments.sum(), channelFee(channel, payments), now, channel))
+        }
+        return out
+    }
+
+    /**
+     * Gives the dice's new users their channel (by the backend's split of the day, or evenly when the backend's
+     * answer is not there) and, for a Neribo Deploy style app, their sites (the backend's average of the day).
+     */
+    private fun placeNewUsers(users: List<AppUser>, app: AppData, today: String, random: Random): List<AppUser> {
+        if (users.isEmpty()) return users
+        val channels = ChannelRules.enabled(app).ifEmpty { listOf(Channel.PLAY) }
+        val counts = ChannelRules.divide(users.size, channels, app.dayRolls, today)
+        val placed = ArrayList<AppUser>()
+        var index = 0
+        for (i in channels.indices) {
+            for (k in 0 until counts[i]) {
+                placed.add(users[index].copy(channel = channels[i]))
+                index += 1
+            }
+        }
+        if (!app.deployTracking) return placed
+        val tenths = app.dayRolls?.takeIf { it.dayKey == today }?.sitesTenths ?: 10
+        val extra = ChannelRules.sitesFor(placed.size, tenths) - placed.size
+        val sites = IntArray(placed.size) { 1 }
+        for (k in 0 until extra) {
+            val at = random.nextInt(placed.size)
+            sites[at] = sites[at] + 1
+        }
+        return placed.mapIndexed { i, u -> u.copy(sites = sites[i]) }
+    }
 
     private fun plural(count: Int, one: String, many: String): String =
         if (count == 1) "1 $one" else "$count $many"
@@ -333,7 +383,7 @@ object DiceEngine {
         // New users (green). They are Free users with a made-up name, email and phone.
         val newCount = newUsersFor(face(DiceKind.NEW), app.totalUsers, factor, random)
         val newUsers = if (newCount > 0) {
-            makeNewUsers(newCount, ledger, now, dayStart, random, preset)
+            placeNewUsers(makeNewUsers(newCount, ledger, now, dayStart, random, preset), app, today, random)
         } else {
             emptyList()
         }
@@ -346,59 +396,63 @@ object DiceEngine {
         var advertRows: List<AppUser> = emptyList()
         var advertPremium = 0
         var advertPro = 0
+        var audienceApple = 0L
+        var audienceWebsite = 0L
         if (advertTotal > 0L) {
             val room = max(0, AdvertEngine.MAX_STORED_USER_ROWS_PER_APP - (app.users.size + newCount))
-            val rowsToMake = min(
-                advertTotal,
-                min(AdvertEngine.MAX_ROWS_PER_ROLL, room).toLong()
-            ).toInt()
-            if (rowsToMake > 0) {
-                advertRows = IdentityGenerator.make(rowsToMake, ledger, now, dayStart, random, newUsers)
-            }
-            // Paid users must be listed one by one. A plan without a price does not exist, so those users stay Free.
-            advertPremium = if (app.premiumPrice > 0L) min(delivery.premium, advertRows.size.toLong()).toInt() else 0
-            advertPro = if (app.proPrice > 0L) {
-                min(delivery.pro, (advertRows.size - advertPremium).toLong()).toInt()
-            } else {
-                0
-            }
-            if (advertPremium + advertPro > 0) {
-                // They upgrade on the day they arrive: the plan starts when the user joined.
-                advertRows = advertRows.mapIndexed { index, u ->
+            val rowCap = min(AdvertEngine.MAX_ROWS_PER_ROLL, room)
+            val rows = ArrayList<AppUser>()
+            for (channel in Channel.values()) {
+                val part = delivery.byChannel[channel] ?: continue
+                if (part.users <= 0L) continue
+                val make = max(0L, min(part.users, (rowCap - rows.size).toLong())).toInt()
+                var made: List<AppUser> = if (make > 0) {
+                    IdentityGenerator.make(make, ledger, now, dayStart, random, newUsers + rows)
+                } else {
+                    emptyList()
+                }
+                // Paid users must be listed one by one. A plan without a price does not exist, so those users stay Free.
+                val premium = if (app.premiumPrice > 0L) min(part.premium, made.size.toLong()).toInt() else 0
+                val pro = if (app.proPrice > 0L) min(part.pro, (made.size - premium).toLong()).toInt() else 0
+                made = made.mapIndexed { index, u ->
+                    // They upgrade on the day they arrive: the plan starts when the user joined.
                     when {
-                        index < advertPremium -> u.copy(
+                        index < premium -> u.copy(
+                            channel = channel,
                             plan = Plan.PREMIUM,
                             planStartMillis = u.addedMillis,
                             planExpiryMillis = u.addedMillis + PLAN_DAYS * DAY_MILLIS
                         )
-                        index < advertPremium + advertPro -> u.copy(
+                        index < premium + pro -> u.copy(
+                            channel = channel,
                             plan = Plan.PRO,
                             planStartMillis = u.addedMillis,
                             planExpiryMillis = u.addedMillis + PLAN_DAYS * DAY_MILLIS
                         )
-                        else -> u
+                        else -> u.copy(channel = channel)
                     }
                 }
-                if (advertPremium > 0) {
-                    val gross = advertPremium * app.premiumPrice
-                    lines.add(
-                        tx(
-                            PlayTxKind.SUBSCRIPTION,
-                            plural(advertPremium, "new Premium subscription from adverts", "new Premium subscriptions from adverts"),
-                            gross, playSubscriptionFee(gross), now
-                        )
+                rows.addAll(made)
+                advertPremium += premium
+                advertPro += pro
+                val counted = part.users - made.size
+                if (channel == Channel.APPLE) audienceApple += counted
+                if (channel == Channel.WEBSITE) audienceWebsite += counted
+            }
+            advertRows = rows
+            if (advertPremium + advertPro > 0) {
+                lines.addAll(
+                    channelLines(
+                        PlayTxKind.SUBSCRIPTION, advertRows.filter { it.plan == Plan.PREMIUM }, { app.premiumPrice },
+                        "new Premium subscription from adverts", "new Premium subscriptions from adverts", now
                     )
-                }
-                if (advertPro > 0) {
-                    val gross = advertPro * app.proPrice
-                    lines.add(
-                        tx(
-                            PlayTxKind.SUBSCRIPTION,
-                            plural(advertPro, "new Pro subscription from adverts", "new Pro subscriptions from adverts"),
-                            gross, playSubscriptionFee(gross), now
-                        )
+                )
+                lines.addAll(
+                    channelLines(
+                        PlayTxKind.SUBSCRIPTION, advertRows.filter { it.plan == Plan.PRO }, { app.proPrice },
+                        "new Pro subscription from adverts", "new Pro subscriptions from adverts", now
                     )
-                }
+                )
             }
         }
         // The rest is only counted (Free users that are not listed one by one).
@@ -408,7 +462,9 @@ object DiceEngine {
         // (advert users are active on the day they arrive).
         val totalAfter = app.totalUsers + newCount + advertTotal
         val fromDice = activeFor(face(DiceKind.ACTIVE), totalAfter, factor, random)
-        val activeToday = min(totalAfter, max(fromDice, newCount + advertTotal))
+        // A Neribo Deploy app: the users you added yourself are always Active.
+        val alwaysActive = if (app.deployTracking) app.users.count { !it.simulated }.toLong() else 0L
+        val activeToday = min(totalAfter, max(max(fromDice, newCount + advertTotal), alwaysActive))
 
         // Upgrades (yellow and purple). Only dice users who were Free before this roll.
         val freePool = upgradePool(app).shuffled(random)
@@ -442,26 +498,18 @@ object DiceEngine {
                 planExpiryMillis = start + PLAN_DAYS * DAY_MILLIS
             )
         }
-        if (premiumPicked.isNotEmpty()) {
-            val gross = premiumPicked.size * app.premiumPrice
-            lines.add(
-                tx(
-                    PlayTxKind.SUBSCRIPTION,
-                    plural(premiumPicked.size, "new Premium subscription", "new Premium subscriptions"),
-                    gross, playSubscriptionFee(gross), now
-                )
+        lines.addAll(
+            channelLines(
+                PlayTxKind.SUBSCRIPTION, premiumPicked, { app.premiumPrice },
+                "new Premium subscription", "new Premium subscriptions", now
             )
-        }
-        if (proPicked.isNotEmpty()) {
-            val gross = proPicked.size * app.proPrice
-            lines.add(
-                tx(
-                    PlayTxKind.SUBSCRIPTION,
-                    plural(proPicked.size, "new Pro subscription", "new Pro subscriptions"),
-                    gross, playSubscriptionFee(gross), now
-                )
+        )
+        lines.addAll(
+            channelLines(
+                PlayTxKind.SUBSCRIPTION, proPicked, { app.proPrice },
+                "new Pro subscription", "new Pro subscriptions", now
             )
-        }
+        )
 
         // Renewals (orange) and cancellations (red). Both take people from the same group
         // (dice users whose plan has ended), so nobody is counted twice.
@@ -482,16 +530,9 @@ object DiceEngine {
             changed[u.id] = u.copy(plan = Plan.FREE, planStartMillis = 0L, planExpiryMillis = 0L)
         }
         lapsed += lostUsers.size
-        if (renewedUsers.isNotEmpty()) {
-            val gross = renewedUsers.sumOf { priceOf(app, it.plan) }
-            lines.add(
-                tx(
-                    PlayTxKind.RENEWAL,
-                    plural(renewedUsers.size, "renewal", "renewals"),
-                    gross, playSubscriptionFee(gross), now
-                )
-            )
-        }
+        lines.addAll(
+            channelLines(PlayTxKind.RENEWAL, renewedUsers, { priceOf(app, it.plan) }, "renewal", "renewals", now)
+        )
 
         // Google Ads (gold). Based on how many Free users the app has.
         var adsGross = 0L
@@ -518,7 +559,8 @@ object DiceEngine {
             now = now
         )
         val finalUsers = existingUsers.map { u ->
-            activeStamps[u.id]?.let { stamp -> u.copy(lastActiveMillis = stamp) } ?: u
+            val stamped = activeStamps[u.id]?.let { stamp -> u.copy(lastActiveMillis = stamp) } ?: u
+            if (app.deployTracking && !stamped.simulated) stamped.copy(lastActiveMillis = now) else stamped
         } + newUsers.map { it.copy(lastActiveMillis = it.addedMillis) } +
             advertRows.map { it.copy(lastActiveMillis = it.addedMillis) }
 
@@ -578,10 +620,17 @@ object DiceEngine {
             newHistory = newHist,
             lastRollDayKey = today,
             rolls = (app.rolls + record).takeLast(30),
-            playTx = (app.playTx + lines).takeLast(200),
-            playSubsBalance = app.playSubsBalance + subsNet,
+            playTx = (app.playTx + lines.filter { it.channel == Channel.PLAY }).takeLast(200),
+            playSubsBalance = app.playSubsBalance +
+                lines.filter { it.channel == Channel.PLAY && it.kind != PlayTxKind.ADS }.sumOf { it.net },
             playAdsBalance = app.playAdsBalance + adsNet,
+            appleTx = (app.appleTx + lines.filter { it.channel == Channel.APPLE }).takeLast(200),
+            appleSubsBalance = app.appleSubsBalance + lines.filter { it.channel == Channel.APPLE }.sumOf { it.net },
+            paystackTx = (app.paystackTx + lines.filter { it.channel == Channel.WEBSITE }).takeLast(200),
+            paystackSubsBalance = app.paystackSubsBalance + lines.filter { it.channel == Channel.WEBSITE }.sumOf { it.net },
             adverts = delivery.updatedAdverts,
+            audienceApple = app.audienceApple + audienceApple,
+            audienceWebsite = app.audienceWebsite + audienceWebsite,
             audienceFree = app.audienceFree + audienceAdded,
             audienceTodayKey = if (audienceAdded > 0L) today else app.audienceTodayKey,
             audienceToday = if (audienceAdded > 0L) {
@@ -590,7 +639,9 @@ object DiceEngine {
                 app.audienceToday
             }
         )
-        val rolled = ledger.copy(apps = ledger.apps.map { if (it.id == appId) updated else it })
+        // Storage grows by itself: the backend's share of the day of what the users and sites could fill.
+        val grown = growStorage(updated, today)
+        val rolled = ledger.copy(apps = ledger.apps.map { if (it.id == appId) grown else it })
 
         // A customer case can only be born from something real that this roll did.
         val facts = RollFacts(
@@ -675,6 +726,50 @@ object DiceEngine {
         val record = Withdrawal(dateMillis = now, amount = total, label = "All apps", note = note)
         return ledger.copy(
             apps = ledger.apps.map { if (it.id in ids) it.withdrawn(now) else it },
+            withdrawals = (listOf(record) + ledger.withdrawals).take(200)
+        )
+    }
+
+    /** Adds the day's storage growth (the backend's answer) to the app, never beyond what the users and sites could fill. */
+    private fun growStorage(app: AppData, today: String): AppData {
+        val rolls = app.dayRolls ?: return app
+        if (rolls.dayKey != today || rolls.storageBp <= 0) return app
+        val capacityKb = app.storageCapacityMb * 1024L
+        if (capacityKb <= 0L) return app
+        val grown = app.storageUsedKb + (capacityKb * rolls.storageBp.toLong() + 5_000L) / 10_000L
+        return app.copy(storageUsedKb = min(grown, capacityKb))
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Apple Store Balance and Paystack Balance
+    // -----------------------------------------------------------------------------------------
+
+    /** Moves one app's Apple Store Balance or Paystack Balance into the app's income. */
+    fun withdrawChannelApp(ledger: Ledger, appId: String, channel: Channel, now: Long): Ledger {
+        if (channel == Channel.PLAY) return withdrawApp(ledger, appId, now)
+        val app = ledger.apps.firstOrNull { it.id == appId } ?: return ledger
+        if (!app.googlePlayEnabled) return ledger
+        val amount = if (channel == Channel.APPLE) app.appleBalance else app.paystackBalance
+        if (amount <= 0L) return ledger
+        val record = Withdrawal(dateMillis = now, amount = amount, label = app.name, channel = channel)
+        return ledger.copy(
+            apps = ledger.apps.map { if (it.id == appId) it.withdrawnChannel(channel, now) else it },
+            withdrawals = (listOf(record) + ledger.withdrawals).take(200)
+        )
+    }
+
+    /** Moves every app's Apple Store Balance or Paystack Balance into profit at once. */
+    fun withdrawChannelAll(ledger: Ledger, channel: Channel, now: Long): Ledger {
+        if (channel == Channel.PLAY) return withdrawAll(ledger, now)
+        fun balanceOf(app: AppData): Long = if (channel == Channel.APPLE) app.appleBalance else app.paystackBalance
+        val paying = ledger.apps.filter { it.googlePlayEnabled && balanceOf(it) > 0L }
+        if (paying.isEmpty()) return ledger
+        val total = paying.sumOf { balanceOf(it) }
+        val ids = paying.map { it.id }.toSet()
+        val note = paying.joinToString(", ") { it.name + " " + "₦" + balanceOf(it) }
+        val record = Withdrawal(dateMillis = now, amount = total, label = "All apps", note = note, channel = channel)
+        return ledger.copy(
+            apps = ledger.apps.map { if (it.id in ids) it.withdrawnChannel(channel, now) else it },
             withdrawals = (listOf(record) + ledger.withdrawals).take(200)
         )
     }

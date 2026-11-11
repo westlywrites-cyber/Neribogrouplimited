@@ -39,6 +39,8 @@ data class Advert(
     val id: String = UUID.randomUUID().toString(),
     val celebrityName: String,
     val type: AdvertType = AdvertType.CELEBRITY,
+    /** Where its users arrive: Google Play, Apple Store or Website. */
+    val channel: Channel = Channel.PLAY,
     /** Only platforms with followers above 0, with the fixed names above. */
     val platforms: List<AdvertPlatform>,
     /** The stored sum of the platforms. */
@@ -69,8 +71,13 @@ class AdvertDelivery(
     val users: Long,
     /** Of [users]: how many start on Premium and on Pro the day they arrive. The rest are Free. */
     val premium: Long = 0L,
-    val pro: Long = 0L
+    val pro: Long = 0L,
+    /** The same numbers per channel (an advert's users arrive in its own channel). */
+    val byChannel: Map<Channel, AdvertTotals> = emptyMap()
 )
+
+/** Users, and how many of them start on Premium and Pro, for one channel. */
+class AdvertTotals(val users: Long, val premium: Long, val pro: Long)
 
 /** What the backend answered for one day of one advert. */
 class AdvertAnswer(val advertId: String, val day: AdvertDay)
@@ -212,8 +219,8 @@ object AdvertEngine {
     ): String? {
         val allowed = allowedPlatformNames(extraPlatformNames)
         val platforms = allPlatforms.filter { it.name in allowed }
-        if (!app.googlePlayEnabled) return "Adverts are only for Google Play apps."
-        if (app.id == SOFTWARE_APP_ID) return "Adverts are only for Google Play apps."
+        if (!app.googlePlayEnabled) return "Adverts are only for apps that are on Google Play, the Apple Store or a website."
+        if (app.id == SOFTWARE_APP_ID) return "Adverts are only for apps that are on Google Play, the Apple Store or a website."
         val clean = name.trim()
         if (clean.length < 2) return "Type the name (at least 2 letters)."
         if (clean.length > 60) return "The name can have at most 60 letters."
@@ -245,6 +252,7 @@ object AdvertEngine {
         app: AppData,
         name: String,
         type: AdvertType,
+        channel: Channel,
         platforms: List<AdvertPlatform>,
         startInDays: Int,
         lastsDays: Int,
@@ -252,6 +260,7 @@ object AdvertEngine {
         extraPlatformNames: List<String> = emptyList()
     ): AppData {
         if (advertError(app, name, platforms, startInDays, lastsDays, extraPlatformNames) != null) return app
+        if (channel !in ChannelRules.enabled(app)) return app
         // Fixed names in the fixed order, then the added Socials platforms; only platforms with followers.
         val clean = allowedPlatformNames(extraPlatformNames).mapNotNull { platformName ->
             val followers = platforms.filter { it.name == platformName }.sumOf { max(0L, it.followers) }
@@ -264,6 +273,7 @@ object AdvertEngine {
         val advert = Advert(
             celebrityName = name.trim(),
             type = type,
+            channel = channel,
             platforms = clean,
             totalFollowers = total,
             startDayKey = start.toString(),
@@ -371,6 +381,9 @@ object AdvertEngine {
         var users = 0L
         var premium = 0L
         var pro = 0L
+        val perUsers = HashMap<Channel, Long>()
+        val perPremium = HashMap<Channel, Long>()
+        val perPro = HashMap<Channel, Long>()
         val updated = app.adverts.map { advert ->
             val last = lastDeliverableDay(advert)
             if (last.isEmpty()) return@map advert
@@ -381,6 +394,9 @@ object AdvertEngine {
                     users += day.users
                     premium += day.premium
                     pro += day.pro
+                    perUsers[advert.channel] = (perUsers[advert.channel] ?: 0L) + day.users
+                    perPremium[advert.channel] = (perPremium[advert.channel] ?: 0L) + day.premium
+                    perPro[advert.channel] = (perPro[advert.channel] ?: 0L) + day.pro
                     changed = true
                     day.copy(delivered = true)
                 } else {
@@ -389,6 +405,10 @@ object AdvertEngine {
             }
             if (changed) advert.copy(days = days) else advert
         }
-        return AdvertDelivery(updated, users, premium, pro)
+        val byChannel = HashMap<Channel, AdvertTotals>()
+        for (channel in perUsers.keys) {
+            byChannel[channel] = AdvertTotals(perUsers[channel] ?: 0L, perPremium[channel] ?: 0L, perPro[channel] ?: 0L)
+        }
+        return AdvertDelivery(updated, users, premium, pro, byChannel)
     }
 }

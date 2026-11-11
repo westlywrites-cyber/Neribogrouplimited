@@ -61,6 +61,11 @@ import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.AdvertPlatform
+import com.westly.neribogroup.data.Channel
+import com.westly.neribogroup.data.ChannelRules
+import com.westly.neribogroup.feature.common.NeriboDialog
+import com.westly.neribogroup.feature.common.DialogActions
+import androidx.compose.material3.OutlinedButton
 import com.westly.neribogroup.data.AdvertType
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.Entry
@@ -100,11 +105,14 @@ fun AppDashboardScreen(
     onWithdraw: () -> Unit,
     onStartCampaign: (CampaignSize, Int, Int) -> Unit,
     onStopCampaign: () -> Unit,
-    onStartAdvert: (String, AdvertType, List<AdvertPlatform>, Int, Int) -> Unit,
+    onStartAdvert: (String, AdvertType, Channel, List<AdvertPlatform>, Int, Int) -> Unit,
     onStopAdvert: (String) -> Unit,
     /** Company expenses charged by this (Google Play) app, newest first is applied here. */
     chargedToCompany: List<Entry>,
-    onEnableGooglePlay: () -> Unit,
+    onEnableLive: (Boolean, Boolean, Boolean) -> Unit,
+    onSetChannels: (Boolean, Boolean, Boolean) -> Unit,
+    onSetDeploy: (Boolean) -> Unit,
+    onSetStorage: (Long, Long, Long, Long) -> Unit,
     onAddCompanyExpense: (String, Long) -> Unit,
     /** Phase 4B: true when AI mode is ON. The dice screen is then replaced by the "Today's roll" card. */
     aiOn: Boolean = false,
@@ -132,7 +140,6 @@ fun AppDashboardScreen(
     var showAddIncome by remember { mutableStateOf(false) }
     var showAddExpense by remember { mutableStateOf(false) }
     var showCompanyExpense by remember { mutableStateOf(false) }
-    var confirmGooglePlay by remember { mutableStateOf(false) }
     // The "Add user i of N" sequence after Save in a Manual app. 0 = not running.
     var queueTotal by remember { mutableStateOf(0) }
     var queueIndex by remember { mutableStateOf(0) }
@@ -766,30 +773,18 @@ fun AppDashboardScreen(
                     // ---------------------------------------------------------------------
                     PAGE_PLAY -> {
                         item {
-                            FlatCard {
-                                if (app.googlePlayEnabled) {
-                                    Text(
-                                        text = "Google Play is on. It cannot be turned off.",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                } else {
-                                    Text(
-                                        text = "Google Play apps use the daily dice, the Play Balance and Ads. " +
-                                            "This cannot be turned off later.",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    TintedButton(
-                                        text = "Turn on Google Play",
-                                        onClick = { confirmGooglePlay = true },
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
-                            }
+                            ChannelsCard(
+                                app = app,
+                                onEnableLive = onEnableLive,
+                                onSetChannels = onSetChannels,
+                                onSetDeploy = onSetDeploy,
+                                onSetStorage = onSetStorage
+                            )
                         }
 
                         if (app.googlePlayEnabled) {
+                            item { SectionTitle("Users and money by channel") }
+                            item { ChannelBreakdownCard(app) }
                             item { SectionTitle("Google Play Balance") }
                             item {
                                 StatTile(
@@ -975,6 +970,7 @@ fun AppDashboardScreen(
         }
     }
 
+    var pendingSites by remember { mutableStateOf(1) }
     if (addUser) {
         UserDialog(
             heading = "Add user",
@@ -982,6 +978,8 @@ fun AppDashboardScreen(
             otherUsers = draft.users,
             premiumAvailable = draft.premiumPrice > 0L,
             proAvailable = draft.proPrice > 0L,
+            sites = if (draft.deployTracking) 1 else null,
+            onSitesChange = { pendingSites = it },
             onSave = { name, email, phone, plan ->
                 draft = draft.withUserAdded(
                     AppUser(
@@ -989,7 +987,9 @@ fun AppDashboardScreen(
                         email = email,
                         phone = phone,
                         plan = plan,
-                        addedMillis = System.currentTimeMillis()
+                        addedMillis = System.currentTimeMillis(),
+                        lastActiveMillis = System.currentTimeMillis(),
+                        sites = if (draft.deployTracking) pendingSites else 0
                     )
                 )
                 fieldsKey += 1
@@ -999,6 +999,7 @@ fun AppDashboardScreen(
         )
     }
 
+    var pendingEditSites by remember { mutableStateOf(1) }
     val userBeingEdited = editUserId?.let { id -> draft.users.firstOrNull { it.id == id } }
     if (editing && userBeingEdited != null && !userBeingEdited.simulated) {
         key(userBeingEdited.id) {
@@ -1008,13 +1009,16 @@ fun AppDashboardScreen(
                 otherUsers = draft.users.filter { it.id != userBeingEdited.id },
                 premiumAvailable = draft.premiumPrice > 0L,
                 proAvailable = draft.proPrice > 0L,
+                sites = if (draft.deployTracking) maxOf(1, userBeingEdited.sites) else null,
+                onSitesChange = { pendingEditSites = it },
                 onSave = { name, email, phone, plan ->
                     draft = draft.withUserUpdated(
                         userBeingEdited.copy(
                             name = name,
                             email = email,
                             phone = phone,
-                            plan = plan
+                            plan = plan,
+                            sites = if (draft.deployTracking) pendingEditSites else userBeingEdited.sites
                         )
                     )
                     fieldsKey += 1
@@ -1094,21 +1098,6 @@ fun AppDashboardScreen(
                 showCompanyExpense = false
                 onAddCompanyExpense(title, amount)
             }
-        )
-    }
-
-    if (confirmGooglePlay) {
-        ConfirmDialog(
-            heading = "Turn on Google Play?",
-            message = "This cannot be undone. Your typed user numbers (Total, Premium, Pro, new and " +
-                "active users) are replaced by the user list. Your income, expenses and users you " +
-                "added stay.",
-            confirmLabel = "Turn on",
-            onConfirm = {
-                confirmGooglePlay = false
-                onEnableGooglePlay()
-            },
-            onDismiss = { confirmGooglePlay = false }
         )
     }
 
@@ -1296,3 +1285,150 @@ private fun manualTag(app: AppData, entry: Entry): String? =
     if (app.googlePlayEnabled && app.googlePlaySinceMillis > 0L && entry.dateMillis < app.googlePlaySinceMillis)
         "Manual"
     else null
+
+
+// -------------------------------------------------------------------------------------------------
+// Channels: where an app is (Google Play, Apple Store, Website), Neribo Deploy sites and storage offered
+// -------------------------------------------------------------------------------------------------
+
+@Composable
+private fun ChannelSwitchRow(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Switch(checked = on, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun ChannelsCard(
+    app: AppData,
+    onEnableLive: (Boolean, Boolean, Boolean) -> Unit,
+    onSetChannels: (Boolean, Boolean, Boolean) -> Unit,
+    onSetDeploy: (Boolean) -> Unit,
+    onSetStorage: (Long, Long, Long, Long) -> Unit
+) {
+    var pickLive by remember { mutableStateOf(false) }
+    var storageDialog by remember { mutableStateOf(false) }
+    FlatCard {
+        if (!app.googlePlayEnabled) {
+            Text(
+                text = "Live apps use the daily dice, the balances and adverts. Choose where this app is: " +
+                    "Google Play, the Apple Store or a website. This cannot go back to typed numbers.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            TintedButton(text = "Turn on live mode", onClick = { pickLive = true }, modifier = Modifier.fillMaxWidth())
+        } else {
+            Text("Channels", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            ChannelSwitchRow("Google Play", app.playOn) { on ->
+                if (on || app.appleOn || app.websiteOn) onSetChannels(on, app.appleOn, app.websiteOn)
+            }
+            ChannelSwitchRow("Apple Store", app.appleOn) { on ->
+                if (on || app.playOn || app.websiteOn) onSetChannels(app.playOn, on, app.websiteOn)
+            }
+            ChannelSwitchRow("Website", app.websiteOn) { on ->
+                if (on || app.playOn || app.appleOn) onSetChannels(app.playOn, app.appleOn, on)
+            }
+            Text(
+                text = "At least one channel stays on. Users and money follow the channel they came from: " +
+                    "Google Play Balance, Apple Store Balance and Paystack Balance.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(8.dp))
+            ChannelSwitchRow("Neribo Deploy sites (users have sites)", app.deployTracking, onSetDeploy)
+            Spacer(modifier = Modifier.height(4.dp))
+            OutlinedButton(onClick = { storageDialog = true }) { Text("Storage offered") }
+        }
+    }
+    if (pickLive) {
+        var play by remember { mutableStateOf(true) }
+        var apple by remember { mutableStateOf(false) }
+        var website by remember { mutableStateOf(false) }
+        NeriboDialog(
+            onDismiss = { pickLive = false },
+            title = "Turn on live mode?",
+            subtitle = "This cannot be undone. Your typed user numbers are replaced by the user list. " +
+                "Your income, expenses and users you added stay."
+        ) {
+            ChannelSwitchRow("Google Play", play) { play = it }
+            ChannelSwitchRow("Apple Store", apple) { apple = it }
+            ChannelSwitchRow("Website", website) { website = it }
+            DialogActions {
+                OutlinedButton(onClick = { pickLive = false }) { Text("Cancel") }
+                TintedButton(
+                    text = "Turn on",
+                    enabled = play || apple || website,
+                    onClick = {
+                        pickLive = false
+                        onEnableLive(play, apple, website)
+                    }
+                )
+            }
+        }
+    }
+    if (storageDialog) {
+        var free by remember { mutableStateOf(app.storageFreeMb) }
+        var pro by remember { mutableStateOf(app.storageProMb) }
+        var premium by remember { mutableStateOf(app.storagePremiumMb) }
+        var site by remember { mutableStateOf(app.storageSiteMb) }
+        NeriboDialog(
+            onDismiss = { storageDialog = false },
+            title = "Storage offered",
+            subtitle = "In MB per user. The app's storage grows by itself from its users" +
+                (if (app.deployTracking) " and sites." else ".")
+        ) {
+            NumberField(label = "Free users (MB)", value = free, onChange = { free = it }, maxDigits = 9)
+            Spacer(modifier = Modifier.height(8.dp))
+            NumberField(label = "Pro users (MB)", value = pro, onChange = { pro = it }, maxDigits = 9)
+            Spacer(modifier = Modifier.height(8.dp))
+            NumberField(label = "Premium users (MB)", value = premium, onChange = { premium = it }, maxDigits = 9)
+            if (app.deployTracking) {
+                Spacer(modifier = Modifier.height(8.dp))
+                NumberField(label = "Per deployed site (MB)", value = site, onChange = { site = it }, maxDigits = 9)
+            }
+            DialogActions {
+                OutlinedButton(onClick = { storageDialog = false }) { Text("Cancel") }
+                TintedButton(text = "Save", onClick = {
+                    storageDialog = false
+                    onSetStorage(free, pro, premium, site)
+                })
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelBreakdownCard(app: AppData) {
+    val shown = Channel.values().filter { it in ChannelRules.enabled(app) || app.usersOfChannel(it) > 0L }
+    FlatCard {
+        for (channel in shown) {
+            val balance = when (channel) {
+                Channel.PLAY -> app.playBalance
+                Channel.APPLE -> app.appleBalance
+                Channel.WEBSITE -> app.paystackBalance
+            }
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(channel.label, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        formatCount(app.usersOfChannel(channel)) + " users",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(formatNaira(balance), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+        Text(
+            text = "Total users: " + formatCount(app.totalUsers),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}

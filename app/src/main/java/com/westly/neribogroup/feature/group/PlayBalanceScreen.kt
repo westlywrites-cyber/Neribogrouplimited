@@ -184,7 +184,7 @@ fun PlayBalanceScreen(
             }
 
             item { SectionTitle("Withdrawal history") }
-            if (ledger.withdrawals.isEmpty()) {
+            if (ledger.withdrawals.none { it.channel == com.westly.neribogroup.data.Channel.PLAY }) {
                 item {
                     Text(
                         text = "No withdrawals yet.",
@@ -193,7 +193,7 @@ fun PlayBalanceScreen(
                     )
                 }
             }
-            items(ledger.withdrawals, key = { "wd-" + it.id }) { w ->
+            items(ledger.withdrawals.filter { it.channel == com.westly.neribogroup.data.Channel.PLAY }, key = { "wd-" + it.id }) { w ->
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Text(

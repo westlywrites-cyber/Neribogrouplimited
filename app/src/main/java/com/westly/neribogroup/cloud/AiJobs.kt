@@ -19,6 +19,7 @@ import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_NAME
 import com.westly.neribogroup.data.AdvertAnswer
 import com.westly.neribogroup.data.AdvertEngine
+import com.westly.neribogroup.data.DayRolls
 import com.westly.neribogroup.data.SocialDice
 import com.westly.neribogroup.data.SocialsEngine
 import com.westly.neribogroup.data.SoftwareAi
@@ -138,6 +139,9 @@ interface AiJobHost {
      * ledger.json is written first. True when the answers are in the ledger (or there was nothing new to add).
      */
     fun applyAdvertAnswers(answers: List<AdvertAnswer>): Boolean
+
+    /** Keeps what the backend decided for one app and day (channel split, sites, storage). True when saved. */
+    fun applyAppDay(appId: String, rolls: DayRolls): Boolean
 
     /**
      * Adds Claude's comments that arrived later (adverts: "advertId|dayKey" to comment; Socials: day to comment) to
@@ -1159,10 +1163,15 @@ class AiJobEngine(
     private fun prepareAdverts(host: AiJobHost, appId: String, wall: Long) {
         val live = host.currentLedger()
         val target = live.apps.firstOrNull { it.id == appId } ?: return
-        if (target.adverts.isEmpty()) return
+        if (!AdvertBackend.needsBackend(target)) return
         val today = dayKey(maxOf(wall, live.casesClockMillis))
-        val fetched = AdvertBackend.fetchAdvertDays(api, config.deviceId, target, today)
-        if (fetched.answers.isNotEmpty()) host.applyAdvertAnswers(fetched.answers)
+        if (target.adverts.isNotEmpty()) {
+            val fetched = AdvertBackend.fetchAdvertDays(api, config.deviceId, target, today)
+            if (fetched.answers.isNotEmpty()) host.applyAdvertAnswers(fetched.answers)
+        }
+        val day = AdvertBackend.fetchAppDay(api, config.deviceId, target, today)
+        val rolls = day.rolls
+        if (rolls != null && rolls != target.dayRolls) host.applyAppDay(appId, rolls)
     }
 
     /** Brings in the comments Claude wrote for adverts and Socials. Nothing breaks when this fails. */

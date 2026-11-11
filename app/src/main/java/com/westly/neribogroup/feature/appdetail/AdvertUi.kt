@@ -31,6 +31,8 @@ import com.westly.neribogroup.data.AdvertEngine
 import com.westly.neribogroup.data.AdvertPlatform
 import com.westly.neribogroup.data.AdvertStatus
 import com.westly.neribogroup.data.AdvertType
+import com.westly.neribogroup.data.ChannelRules
+import com.westly.neribogroup.data.Channel
 import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.DialogActions
@@ -85,7 +87,7 @@ fun LazyListScope.advertsPageItems(
     now: Long,
     openAdvert: Advert?,
     onOpenAdvert: (String) -> Unit,
-    onStartAdvert: (String, AdvertType, List<AdvertPlatform>, Int, Int) -> Unit,
+    onStartAdvert: (String, AdvertType, Channel, List<AdvertPlatform>, Int, Int) -> Unit,
     onStopAdvert: (String) -> Unit,
     /** Part C: the exact names of the Socials accounts added by the owner (one extra followers field each). */
     extraPlatformNames: List<String> = emptyList()
@@ -110,9 +112,9 @@ fun LazyListScope.advertsPageItems(
                 now = now,
                 extraPlatformNames = extraPlatformNames,
                 onDismiss = { showNew = false },
-                onStart = { name, type, platforms, startIn, lasts ->
+                onStart = { name, type, channel, platforms, startIn, lasts ->
                     showNew = false
-                    onStartAdvert(name, type, platforms, startIn, lasts)
+                    onStartAdvert(name, type, channel, platforms, startIn, lasts)
                 }
             )
         }
@@ -176,7 +178,7 @@ private fun AdvertRow(advert: Advert, today: String, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = typeLabel(advert.type) + " · " + AdvertEngine.compactFollowers(advert.totalFollowers) + " followers",
+                    text = typeLabel(advert.type) + " · " + advert.channel.label + " · " + AdvertEngine.compactFollowers(advert.totalFollowers) + " followers",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -212,7 +214,7 @@ private fun LazyListScope.advertDetailItems(advert: Advert, today: String, onSto
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = typeLabel(advert.type),
+                text = typeLabel(advert.type) + " · " + advert.channel.label,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -384,10 +386,13 @@ private fun NewAdvertDialog(
     now: Long,
     extraPlatformNames: List<String>,
     onDismiss: () -> Unit,
-    onStart: (String, AdvertType, List<AdvertPlatform>, Int, Int) -> Unit
+    onStart: (String, AdvertType, Channel, List<AdvertPlatform>, Int, Int) -> Unit
 ) {
     // The six fixed platforms, then one more for every Socials account the owner added.
     val platformNames = AdvertEngine.allowedPlatformNames(extraPlatformNames)
+    val channels = ChannelRules.enabled(app)
+    var channelName by remember { mutableStateOf((channels.firstOrNull() ?: Channel.PLAY).name) }
+    val channel = runCatching { Channel.valueOf(channelName) }.getOrDefault(Channel.PLAY)
     var type by remember { mutableStateOf(AdvertType.CELEBRITY) }
     var name by remember { mutableStateOf("") }
     var followerTexts by remember { mutableStateOf(emptyMap<String, String>()) }
@@ -422,6 +427,25 @@ private fun NewAdvertDialog(
                 TintedButton(text = "Blog", onClick = { type = AdvertType.BLOG }, modifier = Modifier.weight(1f))
             } else {
                 OutlinedButton(onClick = { type = AdvertType.BLOG }, modifier = Modifier.weight(1f)) { Text("Blog") }
+            }
+        }
+        if (channels.size > 1) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Where its users arrive",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                for (option in channels) {
+                    if (option == channel) {
+                        TintedButton(text = option.label, onClick = { channelName = option.name }, modifier = Modifier.weight(1f))
+                    } else {
+                        OutlinedButton(onClick = { channelName = option.name }, modifier = Modifier.weight(1f)) { Text(option.label) }
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
             }
         }
         Spacer(modifier = Modifier.height(16.dp))
@@ -474,7 +498,7 @@ private fun NewAdvertDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
             TintedButton(
                 text = "Start",
-                onClick = { onStart(name.trim(), type, platforms.filter { it.followers > 0L }, startIn, lasts) },
+                onClick = { onStart(name.trim(), type, channel, platforms.filter { it.followers > 0L }, startIn, lasts) },
                 enabled = error == null
             )
         }

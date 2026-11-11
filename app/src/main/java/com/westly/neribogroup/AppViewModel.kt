@@ -62,6 +62,10 @@ import com.westly.neribogroup.data.SOCIAL_PHOTO_MAX_SIDE
 import com.westly.neribogroup.cloud.AdvertBackend
 import com.westly.neribogroup.data.AdvertAnswer
 import com.westly.neribogroup.data.AdvertType
+import com.westly.neribogroup.data.CompanyAssets
+import com.westly.neribogroup.data.CompanyPhotos
+import com.westly.neribogroup.data.Channel
+import com.westly.neribogroup.data.DayRolls
 import com.westly.neribogroup.data.SocialDice
 import com.westly.neribogroup.data.SocialEdit
 import com.westly.neribogroup.data.SocialImage
@@ -98,7 +102,7 @@ import kotlin.concurrent.thread
 import kotlin.random.Random
 
 /** The pages that open from the home screen tiles. */
-enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES, USD, SOCIALS }
+enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES, USD, SOCIALS, APPLE, PAYSTACK, DOCS, TOOLS, DEPLOY, STORAGE }
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -489,6 +493,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             onLocalChange()
                             ok.set(true)
                         }
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+            val finished = try {
+                latch.await(15, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            return finished && ok.get()
+        }
+
+        override fun applyAppDay(appId: String, rolls: DayRolls): Boolean {
+            val latch = CountDownLatch(1)
+            val ok = AtomicReference(false)
+            mainHandler.post {
+                try {
+                    val current = ledger
+                    val updated = current.copy(
+                        apps = current.apps.map { if (it.id == appId) it.copy(dayRolls = rolls) else it }
+                    )
+                    if (LedgerStorage.saveRawText(getApplication(), LedgerStorage.toJson(updated))) {
+                        ledger = updated
+                        onLocalChange()
+                        ok.set(true)
                     }
                 } finally {
                     latch.countDown()
@@ -1569,7 +1599,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun rollApp(id: String) {
         if (id == SOFTWARE_APP_ID) return
         val target = ledger.apps.firstOrNull { it.id == id } ?: return
-        if (target.adverts.isEmpty() || !cloudSignedIn) {
+        if (!AdvertBackend.needsBackend(target) || !cloudSignedIn) {
             saveLedger(DiceEngine.roll(ledger, id, System.currentTimeMillis()))
             return
         }
@@ -1578,12 +1608,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val today = dayKey(maxOf(System.currentTimeMillis(), ledger.casesClockMillis))
         Thread {
             val fetched = AdvertBackend.fetchAdvertDays(cloudApi, cloudConfig.deviceId, target, today)
+            val dayFetch = AdvertBackend.fetchAppDay(cloudApi, cloudConfig.deviceId, target, today)
             mainHandler.post {
-                if (fetched.answers.isNotEmpty()) {
+                if (fetched.answers.isNotEmpty() || dayFetch.rolls != null) {
                     val current = ledger
                     ledger = current.copy(
                         apps = current.apps.map { a ->
-                            if (a.id == id) a.copy(adverts = AdvertEngine.mergeAnswers(a.adverts, fetched.answers)) else a
+                            if (a.id == id) {
+                                a.copy(
+                                    adverts = AdvertEngine.mergeAnswers(a.adverts, fetched.answers),
+                                    dayRolls = dayFetch.rolls ?: a.dayRolls
+                                )
+                            } else {
+                                a
+                            }
                         }
                     )
                 }
@@ -1601,6 +1639,51 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Moves every app's Google Play Balance into profit. */
     fun withdrawAll() {
         saveLedger(DiceEngine.withdrawAll(ledger, System.currentTimeMillis()))
+    }
+
+    /** Moves one app's Apple Store Balance or Paystack Balance into profit. */
+    fun withdrawChannelApp(id: String, channel: Channel) {
+        if (id == SOFTWARE_APP_ID) return
+        saveLedger(DiceEngine.withdrawChannelApp(ledger, id, channel, System.currentTimeMillis()))
+    }
+
+    /** Moves every app's Apple Store Balance or Paystack Balance into profit. */
+    fun withdrawChannelAll(channel: Channel) {
+        saveLedger(DiceEngine.withdrawChannelAll(ledger, channel, System.currentTimeMillis()))
+    }
+
+    /** Saves the company's documents, tools and total storage. */
+    fun saveAssets(assets: CompanyAssets) {
+        saveLedger(ledger.copy(assets = assets))
+    }
+
+    /** Changes every time a document or tool photo changes, so the screens load it again. */
+    var assetPhotoTick by mutableStateOf(0)
+        private set
+
+    fun assetPhotoFile(kind: String, id: String): java.io.File =
+        CompanyPhotos.file(getApplication<Application>(), kind, id)
+
+    /** Makes a small JPEG of the picked photo and saves it on this phone. [done] gets "" or a short problem text. */
+    fun saveAssetPhoto(kind: String, id: String, uri: android.net.Uri, done: (String) -> Unit) {
+        val context = getApplication<Application>()
+        Thread {
+            val processed = ImageProcessor.process(context, uri, 1600)
+            val message = when (processed) {
+                is ProcessedImage.Ok ->
+                    if (CompanyPhotos.write(context, kind, id, processed.bytes)) "" else "The photo could not be saved."
+                is ProcessedImage.Failed -> processed.message
+            }
+            mainHandler.post {
+                if (message.isEmpty()) assetPhotoTick += 1
+                done(message)
+            }
+        }.start()
+    }
+
+    fun deleteAssetPhoto(kind: String, id: String) {
+        CompanyPhotos.delete(getApplication<Application>(), kind, id)
+        assetPhotoTick += 1
     }
 
     fun startCampaign(id: String, size: CampaignSize, startInDays: Int, lastsDays: Int) {
@@ -1623,6 +1706,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         appId: String,
         name: String,
         type: AdvertType,
+        channel: Channel,
         platforms: List<AdvertPlatform>,
         startInDays: Int,
         lastsDays: Int
@@ -1630,7 +1714,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (appId == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == appId } ?: return
         val updated = AdvertEngine.create(
-            app, name, type, platforms, startInDays, lastsDays, System.currentTimeMillis(),
+            app, name, type, channel, platforms, startInDays, lastsDays, System.currentTimeMillis(),
             SocialsRules.extraAdvertNames(ledger.socials)
         )
         if (updated === app) return
@@ -1766,6 +1850,47 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
         if (app.googlePlayEnabled) return
         val updated = app.withGooglePlayOn(System.currentTimeMillis())
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
+    }
+
+    /** Turns an app live (one way) with the chosen channels. At least one channel must be on. */
+    fun enableLive(id: String, play: Boolean, apple: Boolean, website: Boolean) {
+        if (id == SOFTWARE_APP_ID) return
+        if (!play && !apple && !website) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (app.googlePlayEnabled) return
+        val updated = app.withGooglePlayOn(System.currentTimeMillis())
+            .copy(playOn = play, appleOn = apple, websiteOn = website)
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
+    }
+
+    /** Switches the channels of a live app. At least one stays on. */
+    fun setChannels(id: String, play: Boolean, apple: Boolean, website: Boolean) {
+        if (id == SOFTWARE_APP_ID) return
+        if (!play && !apple && !website) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (!app.googlePlayEnabled) return
+        val updated = app.copy(playOn = play, appleOn = apple, websiteOn = website)
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
+    }
+
+    /** Switches Neribo Deploy style sites on or off for a live app. */
+    fun setDeployTracking(id: String, on: Boolean) {
+        if (id == SOFTWARE_APP_ID) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (!app.googlePlayEnabled || app.deployTracking == on) return
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) it.copy(deployTracking = on) else it }))
+    }
+
+    /** What each plan offers in MB (and per deployed site). */
+    fun setStorageOffer(id: String, freeMb: Long, proMb: Long, premiumMb: Long, siteMb: Long) {
+        if (id == SOFTWARE_APP_ID) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (!app.googlePlayEnabled) return
+        val updated = app.copy(
+            storageFreeMb = maxOf(0L, freeMb), storageProMb = maxOf(0L, proMb),
+            storagePremiumMb = maxOf(0L, premiumMb), storageSiteMb = maxOf(0L, siteMb)
+        )
         saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
     }
 

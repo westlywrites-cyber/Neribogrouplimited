@@ -72,6 +72,9 @@ fun UserDialog(
     saveLabel: String = "Save",
     premiumAvailable: Boolean = true,
     proAvailable: Boolean = true,
+    /** Neribo Deploy style apps: the user's sites (null = no sites field). */
+    sites: Int? = null,
+    onSitesChange: (Int) -> Unit = {},
     onSave: (name: String, email: String, phone: String, plan: Plan) -> Unit,
     onDismiss: () -> Unit,
     onDelete: (() -> Unit)? = null,
@@ -82,6 +85,7 @@ fun UserDialog(
     var email by rememberSaveable { mutableStateOf(initial?.email ?: "") }
     var phone by rememberSaveable { mutableStateOf(initial?.phone ?: "") }
     var planKey by rememberSaveable { mutableStateOf((initial?.plan ?: Plan.FREE).name) }
+    var sitesText by rememberSaveable { mutableStateOf((sites ?: 1).toString()) }
     var nameTouched by rememberSaveable { mutableStateOf(false) }
     var emailTouched by rememberSaveable { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -106,6 +110,7 @@ fun UserDialog(
 
     val save: () -> Unit = {
         if (valid) {
+            if (sites != null) onSitesChange((sitesText.toIntOrNull() ?: 1).coerceIn(1, 100000))
             onSave(nameTrim, emailTrim, phone.trim(), plan)
         }
     }
@@ -165,6 +170,16 @@ fun UserDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (sites != null) {
+                    OutlinedTextField(
+                        value = sitesText,
+                        onValueChange = { raw -> sitesText = raw.filter { it.isDigit() }.take(5) },
+                        label = { Text("Sites deployed (at least 1)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
                 Text(
                     text = "Plan",
