@@ -104,3 +104,15 @@ Warnings: unknown keywords (title, format, description, oneOf, anyOf, allOf, $re
 - Rulebook v5 adds `job_kinds.SOFTWARE_ROLL` and `software_roll` (the writing rules). The older software job kinds
   (DICE_ROLL with SOFTWARE_CONTACTS / SOFTWARE_PROPOSALS, WRITE_PROPOSAL) are no longer published by the app.
 - Adverts (Google Play apps) are local to each app document: no backend change.
+
+## Addendum (update 2): SOFTWARE_ROLL reach bonus, at most 6 proposals a day
+
+- The company's social media followers now bring extra client contacts. The app adds one new object to the SOFTWARE_ROLL job context:
+  `reach = { reachBonus (0..3, already final), totalFollowers, followersPerContact (10000), maxReachBonus (3) }`.
+  The app makes `reachBonus`; Claude must NEVER roll, change or invent it. The two dice are still rolled honestly by Claude.
+- New formula: `contacts = contactsByFace[contactFace] + reach.reachBonus`; `wanted = min(contacts, (contacts*share+50)/100)`; then at most `inboxRoom`.
+- New maximum: 6 proposals in one day (best contact die 3 + bonus 3), was 3. The app sends `result_schema` with `offers.maxItems = 6`.
+- The server checks nothing about `wanted` and has no list of context keys, so no function or Edge Function changes. The unknown key `reach` is accepted.
+- Rulebook: `backend/004_software_reach_bonus.sql` copies the active rulebook into the next free version and changes only
+  `job_kinds.SOFTWARE_ROLL` and `software_roll` (rule 1 now has `reachBonus` and "never more than 6"; rules 2 to 8 unchanged).
+- The app stays tolerant: if Claude writes fewer than `wanted` beyond 3 (old rulebook), the app writes the rest itself, so the backend can be updated at any time.
