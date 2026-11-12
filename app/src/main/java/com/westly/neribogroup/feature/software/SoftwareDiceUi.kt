@@ -37,7 +37,9 @@ import kotlinx.coroutines.launch
 
 /** "2 clients contacted you. 1 sent a real proposal." */
 internal fun rollResultText(roll: SoftwareRoll): String {
-    val contacted = if (roll.contacts == 1) "1 client contacted you." else roll.contacts.toString() + " clients contacted you."
+    val contactedBase = if (roll.contacts == 1) "1 client contacted you" else roll.contacts.toString() + " clients contacted you"
+    val contacted = contactedBase +
+        (if (roll.reachBonus > 0) " (" + roll.reachBonus + " from your followers)." else ".")
     val sent = if (roll.offers == 1) "1 sent a real proposal." else roll.offers.toString() + " sent a real proposal."
     return contacted + " " + sent
 }

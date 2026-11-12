@@ -56,6 +56,7 @@ object SoftwareJson {
             ro.put("offers", r.offers)
             ro.put("note", r.note)
             ro.put("byClaude", r.byClaude)
+            ro.put("reachBonus", r.reachBonus)
             rolls.put(ro)
         }
         root.put("rolls", rolls)
@@ -122,7 +123,8 @@ object SoftwareJson {
                         contacts = o.optInt("contacts"),
                         offers = o.optInt("offers"),
                         note = o.optString("note"),
-                        byClaude = o.optBoolean("byClaude")
+                        byClaude = o.optBoolean("byClaude"),
+                        reachBonus = maxOf(0, o.optInt("reachBonus"))
                     )
                 )
             }

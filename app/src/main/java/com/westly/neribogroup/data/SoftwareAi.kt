@@ -84,7 +84,9 @@ class SoftwareCheck(
     val contactFace: Int = 0,
     val offerFace: Int = 0,
     val wanted: Int = 0,
-    val offers: List<ClaudeOffer> = emptyList()
+    val offers: List<ClaudeOffer> = emptyList(),
+    /** The extra contacts the followers brought today (already inside [wanted]). */
+    val reachBonus: Int = 0
 )
 
 object SoftwareAi {
@@ -98,12 +100,22 @@ object SoftwareAi {
     const val PRIORITY = 50
     const val SORT_ORDER = 0
     const val MAX_ATTEMPTS = 3
-    const val MAX_OFFERS = 3
+    /** The most proposals one day can ask for: the best dice (3 contacts) plus the biggest follower bonus. */
+    const val MAX_OFFERS = SoftwareEngine.MAX_CONTACTS
+
+    /**
+     * How many proposals the backend rulebook already asked Claude to write before followers added contacts.
+     * Claude must still write at least this many (or `wanted` when that is smaller); the built-in generator
+     * writes any further proposal, so the app also works while the backend rulebook still says 3.
+     */
+    const val ASKED_OFFERS = 3
 
     /** The writing rules. The same text is in the backend rulebook. */
     const val INSTRUCTIONS =
-        "1. Roll both dice honestly (0-5 each), then write exactly `wanted` proposals, where wanted = " +
-            "min(contacts, (contacts*share+50)/100) and never more than inboxRoom and never more than 3. " +
+        "1. Roll both dice honestly (0-5 each), then write exactly `wanted` proposals, where contacts = " +
+            "contactsByFace[contactFace] + reachBonus (reachBonus is in the job context and is already final: " +
+            "the extra contacts the company's social followers bring today; never roll or change it) and " +
+            "wanted = min(contacts, (contacts*share+50)/100) and never more than inboxRoom and never more than 6. " +
             "wanted = 0 means an empty offers array. " +
             "2. Fit is mandatory. Pick a projectCode from projectTypes. The client must be the kind of " +
             "organisation or person that would really order that project, and the title, summary and " +
@@ -152,7 +164,19 @@ object SoftwareAi {
                     .put("contactsByFace", JSONArray(listOf(0, 1, 2, 3, 4, 5).map { SoftwareEngine.contactsForFace(it) })))
                 .put("shareDie", JSONObject().put("faces", "0-5")
                     .put("sharePercentByFace", JSONArray(listOf(0, 1, 2, 3, 4, 5).map { SoftwareEngine.sharePercentForFace(it) })))
-                .put("formula", "wanted = min(contacts, (contacts*share + 50)/100); then at most inboxRoom")
+                .put(
+                    "formula",
+                    "contacts = contactsByFace[contactFace] + reach.reachBonus; " +
+                        "wanted = min(contacts, (contacts*share + 50)/100); then at most inboxRoom"
+                )
+        )
+        ctx.put(
+            "reach",
+            JSONObject()
+                .put("reachBonus", SoftwareEngine.reachBonus(ledger, now))
+                .put("totalFollowers", SoftwareEngine.totalFollowers(ledger))
+                .put("followersPerContact", SoftwareEngine.FOLLOWERS_PER_CONTACT)
+                .put("maxReachBonus", SoftwareEngine.MAX_REACH_BONUS)
         )
         ctx.put("inboxRoom", SoftwareEngine.roomFor(ledger, now))
         val types = JSONArray()
@@ -333,23 +357,26 @@ object SoftwareAi {
         try {
             val contactFace = faceOf(result.opt("contactFace"), "contactFace")
             val offerFace = faceOf(result.opt("offerFace"), "offerFace")
+            val bonus = SoftwareEngine.reachBonus(ledger, now)
             val wanted = minOf(
-                SoftwareEngine.wantedFor(contactFace, offerFace),
+                SoftwareEngine.wantedFor(contactFace, offerFace, bonus),
                 SoftwareEngine.roomFor(ledger, now),
                 MAX_OFFERS
             )
             val array = result.optJSONArray("offers") ?: throw BadOffer("offers is missing")
-            if (array.length() < wanted) throw BadOffer("too few proposals")
+            // Claude must write what the rulebook asked for; the app writes any proposal beyond that itself.
+            if (array.length() < minOf(wanted, ASKED_OFFERS)) throw BadOffer("too few proposals")
+            val take = minOf(wanted, array.length())
             val sw = ledger.software
             val usedNames = HashSet<String>()
             for (o in sw.offers) usedNames.add(o.clientName.trim().lowercase())
             for (c in sw.clients) usedNames.add(c.name.trim().lowercase())
             val offers = ArrayList<ClaudeOffer>()
-            for (i in 0 until wanted) {
+            for (i in 0 until take) {
                 val o = array.optJSONObject(i) ?: throw BadOffer("proposal " + (i + 1) + " is not an object")
                 offers.add(checkOffer(o, sw.rates, usedNames))
             }
-            return SoftwareCheck(true, "", contactFace, offerFace, wanted, offers)
+            return SoftwareCheck(true, "", contactFace, offerFace, wanted, offers, bonus)
         } catch (e: BadOffer) {
             return SoftwareCheck(false, (e.message ?: "not valid").take(150))
         }
@@ -459,9 +486,25 @@ object SoftwareAi {
             offers = offers + offer
             number++
         }
-        val contacts = SoftwareEngine.contactsForFace(check.contactFace)
-        val diceWanted = SoftwareEngine.wantedFor(check.contactFace, check.offerFace)
-        val skipped = diceWanted - check.offers.size
+        // Claude wrote fewer than the dice and followers allow (the old rulebook asks for at most 3):
+        // the built-in generator writes the rest.
+        var created = check.offers.size
+        while (created < check.wanted) {
+            val extra = SoftwareGenerator.createOffer(
+                existingOffers = offers,
+                existingClients = sw.clients,
+                rates = sw.rates,
+                number = number,
+                effectiveNow = eff,
+                random = random
+            )
+            offers = offers + extra
+            number++
+            created++
+        }
+        val contacts = SoftwareEngine.contactsForFace(check.contactFace) + check.reachBonus
+        val diceWanted = SoftwareEngine.wantedFor(check.contactFace, check.offerFace, check.reachBonus)
+        val skipped = diceWanted - created
         val note = if (skipped > 0) {
             "Inbox full: $skipped proposal" + (if (skipped == 1) "" else "s") + " could not be added."
         } else {
@@ -473,9 +516,10 @@ object SoftwareAi {
             contactFace = check.contactFace,
             offerFace = check.offerFace,
             contacts = contacts,
-            offers = check.offers.size,
+            offers = created,
             note = note,
-            byClaude = true
+            byClaude = true,
+            reachBonus = check.reachBonus
         )
         return ledger.copy(
             software = sw.copy(

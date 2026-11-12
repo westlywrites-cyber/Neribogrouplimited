@@ -137,6 +137,52 @@ object SoftwareEngine {
 
     fun contactsForFace(face: Int): Int = CONTACTS_BY_FACE[face.coerceIn(0, 5)]
 
+    // ---- Reach: the company's social followers bring extra client contacts, like advertising ----
+
+    /** Followers (all the company's social accounts together) that bring one sure extra contact a day. */
+    const val FOLLOWERS_PER_CONTACT = 10_000L
+
+    /** The most extra contacts followers can bring in one day. */
+    const val MAX_REACH_BONUS = 3
+
+    /** The most client contacts in one day: the best face of the first die (3) plus the biggest reach bonus. */
+    const val MAX_CONTACTS = 6
+
+    /** All the followers of the company's social accounts. */
+    fun totalFollowers(ledger: Ledger): Long = SocialsRules.totalFollowers(ledger.socials)
+
+    /** The sure extra contacts [followers] bring each day: 1 for every 10,000, at most [MAX_REACH_BONUS]. */
+    fun reachSure(followers: Long): Int =
+        minOf(MAX_REACH_BONUS.toLong(), maxOf(0L, followers) / FOLLOWERS_PER_CONTACT).toInt()
+
+    /** The chance (0 to 99 percent) of one more contact on top of the sure ones. 0 once the cap is reached. */
+    fun reachChancePercent(followers: Long): Int {
+        val f = maxOf(0L, followers)
+        if (f / FOLLOWERS_PER_CONTACT >= MAX_REACH_BONUS) return 0
+        return ((f % FOLLOWERS_PER_CONTACT) * 100L / FOLLOWERS_PER_CONTACT).toInt()
+    }
+
+    /**
+     * The extra contacts the followers bring on [day]: the sure ones, plus one more when the day's pick falls
+     * inside the chance. The pick is worked out from the day and the followers (no random draw), so the app and
+     * Claude's job always see the same bonus for the same day. Never more than [MAX_REACH_BONUS].
+     */
+    fun reachBonusFor(followers: Long, day: String): Int {
+        val sure = reachSure(followers)
+        val chance = reachChancePercent(followers)
+        if (chance <= 0) return sure
+        var x = day.hashCode().toLong() * -7046029254386353131L + maxOf(0L, followers) * 1442695040888963407L
+        x = x xor (x ushr 33)
+        x *= -49064778989728563L
+        x = x xor (x ushr 29)
+        val pick = ((x ushr 1) % 100L).toInt()
+        return minOf(MAX_REACH_BONUS, sure + (if (pick < chance) 1 else 0))
+    }
+
+    /** Today's reach bonus for [ledger] (today by the highest time ever seen, like the roll itself). */
+    fun reachBonus(ledger: Ledger, now: Long): Int =
+        reachBonusFor(totalFollowers(ledger), dayKey(effectiveNow(ledger, now)))
+
     fun sharePercentForFace(face: Int): Int = SHARE_BY_FACE[face.coerceIn(0, 5)]
 
     /** offers = floor(contacts x share + 0.5), never more than contacts. */
@@ -147,9 +193,9 @@ object SoftwareEngine {
     fun canRoll(ledger: Ledger, now: Long): Boolean =
         dayKey(effectiveNow(ledger, now)) > ledger.software.lastRollDayKey
 
-    /** How many proposals the two faces ask for (before the inbox limit). */
-    fun wantedFor(contactFace: Int, offerFace: Int): Int =
-        offersFor(contactsForFace(contactFace), sharePercentForFace(offerFace))
+    /** How many proposals the two faces ask for (before the inbox limit). [reachBonus] = extra contacts from followers. */
+    fun wantedFor(contactFace: Int, offerFace: Int, reachBonus: Int = 0): Int =
+        offersFor(contactsForFace(contactFace) + maxOf(0, reachBonus), sharePercentForFace(offerFace))
 
     /** How many proposals still fit in the inbox right now. */
     fun roomFor(ledger: Ledger, now: Long): Int =
@@ -171,7 +217,8 @@ object SoftwareEngine {
         val givenOffer = preset?.faces?.getOrNull(1) ?: -1
         val contactFace = if (givenContact in 0..5) givenContact else drawnContact
         val offerFace = if (givenOffer in 0..5) givenOffer else drawnOffer
-        val contacts = contactsForFace(contactFace)
+        val bonus = reachBonusFor(totalFollowers(ledger), today)
+        val contacts = contactsForFace(contactFace) + bonus
         val wanted = offersFor(contacts, sharePercentForFace(offerFace))
 
         var waiting = waitingCount(ledger, eff)
@@ -239,7 +286,8 @@ object SoftwareEngine {
             offerFace = offerFace,
             contacts = contacts,
             offers = created,
-            note = note
+            note = note,
+            reachBonus = bonus
         )
         return ledger.copy(
             software = sw.copy(

@@ -202,7 +202,9 @@ data class SoftwareRoll(
     val offers: Int,
     val note: String,
     /** True when Claude rolled the dice and wrote the proposals (Part C). False on older rows. */
-    val byClaude: Boolean = false
+    val byClaude: Boolean = false,
+    /** The extra contacts the company's social followers brought that day (already inside [contacts]). */
+    val reachBonus: Int = 0
 )
 
 data class SoftwareData(
