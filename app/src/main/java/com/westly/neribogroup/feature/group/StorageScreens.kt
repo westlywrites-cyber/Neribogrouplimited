@@ -340,7 +340,7 @@ fun CompanyStorageScreen(
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     val custom = app.customStorageUsers
-                    val plainFree = maxOf(0L, app.freeUsers - custom.size.toLong())
+                    val plainFree = app.plainFreeUsers
                     Text(
                         "Free " + formatCount(plainFree) + " × " + StorageRules.textMb(app.storageFreeMb),
                         style = MaterialTheme.typography.bodySmall,

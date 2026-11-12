@@ -78,8 +78,8 @@ fun UserDialog(
     sites: Int? = null,
     onSitesChange: (Int) -> Unit = {},
     /**
-     * Live apps only: the storage typed for this user in MB (-1 = none). null = no Customize choice. A Customize
-     * user is on the Free plan for money, because payment is settled outside the app.
+     * The storage typed for this user in MB (-1 = none). null = no Customize choice. A Customize user is on the
+     * Free plan for money, because payment is settled outside the app.
      */
     customMb: Long? = null,
     onCustomChange: (Long) -> Unit = {},

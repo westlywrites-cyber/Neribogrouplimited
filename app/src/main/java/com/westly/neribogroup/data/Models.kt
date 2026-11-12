@@ -221,7 +221,15 @@ data class AppData(
 
     /** Users you added yourself with a typed storage amount (Customize). They are Free users for money. */
     val customStorageUsers: List<AppUser>
-        get() = if (googlePlayEnabled) users.filter { it.customStorageMb >= 0L && it.plan == Plan.FREE } else emptyList()
+        get() = users.filter { it.customStorageMb >= 0L && it.plan == Plan.FREE }
+
+    /**
+     * Free users who get the Free plan's storage size. In a Google Play app the Customize users are among the
+     * Free users, so they are taken out. In a Manual app the listed users are not part of the typed numbers, so
+     * nothing is taken out and each Customize user is added on top.
+     */
+    val plainFreeUsers: Long
+        get() = if (googlePlayEnabled) maxOf(0L, freeUsers - customStorageUsers.size.toLong()) else freeUsers
 
     /**
      * The storage given to every user of this app, in MB: what the app offers to each plan for the users of that
@@ -231,7 +239,7 @@ data class AppData(
     val storageAllocatedMb: Long
         get() {
             val custom = customStorageUsers
-            val planFree = maxOf(0L, freeUsers - custom.size.toLong())
+            val planFree = plainFreeUsers
             return planFree * storageFreeMb + proUsers * storageProMb + premiumUsers * storagePremiumMb +
                 custom.sumOf { it.customStorageMb }
         }

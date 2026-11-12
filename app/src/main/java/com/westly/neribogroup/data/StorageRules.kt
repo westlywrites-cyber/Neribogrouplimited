@@ -46,8 +46,8 @@ object StorageRules {
         else -> StorageUnit.MB
     }
 
-    /** What every user of every live app has been given, in KB. */
-    fun usedKb(apps: List<AppData>): Long = apps.filter { it.googlePlayEnabled }.sumOf { it.storageAllocatedKb }
+    /** What every user of every app has been given, in KB (an app with no storage set counts 0). */
+    fun usedKb(apps: List<AppData>): Long = apps.sumOf { it.storageAllocatedKb }
 
     /** What the owner gave to the apps (their shares), in MB. */
     fun sharesMb(apps: List<AppData>): Long = apps.sumOf { it.storageShareMb }

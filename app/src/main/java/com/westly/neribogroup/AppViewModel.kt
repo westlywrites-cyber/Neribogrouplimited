@@ -2061,7 +2061,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setStorageOffer(id: String, freeMb: Long, proMb: Long, premiumMb: Long, siteMb: Long, verified: Boolean = false) {
         if (id == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
-        if (!app.googlePlayEnabled) return
         val updated = app.copy(
             storageFreeMb = maxOf(0L, freeMb), storageProMb = maxOf(0L, proMb),
             storagePremiumMb = maxOf(0L, premiumMb)

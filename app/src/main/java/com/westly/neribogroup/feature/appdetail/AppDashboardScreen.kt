@@ -1002,13 +1002,14 @@ fun AppDashboardScreen(
                                     onClick = { page = PAGE_GROWTH }
                                 )
                             }
-                            item {
-                                NavCard(
-                                    title = "Storage",
-                                    summary = storageSummary(app),
-                                    onClick = { storageDialog = true }
-                                )
-                            }
+                        }
+                        // Storage works in every app, also when no channel is turned on.
+                        item {
+                            NavCard(
+                                title = "Storage",
+                                summary = storageSummary(app),
+                                onClick = { storageDialog = true }
+                            )
                         }
                         item {
                             val benefitNames = buildList {
@@ -1041,6 +1042,7 @@ fun AppDashboardScreen(
 
     var pendingSites by remember { mutableStateOf(1) }
     var pendingCustomMb by remember { mutableStateOf(-1L) }
+    var queueCustomMb by remember { mutableStateOf(-1L) }
     if (addUser) {
         UserDialog(
             heading = "Add user",
@@ -1050,7 +1052,7 @@ fun AppDashboardScreen(
             proAvailable = draft.proPrice > 0L,
             sites = if (draft.deployTracking) 1 else null,
             onSitesChange = { pendingSites = it },
-            customMb = if (draft.googlePlayEnabled) -1L else null,
+            customMb = -1L,
             onCustomChange = { pendingCustomMb = it },
             onSave = { name, email, phone, plan ->
                 draft = draft.withUserAdded(
@@ -1062,7 +1064,7 @@ fun AppDashboardScreen(
                         addedMillis = System.currentTimeMillis(),
                         lastActiveMillis = System.currentTimeMillis(),
                         sites = if (draft.deployTracking) pendingSites else 0,
-                        customStorageMb = if (draft.googlePlayEnabled) pendingCustomMb else -1L
+                        customStorageMb = pendingCustomMb
                     )
                 )
                 fieldsKey += 1
@@ -1085,7 +1087,7 @@ fun AppDashboardScreen(
                 proAvailable = draft.proPrice > 0L,
                 sites = if (draft.deployTracking) maxOf(1, userBeingEdited.sites) else null,
                 onSitesChange = { pendingEditSites = it },
-                customMb = if (draft.googlePlayEnabled) userBeingEdited.customStorageMb else null,
+                customMb = userBeingEdited.customStorageMb,
                 onCustomChange = { pendingEditCustomMb = it },
                 onSave = { name, email, phone, plan ->
                     draft = draft.withUserUpdated(
@@ -1095,7 +1097,7 @@ fun AppDashboardScreen(
                             phone = phone,
                             plan = plan,
                             sites = if (draft.deployTracking) pendingEditSites else userBeingEdited.sites,
-                            customStorageMb = if (draft.googlePlayEnabled) pendingEditCustomMb else -1L
+                            customStorageMb = pendingEditCustomMb
                         )
                     )
                     fieldsKey += 1
@@ -1255,6 +1257,8 @@ fun AppDashboardScreen(
                 saveLabel = if (last) "Save and finish" else "Save and next",
                 premiumAvailable = app.premiumPrice > 0L,
                 proAvailable = app.proPrice > 0L,
+                customMb = -1L,
+                onCustomChange = { queueCustomMb = it },
                 onSave = { name, email, phone, plan ->
                     // Added to the latest saved app, so earlier users are never lost.
                     onSave(
@@ -1264,7 +1268,8 @@ fun AppDashboardScreen(
                                 email = email,
                                 phone = phone,
                                 plan = plan,
-                                addedMillis = System.currentTimeMillis()
+                                addedMillis = System.currentTimeMillis(),
+                                customStorageMb = queueCustomMb
                             )
                         )
                     )
@@ -1641,7 +1646,7 @@ private fun StorageOfferDialog(
         NumberField(label = "Pro users (MB)", value = pro, onChange = { pro = it }, maxDigits = 9)
         Spacer(modifier = Modifier.height(8.dp))
         NumberField(label = "Premium users (MB)", value = premium, onChange = { premium = it }, maxDigits = 9)
-        if (app.isDeployApp) {
+        if (app.isDeployApp && app.googlePlayEnabled) {
             Spacer(modifier = Modifier.height(12.dp))
             ChannelSwitchRow("Neribo Deploy sites (users have sites)", app.deployTracking, onSetDeploy)
             Text(
@@ -1734,7 +1739,7 @@ private fun RenewalIncomeDialog(
 
 /** What lowering the Free, Pro or Premium sizes would do: which plans, how much less, and how many users. */
 private fun offerLoweringWarning(app: AppData, free: Long, pro: Long, premium: Long): String {
-    val plainFree = maxOf(0L, app.freeUsers - app.customStorageUsers.size.toLong())
+    val plainFree = app.plainFreeUsers
     val parts = ArrayList<String>()
     var users = 0L
     var lessMb = 0L

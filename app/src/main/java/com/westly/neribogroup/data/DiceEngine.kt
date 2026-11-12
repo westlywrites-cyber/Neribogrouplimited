@@ -3,6 +3,7 @@ package com.westly.neribogroup.data
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -46,6 +47,14 @@ object DiceEngine {
     private val ACTIVE_SHARE = arrayOf(
         0.03 to 0.08, 0.08 to 0.15, 0.15 to 0.25, 0.25 to 0.35, 0.35 to 0.50
     )
+
+    // Active users, step 1: people who joined recently stay active at these rates (low, high). The Active face
+    // (1 to 5) picks the band inside each range: face 1 the bottom fifth, face 5 the top fifth, face 0 nothing.
+    // Rows: joined yesterday, joined 2 to 3 days ago, joined 4 to 7 days ago.
+    private val RETAINED_SHARE = arrayOf(0.25 to 0.40, 0.15 to 0.25, 0.08 to 0.15)
+    private val RETAINED_FIRST_DAY = intArrayOf(1, 2, 4)
+    private val RETAINED_LAST_DAY = intArrayOf(1, 3, 7)
+
     private val UPGRADE_SHARE = arrayOf(
         0.0005 to 0.0015, 0.0015 to 0.003, 0.003 to 0.006, 0.006 to 0.010, 0.010 to 0.018
     )
@@ -120,12 +129,45 @@ object DiceEngine {
         return min(MAX_NEW_PER_ROLL, max(1, (base * factor).roundToInt()))
     }
 
-    private fun activeFor(face: Int, total: Long, factor: Double, random: Random): Long {
-        if (face <= 0 || total <= 0L) return 0L
-        val range = ACTIVE_SHARE[face - 1]
+    /** The part of a (low, high) range the Active face (1 to 5) allows: face 1 the bottom fifth, face 5 the top fifth. */
+    private fun faceBand(range: Pair<Double, Double>, face: Int): Pair<Double, Double> {
+        val step = (range.second - range.first) / 5.0
+        return (range.first + step * (face - 1)) to (range.first + step * face)
+    }
+
+    /** What the Active dice worked out: the total, and the rates the listed users are picked with. */
+    private class ActiveSplit(val total: Long, val tierRates: DoubleArray)
+
+    /**
+     * Active users today, not counting today's new users (the caller adds them as a floor):
+     * retained from recent joiners (yesterday, 2 to 3 days ago, 4 to 7 days ago) + the dice share of older users.
+     * Each cohort is the number of users who joined that day (saved history). A fixed number of random numbers is
+     * drawn whenever the face is above 0, so the rest of the roll does not depend on the cohorts.
+     */
+    private fun activeFor(face: Int, app: AppData, now: Long, total: Long, factor: Double, random: Random): ActiveSplit {
+        val rates = DoubleArray(4)
+        if (face <= 0 || total <= 0L) return ActiveSplit(0L, rates)
         val boost = 1.0 + (factor - 1.0) / 2.0
-        val share = random.nextDouble(range.first, range.second) * boost
-        return min(total, (total * share).roundToLong())
+        val retainedShares = DoubleArray(RETAINED_SHARE.size) { i ->
+            val band = faceBand(RETAINED_SHARE[i], face)
+            random.nextDouble(band.first, band.second)
+        }
+        val range = ACTIVE_SHARE[face - 1]
+        val olderShare = min(1.0, random.nextDouble(range.first, range.second) * boost)
+
+        var left = app.totalUsers
+        var active = 0.0
+        for (i in RETAINED_SHARE.indices) {
+            var cohort = 0L
+            for (back in RETAINED_FIRST_DAY[i]..RETAINED_LAST_DAY[i]) cohort += app.newUsersOn(now - back * DAY_MILLIS, now)
+            cohort = min(cohort, left)
+            left -= cohort
+            active += cohort * retainedShares[i]
+            rates[i] = retainedShares[i]
+        }
+        active += left * olderShare
+        rates[3] = olderShare
+        return ActiveSplit(min(total, active.roundToLong()), rates)
     }
 
     /** How many people out of [pool] a dice face picks. At least 1 for a face above 0, never more than [pool]. */
@@ -241,7 +283,7 @@ object DiceEngine {
     /** One plain sentence about what the dice controls. */
     fun diceMeaning(kind: DiceKind): String = when (kind) {
         DiceKind.NEW -> "Decides how many new Free users join the app today."
-        DiceKind.ACTIVE -> "Decides how many of the app's users are active today."
+        DiceKind.ACTIVE -> "Decides how many users are active today: all of today's new users, a share of the users who joined in the last 7 days (more for newer joiners), and a share of older users."
         DiceKind.PREMIUM -> "Decides how many Free users upgrade to Premium today."
         DiceKind.PRO -> "Decides how many Free users upgrade to Pro today."
         DiceKind.RENEW -> "Decides how many users whose plan ended renew it today."
@@ -294,7 +336,11 @@ object DiceEngine {
                     "About $lowF to $highF new users join."
                 }
                 DiceKind.ACTIVE ->
-                    "About " + percentRange(ACTIVE_SHARE[index], boost) + " of all users are active (never fewer than today's new users)."
+                    "Today's new users are all active. Of the users who joined yesterday about " +
+                        percentRange(faceBand(RETAINED_SHARE[0], face), 1.0) + " are active, of those who joined 2 to 3 days ago " +
+                        percentRange(faceBand(RETAINED_SHARE[1], face), 1.0) + ", of those who joined 4 to 7 days ago " +
+                        percentRange(faceBand(RETAINED_SHARE[2], face), 1.0) + ", and of older users " +
+                        percentRange(ACTIVE_SHARE[index], boost) + " (never fewer than today's new users, never more than all users)."
                 DiceKind.PREMIUM ->
                     "About " + percentRange(UPGRADE_SHARE[index], factor) + " of Free users upgrade to Premium (at least 1 person)."
                 DiceKind.PRO ->
@@ -461,7 +507,8 @@ object DiceEngine {
         // Active users (blue). Never more than all users, never fewer than today's new users
         // (advert users are active on the day they arrive).
         val totalAfter = app.totalUsers + newCount + advertTotal
-        val fromDice = activeFor(face(DiceKind.ACTIVE), totalAfter, factor, random)
+        val activeSplit = activeFor(face(DiceKind.ACTIVE), app, now, totalAfter, factor, random)
+        val fromDice = activeSplit.total
         // A Neribo Deploy app: the users you added yourself are always Active.
         val alwaysActive = if (app.deployTracking) app.users.count { !it.simulated }.toLong() else 0L
         val activeToday = min(totalAfter, max(max(fromDice, newCount + advertTotal), alwaysActive))
@@ -556,7 +603,8 @@ object DiceEngine {
             pool = existingUsers,
             need = max(0L, activeToday - newCount - advertTotal),
             dayStart = dayStart,
-            now = now
+            now = now,
+            tierRates = activeSplit.tierRates
         )
         val finalUsers = existingUsers.map { u ->
             val stamped = activeStamps[u.id]?.let { stamp -> u.copy(lastActiveMillis = stamp) } ?: u
@@ -679,7 +727,8 @@ object DiceEngine {
         pool: List<AppUser>,
         need: Long,
         dayStart: Long,
-        now: Long
+        now: Long,
+        tierRates: DoubleArray? = null
     ): Map<String, Long> {
         if (need <= 0L || pool.isEmpty()) return emptyMap()
         val alreadyToday = pool.count { dayKey(it.lastSeenMillis()) == today }
@@ -689,14 +738,34 @@ object DiceEngine {
         val candidates = pool
             .filter { dayKey(it.lastSeenMillis()) != today }
             .sortedBy { it.id }
-            .shuffled(rng)
-            .take(min(stillNeeded, pool.size.toLong()).toInt())
+        // Recent joiners are picked more often: each user gets a weight (the retention rate of the group the user
+        // joined in), and a weighted draw without replacement chooses who is active. Without rates all weigh the same.
+        val ordered = if (tierRates == null) {
+            candidates.shuffled(rng)
+        } else {
+            candidates
+                .map { u -> u to ln(max(1e-12, rng.nextDouble())) / max(0.001, tierRates[joinTier(u, dayStart)]) }
+                .sortedByDescending { it.second }
+                .map { it.first }
+        }
+        val chosen = ordered.take(min(stillNeeded, pool.size.toLong()).toInt())
         val result = HashMap<String, Long>()
-        for (u in candidates) {
+        for (u in chosen) {
             val moment = dayStart + rng.nextLong(max(1L, now - dayStart))
             result[u.id] = max(moment, u.addedMillis)
         }
         return result
+    }
+
+    /** 0 = joined yesterday, 1 = 2 to 3 days ago, 2 = 4 to 7 days ago, 3 = older. */
+    private fun joinTier(user: AppUser, dayStart: Long): Int {
+        val back = Math.round((dayStart - dayStartMillis(user.addedMillis)).toDouble() / DAY_MILLIS.toDouble()).toInt()
+        return when {
+            back <= 1 -> 0
+            back <= 3 -> 1
+            back <= 7 -> 2
+            else -> 3
+        }
     }
 
     // -----------------------------------------------------------------------------------------
