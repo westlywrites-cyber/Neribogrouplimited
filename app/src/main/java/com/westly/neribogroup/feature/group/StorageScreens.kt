@@ -6,12 +6,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -21,16 +19,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Ledger
-import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.data.StorageUnit
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.SectionTitle
@@ -41,24 +37,17 @@ import java.util.Date
 import java.util.Locale
 
 // ---------------------------------------------------------------------------------------------
-// Company storage: the total, each app's share, the backup copies, the PIN and the log
+// Company storage: the total, each app's share, the backup copies and the log
 // ---------------------------------------------------------------------------------------------
 
-/** Wrong PINs lock the confirmations for a minute (kept while the app is open). */
-private object StoragePinGuard {
-    private var lockedUntil = 0L
-
-    fun isLocked(): Boolean = System.currentTimeMillis() < lockedUntil
-
-    fun lock() {
-        lockedUntil = System.currentTimeMillis() + 60_000L
-    }
-}
-
-/** A change that needs the PIN: what to tell the owner first, and what to do once the PIN is right. */
+/**
+ * A change that needs the owner's fingerprint or screen lock: what to tell the owner first ([warning]), a short
+ * line for the Android prompt ([summary]), and what to do once verified.
+ */
 private class GuardRequest(
     val title: String,
     val warning: String,
+    val summary: String,
     val confirmLabel: String,
     val onConfirmed: () -> Unit
 )
@@ -78,19 +67,6 @@ private fun UnitPicker(unit: StorageUnit, onChange: (StorageUnit) -> Unit) {
             FilterChip(selected = unit == u, onClick = { onChange(u) }, label = { Text(u.label) })
         }
     }
-}
-
-@Composable
-private fun PinField(label: String, value: String, onChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = { raw -> onChange(raw.filter { it.isDigit() }.take(8)) },
-        label = { Text(label) },
-        singleLine = true,
-        visualTransformation = PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-        modifier = Modifier.fillMaxWidth()
-    )
 }
 
 /** A number and a unit (MB, GB or TB). It saves the size in MB. */
@@ -126,142 +102,29 @@ private fun AmountDialog(
 }
 
 /**
- * Tells the owner what a change would do to users' data, then asks for the PIN. When no PIN exists yet, the
- * owner creates one here (and it confirms this change too).
+ * Tells the owner what a change would do to users' data, then asks the phone to verify the owner (fingerprint,
+ * face or screen lock). The change is made only after the verification succeeded; if the owner cancels, this
+ * warning stays so the owner can try again or cancel.
  */
 @Composable
 private fun GuardDialog(
     request: GuardRequest,
-    hasPin: Boolean,
-    pinMatches: (String) -> Boolean,
-    onCreatePin: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var pin by remember { mutableStateOf("") }
-    var again by remember { mutableStateOf("") }
-    var wrong by remember { mutableStateOf(0) }
-    var error by remember { mutableStateOf("") }
-    val locked = StoragePinGuard.isLocked()
+    val gate = LocalBiometricGate.current
     NeriboDialog(onDismiss = onDismiss, title = request.title, subtitle = request.warning) {
-        if (locked) {
-            Text(
-                text = "Too many wrong PINs. Try again in a minute.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error
-            )
-            DialogActions { TintedButton(text = "Close", onClick = onDismiss) }
-        } else {
-            Text(
-                text = if (hasPin) "Enter your PIN to confirm."
-                else "Create a PIN of 4 to 8 digits. You will use it to confirm changes like this one.",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            PinField(if (hasPin) "PIN" else "New PIN", pin) {
-                pin = it
-                error = ""
-            }
-            if (!hasPin) {
-                Spacer(modifier = Modifier.height(8.dp))
-                PinField("Repeat PIN", again) {
-                    again = it
-                    error = ""
-                }
-            }
-            if (error.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-            DialogActions {
-                OutlinedButton(onClick = onDismiss) { Text("Cancel") }
-                TintedButton(
-                    text = request.confirmLabel,
-                    destructive = true,
-                    enabled = if (hasPin) pin.length >= 4 else (pin.length >= 4 && again.length >= 4),
-                    onClick = {
-                        if (hasPin) {
-                            if (pinMatches(pin)) {
-                                request.onConfirmed()
-                                onDismiss()
-                            } else {
-                                wrong += 1
-                                pin = ""
-                                if (wrong >= 3) {
-                                    StoragePinGuard.lock()
-                                    onDismiss()
-                                } else {
-                                    error = "Wrong PIN. " + (3 - wrong) + " tries left."
-                                }
-                            }
-                        } else if (!StorageRules.isValidPin(pin)) {
-                            error = "Use 4 to 8 digits."
-                        } else if (pin != again) {
-                            error = "The two PINs are not the same."
-                        } else {
-                            onCreatePin(pin)
-                            request.onConfirmed()
-                            onDismiss()
-                        }
-                    }
-                )
-            }
-        }
-    }
-}
-
-/** Creates or changes the PIN without any storage change attached. */
-@Composable
-private fun SetPinDialog(
-    hasPin: Boolean,
-    pinMatches: (String) -> Boolean,
-    onSave: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var current by remember { mutableStateOf("") }
-    var pin by remember { mutableStateOf("") }
-    var again by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf("") }
-    NeriboDialog(
-        onDismiss = onDismiss,
-        title = if (hasPin) "Change PIN" else "Create PIN",
-        subtitle = "4 to 8 digits. It confirms any change that lowers storage below what is used."
-    ) {
-        if (hasPin) {
-            PinField("Current PIN", current) {
-                current = it
-                error = ""
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-        PinField("New PIN", pin) {
-            pin = it
-            error = ""
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        PinField("Repeat new PIN", again) {
-            again = it
-            error = ""
-        }
-        if (error.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        }
+        Text(
+            text = "You will confirm with your fingerprint or your phone's screen lock.",
+            style = MaterialTheme.typography.bodyMedium
+        )
         DialogActions {
             OutlinedButton(onClick = onDismiss) { Text("Cancel") }
             TintedButton(
-                text = "Save",
-                enabled = pin.length >= 4 && again.length >= 4 && (!hasPin || current.length >= 4),
+                text = request.confirmLabel,
+                destructive = true,
                 onClick = {
-                    if (StoragePinGuard.isLocked()) {
-                        error = "Too many wrong PINs. Try again in a minute."
-                    } else if (hasPin && !pinMatches(current)) {
-                        error = "The current PIN is wrong."
-                    } else if (!StorageRules.isValidPin(pin)) {
-                        error = "Use 4 to 8 digits."
-                    } else if (pin != again) {
-                        error = "The two PINs are not the same."
-                    } else {
-                        onSave(pin)
+                    gate.verify(request.title, request.summary) {
+                        request.onConfirmed()
                         onDismiss()
                     }
                 }
@@ -292,24 +155,20 @@ fun CompanyStorageScreen(
     onBack: () -> Unit,
     onSetTotal: (totalMb: Long, confirmed: Boolean) -> Unit,
     onSetShare: (appId: String, shareMb: Long, confirmed: Boolean) -> Unit,
-    onSetPin: (pin: String, changed: Boolean) -> Unit,
-    pinMatches: (String) -> Boolean,
     onBackUpOffsite: () -> Unit,
     onClearMessage: () -> Unit
 ) {
     val assets = ledger.assets
-    val liveApps = ledger.apps.filter { it.googlePlayEnabled || it.id != SOFTWARE_APP_ID }
+    val liveApps = ledger.apps.filter { it.googlePlayEnabled }
     val liveKb = StorageRules.usedKb(ledger.apps)
     val offsiteKb = if (assets.offsiteMillis > 0L) assets.offsiteKb else 0L
     val copiesKb = liveKb + liveKb + offsiteKb
     val totalMb = assets.storageTotalMb
     val totalKb = totalMb * 1024L
     val sharesMb = StorageRules.sharesMb(ledger.apps)
-    val hasPin = StorageRules.hasPin(assets)
 
     var editTotal by remember { mutableStateOf(false) }
     var shareAppId by remember { mutableStateOf<String?>(null) }
-    var pinDialog by remember { mutableStateOf(false) }
     var guard by remember { mutableStateOf<GuardRequest?>(null) }
     var notice by remember { mutableStateOf("") }
 
@@ -328,6 +187,7 @@ fun CompanyStorageScreen(
                         StorageRules.textMb(newMb) + ", but the live, standby and off-site copies already use " +
                         StorageRules.text(copiesKb) + ". " + StorageRules.text(copiesKb - newMb * 1024L) +
                         " would no longer fit, and users' data could be lost.",
+                    summary = "Company storage: " + StorageRules.textMb(totalMb) + " to " + StorageRules.textMb(newMb),
                     confirmLabel = "Lower storage",
                     onConfirmed = { onSetTotal(newMb, true) }
                 )
@@ -361,6 +221,7 @@ fun CompanyStorageScreen(
                         StorageRules.text(app.storageAllocatedKb - newMb * 1024L) +
                         " would no longer fit. This affects " + formatCount(app.totalUsers) +
                         " users: uploads can be blocked and the data above the limit can be lost.",
+                    summary = app.name + " storage: " + StorageRules.textMb(oldMb) + " to " + StorageRules.textMb(newMb),
                     confirmLabel = "Lower storage",
                     onConfirmed = { onSetShare(app.id, newMb, true) }
                 )
@@ -545,20 +406,6 @@ fun CompanyStorageScreen(
             }
         }
 
-        // ---- The PIN ----
-        item { SectionTitle("Security") }
-        item {
-            FlatCard {
-                Text(
-                    if (hasPin) "A PIN is set. It confirms any change that lowers storage below what is used."
-                    else "No PIN yet. You will create one the first time you lower storage below what is used.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(onClick = { pinDialog = true }) { Text(if (hasPin) "Change PIN" else "Create PIN") }
-            }
-        }
-
         // ---- The log ----
         item { SectionTitle("Storage log") }
         if (assets.storageLog.isEmpty()) {
@@ -612,18 +459,7 @@ fun CompanyStorageScreen(
     if (pending != null) {
         GuardDialog(
             request = pending,
-            hasPin = hasPin,
-            pinMatches = pinMatches,
-            onCreatePin = { pin -> onSetPin(pin, false) },
             onDismiss = { guard = null }
-        )
-    }
-    if (pinDialog) {
-        SetPinDialog(
-            hasPin = hasPin,
-            pinMatches = pinMatches,
-            onSave = { pin -> onSetPin(pin, hasPin) },
-            onDismiss = { pinDialog = false }
         )
     }
 }

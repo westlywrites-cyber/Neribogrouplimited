@@ -57,6 +57,7 @@ import com.westly.neribogroup.data.allowanceKey
 import com.westly.neribogroup.data.Staff
 import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.MoneyRow
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.TopSaveActions
@@ -87,6 +88,7 @@ fun StaffDetailScreen(
     onAddPhotos: (List<Uri>) -> Unit = {},
     onDeletePhoto: (String) -> Unit = {}
 ) {
+    val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(staff) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -140,8 +142,23 @@ fun StaffDetailScreen(
                         TopSaveActions(
                             onCancel = { editing = false },
                             onSave = {
-                                onSave(draft.copy(name = draft.name.trim().ifBlank { staff.name }))
-                                editing = false
+                                val toSave = draft.copy(name = draft.name.trim().ifBlank { staff.name })
+                                if (toSave.monthlySalary != staff.monthlySalary) {
+                                    // A salary change is verified before it is saved.
+                                    gate.verify(
+                                        title = "Change " + staff.name + "'s salary?",
+                                        subtitle = formatNaira(staff.monthlySalary) + " to " + formatNaira(toSave.monthlySalary) +
+                                            " a month.",
+                                        logText = "Salary changed for " + staff.name + ": " + formatNaira(staff.monthlySalary) +
+                                            " to " + formatNaira(toSave.monthlySalary) + " a month"
+                                    ) {
+                                        onSave(toSave)
+                                        editing = false
+                                    }
+                                } else {
+                                    onSave(toSave)
+                                    editing = false
+                                }
                             }
                         )
                     } else {
@@ -472,7 +489,12 @@ fun StaffDetailScreen(
             confirmLabel = "Mark as paid",
             onConfirm = {
                 confirmPay = false
-                onPay()
+                gate.verify(
+                    title = "Pay " + staff.name + "?",
+                    subtitle = formatNaira(staff.outstandingTotal(now)) + " for " + formatMonth(now) + ".",
+                    logText = "Salary paid to " + staff.name + " for " + formatMonth(now) + ": " +
+                        formatNaira(staff.outstandingTotal(now))
+                ) { onPay() }
             },
             onDismiss = { confirmPay = false }
         )
@@ -486,7 +508,12 @@ fun StaffDetailScreen(
             confirmLabel = "Mark as paid",
             onConfirm = {
                 itemToPay = null
-                onSave(staff.paidItem(item.key, System.currentTimeMillis()))
+                gate.verify(
+                    title = "Pay " + staff.name + "?",
+                    subtitle = item.name + " " + formatNaira(item.amount) + " for " + formatMonth(now) + ".",
+                    logText = item.name + " paid to " + staff.name + " for " + formatMonth(now) + ": " +
+                        formatNaira(item.amount)
+                ) { onSave(staff.paidItem(item.key, System.currentTimeMillis())) }
             },
             onDismiss = { itemToPay = null }
         )
@@ -499,7 +526,11 @@ fun StaffDetailScreen(
             confirmLabel = "Delete",
             onConfirm = {
                 confirmDelete = false
-                onDelete()
+                gate.verify(
+                    title = "Delete " + staff.name + "?",
+                    subtitle = "Their payment history is removed too. This cannot be undone.",
+                    logText = "Staff member deleted: " + staff.name
+                ) { onDelete() }
             },
             onDismiss = { confirmDelete = false }
         )

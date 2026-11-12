@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.StatColumn
 import com.westly.neribogroup.feature.common.TintedButton
 import com.westly.neribogroup.ui.formatNaira
@@ -30,6 +31,7 @@ import com.westly.neribogroup.ui.formatNaira
 @Composable
 fun PlayAppCard(app: AppData, onWithdraw: () -> Unit, showName: Boolean = true) {
     val context = LocalContext.current
+    val gate = LocalBiometricGate.current
     var confirm by remember { mutableStateOf(false) }
     val total = app.playBalance
 
@@ -77,8 +79,14 @@ fun PlayAppCard(app: AppData, onWithdraw: () -> Unit, showName: Boolean = true) 
             confirmLabel = "Withdraw",
             onConfirm = {
                 confirm = false
-                onWithdraw()
-                Toast.makeText(context, "Withdrawn successfully", Toast.LENGTH_LONG).show()
+                gate.verify(
+                    title = "Withdraw Google Play balance?",
+                    subtitle = formatNaira(total) + " moves into " + app.name + "'s profit.",
+                    logText = "Google Play balance withdrawn for " + app.name + ": " + formatNaira(total)
+                ) {
+                    onWithdraw()
+                    Toast.makeText(context, "Withdrawn successfully", Toast.LENGTH_LONG).show()
+                }
             },
             onDismiss = { confirm = false }
         )

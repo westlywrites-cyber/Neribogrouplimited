@@ -62,6 +62,12 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
 
+    // Biometric verification. BiometricPrompt needs a FragmentActivity; its fallback dialog on Android 8 needs an
+    // AppCompat theme. Versions are set here so they match the activity and lifecycle versions above.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment:1.8.3")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")

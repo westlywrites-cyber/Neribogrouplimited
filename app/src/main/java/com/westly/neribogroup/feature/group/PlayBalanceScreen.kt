@@ -39,6 +39,7 @@ import com.westly.neribogroup.data.PlayTxKind
 import com.westly.neribogroup.feature.appdetail.PlayAppCard
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.StatColumn
 import com.westly.neribogroup.feature.common.TintedButton
@@ -58,6 +59,7 @@ fun PlayBalanceScreen(
     onWithdrawAll: () -> Unit
 ) {
     val context = LocalContext.current
+    val gate = LocalBiometricGate.current
     var confirmAll by remember { mutableStateOf(false) }
 
     val subsTotal = ledger.apps.sumOf { it.playSubsBalance }
@@ -231,8 +233,14 @@ fun PlayBalanceScreen(
             confirmLabel = "Withdraw all",
             onConfirm = {
                 confirmAll = false
-                onWithdrawAll()
-                Toast.makeText(context, "Withdrawn successfully", Toast.LENGTH_LONG).show()
+                gate.verify(
+                    title = "Withdraw all Google Play balances?",
+                    subtitle = formatNaira(total) + " moves into the apps' profit.",
+                    logText = "Google Play balances withdrawn for all apps: " + formatNaira(total)
+                ) {
+                    onWithdrawAll()
+                    Toast.makeText(context, "Withdrawn successfully", Toast.LENGTH_LONG).show()
+                }
             },
             onDismiss = { confirmAll = false }
         )

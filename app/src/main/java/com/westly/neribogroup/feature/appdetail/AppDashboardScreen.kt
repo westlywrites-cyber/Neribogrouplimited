@@ -76,6 +76,7 @@ import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.EntryRow
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.TopSaveActions
@@ -119,7 +120,8 @@ fun AppDashboardScreen(
     onEnableLive: (Boolean, Boolean, Boolean) -> Unit,
     onSetChannels: (Boolean, Boolean, Boolean) -> Unit,
     onSetDeploy: (Boolean) -> Unit,
-    onSetStorage: (Long, Long, Long, Long) -> Unit,
+    /** (free MB, pro MB, premium MB, site MB, verified). [verified] is true when a lowering was verified by the owner. */
+    onSetStorage: (Long, Long, Long, Long, Boolean) -> Unit,
     onAddCompanyExpense: (String, Long) -> Unit,
     /** Income you record yourself: straight into this app's income and profit, with no cut. */
     onAddIncome: (String, Long) -> Unit,
@@ -136,6 +138,7 @@ fun AppDashboardScreen(
     /** Part C: names of the Socials accounts the owner added; the advert form gets a followers field for each. */
     extraAdvertPlatforms: List<String> = emptyList()
 ) {
+    val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(app) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -156,6 +159,8 @@ fun AppDashboardScreen(
     var showLiveIncome by remember { mutableStateOf(false) }
     var showRenewalIncome by remember { mutableStateOf(false) }
     var storageDialog by remember { mutableStateOf(false) }
+    // Lowered Free, Pro and Premium sizes (in MB) waiting for the warning and the owner's verification.
+    var lowerOffer by remember { mutableStateOf<Triple<Long, Long, Long>?>(null) }
     // The "Add user i of N" sequence after Save in a Manual app. 0 = not running.
     var queueTotal by remember { mutableStateOf(0) }
     var queueIndex by remember { mutableStateOf(0) }
@@ -257,11 +262,26 @@ fun AppDashboardScreen(
                             onSave = {
                                 val increase = if (app.googlePlayEnabled) 0L
                                 else draft.manualDailyNewUsers - app.newUsersToday(now)
-                                onSave(draft.copy(name = draft.name.trim().ifBlank { app.name }))
-                                editing = false
-                                if (increase > 0L) {
-                                    queueTotal = minOf(increase, 100L).toInt()
-                                    queueIndex = 1
+                                val toSave = draft.copy(name = draft.name.trim().ifBlank { app.name })
+                                val saveNow = {
+                                    onSave(toSave)
+                                    editing = false
+                                    if (increase > 0L) {
+                                        queueTotal = minOf(increase, 100L).toInt()
+                                        queueIndex = 1
+                                    }
+                                }
+                                // Income you typed and a lowered Customize storage are verified before they are saved.
+                                val sensitive = sensitiveSaveLines(app, toSave)
+                                if (sensitive.isEmpty()) {
+                                    saveNow()
+                                } else {
+                                    gate.verify(
+                                        title = "Save changes to " + app.name + "?",
+                                        subtitle = if (sensitive.size == 1) sensitive[0]
+                                        else sensitive.size.toString() + " changes: income added or storage lowered",
+                                        logText = sensitive.joinToString("; ")
+                                    ) { saveNow() }
                                 }
                             }
                         )
@@ -1164,7 +1184,12 @@ fun AppDashboardScreen(
             onDismiss = { showLiveIncome = false },
             onAdd = { title, amount ->
                 showLiveIncome = false
-                onAddIncome(title, amount)
+                gate.verify(
+                    title = "Add income to " + app.name,
+                    subtitle = title.trim().ifEmpty { "Income" } + " " + formatNaira(amount),
+                    logText = "Income added to " + app.name + ": " + title.trim().ifEmpty { "Income" } + " " +
+                        formatNaira(amount)
+                ) { onAddIncome(title, amount) }
             }
         )
     }
@@ -1175,7 +1200,12 @@ fun AppDashboardScreen(
             onDismiss = { showRenewalIncome = false },
             onSave = { userId, amount ->
                 showRenewalIncome = false
-                onRenewalIncome(userId, amount)
+                val who = app.users.firstOrNull { it.id == userId }?.name ?: "a user"
+                gate.verify(
+                    title = "Add renewal income to " + app.name,
+                    subtitle = who + " " + formatNaira(amount),
+                    logText = "Renewal income added to " + app.name + ": " + who + " " + formatNaira(amount)
+                ) { onRenewalIncome(userId, amount) }
             }
         )
     }
@@ -1187,8 +1217,31 @@ fun AppDashboardScreen(
             onSetDeploy = onSetDeploy,
             onSave = { free, pro, premium ->
                 storageDialog = false
-                onSetStorage(free, pro, premium, 0L)
+                if (free < app.storageFreeMb || pro < app.storageProMb || premium < app.storagePremiumMb) {
+                    lowerOffer = Triple(free, pro, premium)
+                } else {
+                    onSetStorage(free, pro, premium, 0L, false)
+                }
             }
+        )
+    }
+
+    // Lowering what a plan gives: the owner reads what it does, then the phone verifies the owner.
+    lowerOffer?.let { (free, pro, premium) ->
+        ConfirmDialog(
+            heading = "Lower " + app.name + "'s storage?",
+            message = offerLoweringWarning(app, free, pro, premium),
+            confirmLabel = "Lower storage",
+            destructive = true,
+            onConfirm = {
+                lowerOffer = null
+                gate.verify(
+                    title = "Lower " + app.name + "'s storage?",
+                    subtitle = "Free " + StorageRules.textMb(free) + ", Pro " + StorageRules.textMb(pro) +
+                        ", Premium " + StorageRules.textMb(premium)
+                ) { onSetStorage(free, pro, premium, 0L, true) }
+            },
+            onDismiss = { lowerOffer = null }
         )
     }
 
@@ -1237,7 +1290,11 @@ fun AppDashboardScreen(
             confirmLabel = "Delete",
             onConfirm = {
                 confirmDelete = false
-                onDelete()
+                gate.verify(
+                    title = "Delete " + app.name + "?",
+                    subtitle = "This cannot be undone.",
+                    logText = "App deleted: " + app.name
+                ) { onDelete() }
             },
             onDismiss = { confirmDelete = false }
         )
@@ -1463,6 +1520,7 @@ private fun ChannelSwitchCard(
     onEnableLive: (Boolean, Boolean, Boolean) -> Unit,
     onSetChannels: (Boolean, Boolean, Boolean) -> Unit
 ) {
+    val gate = LocalBiometricGate.current
     var confirmLive by remember { mutableStateOf(false) }
     val on = app.googlePlayEnabled && channelOn(app, channel)
     val onlyOne = on && ChannelRules.enabled(app).size == 1
@@ -1499,7 +1557,13 @@ private fun ChannelSwitchCard(
             confirmLabel = "Turn on",
             onConfirm = {
                 confirmLive = false
-                onEnableLive(channel == Channel.PLAY, channel == Channel.APPLE, channel == Channel.WEBSITE)
+                gate.verify(
+                    title = "Turn on live mode for " + app.name + "?",
+                    subtitle = "Starting with " + channel.label + ". This cannot be undone.",
+                    logText = "Live mode turned on for " + app.name + " (" + channel.label + ")"
+                ) {
+                    onEnableLive(channel == Channel.PLAY, channel == Channel.APPLE, channel == Channel.WEBSITE)
+                }
             },
             onDismiss = { confirmLive = false }
         )
@@ -1509,6 +1573,7 @@ private fun ChannelSwitchCard(
 /** The Apple Store Balance or the Paystack Balance of one app, with a Withdraw button. */
 @Composable
 private fun ChannelBalanceCard(app: AppData, channel: Channel, onWithdraw: () -> Unit) {
+    val gate = LocalBiometricGate.current
     val balance = channelBalance(app, channel)
     var confirm by remember { mutableStateOf(false) }
     FlatCard {
@@ -1535,7 +1600,12 @@ private fun ChannelBalanceCard(app: AppData, channel: Channel, onWithdraw: () ->
             confirmLabel = "Withdraw",
             onConfirm = {
                 confirm = false
-                onWithdraw()
+                val name = if (channel == Channel.APPLE) "Apple Store" else "Paystack"
+                gate.verify(
+                    title = "Withdraw " + name + " balance?",
+                    subtitle = formatNaira(balance) + " moves into " + app.name + "'s profit.",
+                    logText = name + " balance withdrawn for " + app.name + ": " + formatNaira(balance)
+                ) { onWithdraw() }
             },
             onDismiss = { confirm = false }
         )
@@ -1660,4 +1730,63 @@ private fun RenewalIncomeDialog(
             }
         }
     }
+}
+
+/** What lowering the Free, Pro or Premium sizes would do: which plans, how much less, and how many users. */
+private fun offerLoweringWarning(app: AppData, free: Long, pro: Long, premium: Long): String {
+    val plainFree = maxOf(0L, app.freeUsers - app.customStorageUsers.size.toLong())
+    val parts = ArrayList<String>()
+    var users = 0L
+    var lessMb = 0L
+    if (free < app.storageFreeMb) {
+        parts.add("Free from " + StorageRules.textMb(app.storageFreeMb) + " to " + StorageRules.textMb(free))
+        users += plainFree
+        lessMb += plainFree * (app.storageFreeMb - free)
+    }
+    if (pro < app.storageProMb) {
+        parts.add("Pro from " + StorageRules.textMb(app.storageProMb) + " to " + StorageRules.textMb(pro))
+        users += app.proUsers
+        lessMb += app.proUsers * (app.storageProMb - pro)
+    }
+    if (premium < app.storagePremiumMb) {
+        parts.add("Premium from " + StorageRules.textMb(app.storagePremiumMb) + " to " + StorageRules.textMb(premium))
+        users += app.premiumUsers
+        lessMb += app.premiumUsers * (app.storagePremiumMb - premium)
+    }
+    val head = app.name + " would give each user less: " + parts.joinToString(", ") + ". "
+    return if (users <= 0L) {
+        head + "No user is on those plans right now."
+    } else {
+        head + StorageRules.textMb(lessMb) + " in total would no longer fit. This affects " + formatCount(users) +
+            " users: uploads can be blocked and the data above the limit can be lost."
+    }
+}
+
+/**
+ * The storage-log lines for the changes that must be verified when an edited app is saved: income you typed
+ * yourself, and a Customize user whose storage goes down. Empty when the save has neither.
+ */
+private fun sensitiveSaveLines(old: AppData, updated: AppData): List<String> {
+    val lines = ArrayList<String>()
+    for (e in updated.entries) {
+        if (e.isIncome && !e.auto && old.entries.none { it.id == e.id }) {
+            lines.add("Income added to " + updated.name + ": " + e.title + " " + formatNaira(e.amount))
+        }
+    }
+    for (u in updated.users) {
+        val before = old.users.firstOrNull { it.id == u.id } ?: continue
+        if (before.customStorageMb < 0L) continue
+        val nowMb = if (u.customStorageMb >= 0L) u.customStorageMb else when (u.plan) {
+            Plan.FREE -> updated.storageFreeMb
+            Plan.PRO -> updated.storageProMb
+            Plan.PREMIUM -> updated.storagePremiumMb
+        }
+        if (nowMb < before.customStorageMb) {
+            lines.add(
+                updated.name + ": storage for " + u.name + " lowered from " + StorageRules.textMb(before.customStorageMb) +
+                    " to " + StorageRules.textMb(nowMb)
+            )
+        }
+    }
+    return lines
 }

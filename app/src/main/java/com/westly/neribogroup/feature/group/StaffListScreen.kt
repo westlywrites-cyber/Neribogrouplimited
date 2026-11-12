@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.Staff
 import com.westly.neribogroup.feature.common.ConfirmDialog
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NameDialog
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.SectionScaffold
@@ -49,6 +50,7 @@ fun StaffListScreen(
     onPayAllStaff: () -> Unit,
     onSave: (Ledger) -> Unit
 ) {
+    val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(ledger) }
     var query by remember { mutableStateOf("") }
@@ -70,8 +72,22 @@ fun StaffListScreen(
         },
         onCancelEdit = { editing = false },
         onSave = {
-            onSave(draft)
-            editing = false
+            // A staff member marked for deletion is only removed when you tap Save, so the owner is verified here.
+            val removed = ledger.staff.filter { old -> draft.staff.none { it.id == old.id } }
+            if (removed.isEmpty()) {
+                onSave(draft)
+                editing = false
+            } else {
+                val names = removed.joinToString(", ") { it.name }
+                gate.verify(
+                    title = if (removed.size == 1) "Delete " + names + "?" else "Delete " + removed.size + " staff?",
+                    subtitle = "Their payment history is removed too. This cannot be undone.",
+                    logText = (if (removed.size == 1) "Staff member deleted: " else "Staff members deleted: ") + names
+                ) {
+                    onSave(draft)
+                    editing = false
+                }
+            }
         }
     ) {
         item {
@@ -172,7 +188,12 @@ fun StaffListScreen(
             confirmLabel = "Pay all",
             onConfirm = {
                 confirmPayAll = false
-                onPayAllStaff()
+                gate.verify(
+                    title = "Pay all staff for " + formatMonth(now) + "?",
+                    subtitle = formatNaira(unpaid.sumOf { it.outstandingTotal(now) }) + " for " + unpaid.size + " staff.",
+                    logText = "Salaries paid to " + unpaid.size + " staff for " + formatMonth(now) + ": " +
+                        formatNaira(unpaid.sumOf { it.outstandingTotal(now) })
+                ) { onPayAllStaff() }
             },
             onDismiss = { confirmPayAll = false }
         )

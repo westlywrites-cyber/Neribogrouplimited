@@ -31,6 +31,7 @@ import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.isSoftware
 import com.westly.neribogroup.feature.common.ConfirmDialog
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NameDialog
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.SectionScaffold
@@ -51,6 +52,7 @@ fun AppsScreen(
     onOpenApp: (String) -> Unit,
     onSave: (Ledger) -> Unit
 ) {
+    val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(ledger) }
     var query by remember { mutableStateOf("") }
@@ -72,8 +74,22 @@ fun AppsScreen(
         },
         onCancelEdit = { editing = false },
         onSave = {
-            onSave(draft)
-            editing = false
+            // An app marked for deletion is only removed when you tap Save, so the owner is verified here.
+            val removed = ledger.apps.filter { old -> draft.apps.none { it.id == old.id } }
+            if (removed.isEmpty()) {
+                onSave(draft)
+                editing = false
+            } else {
+                val names = removed.joinToString(", ") { it.name }
+                gate.verify(
+                    title = if (removed.size == 1) "Delete " + names + "?" else "Delete " + removed.size + " apps?",
+                    subtitle = "This cannot be undone.",
+                    logText = (if (removed.size == 1) "App deleted: " else "Apps deleted: ") + names
+                ) {
+                    onSave(draft)
+                    editing = false
+                }
+            }
         }
     ) {
         item {

@@ -1727,7 +1727,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Company storage: the total, each app's share, the PIN, the log and the off-site copy
+    // Company storage: the total, each app's share, the log and the off-site copy
     // ---------------------------------------------------------------------------------------------
 
     /** A short message about the last storage action (for example the off-site backup). Empty when none. */
@@ -1744,24 +1744,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .take(ChannelRules.MAX_STORAGE_LOG)
     )
 
-    /** Sets the company's total storage, in MB. [confirmed] is true when the owner's PIN was entered for it. */
+    /**
+     * Writes one line to the storage log for an action the owner verified with the phone's fingerprint or screen
+     * lock (the line ends with "(verified)"). Called by the verification gate after the action ran.
+     */
+    fun logVerified(text: String) {
+        val line = text.trim()
+        if (line.isEmpty()) return
+        saveAssets(ledger.assets.withStorageLog(line + " (verified)"))
+    }
+
+    /** Sets the company's total storage, in MB. [confirmed] is true when the owner verified the change. */
     fun setCompanyStorageTotal(totalMb: Long, confirmed: Boolean) {
         val total = maxOf(0L, totalMb)
         val old = ledger.assets.storageTotalMb
         if (total == old) return
         val text = "Company storage changed from " + StorageRules.textMb(old) + " to " + StorageRules.textMb(total) +
-            (if (confirmed) " (PIN confirmed)" else "")
+            (if (confirmed) " (verified)" else "")
         saveAssets(ledger.assets.copy(storageTotalMb = total).withStorageLog(text))
     }
 
-    /** Sets one app's share of the company storage, in MB. [confirmed] is true when the owner's PIN was entered. */
+    /** Sets one app's share of the company storage, in MB. [confirmed] is true when the owner verified the change. */
     fun setAppStorageShare(id: String, shareMb: Long, confirmed: Boolean) {
         if (id == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
         val share = maxOf(0L, shareMb)
         if (share == app.storageShareMb) return
         val text = app.name + " storage share changed from " + StorageRules.textMb(app.storageShareMb) +
-            " to " + StorageRules.textMb(share) + (if (confirmed) " (PIN confirmed)" else "")
+            " to " + StorageRules.textMb(share) + (if (confirmed) " (verified)" else "")
         saveLedger(
             ledger.copy(
                 apps = ledger.apps.map { if (it.id == id) it.copy(storageShareMb = share) else it },
@@ -1769,16 +1779,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
     }
-
-    /** Saves the PIN that guards storage reductions (4 to 8 digits). Only a salted hash is kept, never the PIN. */
-    fun setStoragePin(pin: String, changed: Boolean) {
-        if (!StorageRules.isValidPin(pin)) return
-        val salt = StorageRules.newSalt()
-        val updated = ledger.assets.copy(pinSalt = salt, pinHash = StorageRules.hashPin(salt, pin))
-        saveAssets(updated.withStorageLog(if (changed) "Storage PIN changed" else "Storage PIN created"))
-    }
-
-    fun storagePinMatches(pin: String): Boolean = StorageRules.pinMatches(ledger.assets, pin)
 
     /**
      * "Back up off-site now": the off-site copy is made equal to the live data right now. When the cloud is on, a
@@ -2054,10 +2054,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * What each plan offers per user, in MB. Sites share the account's storage, so [siteMb] is not used any more
-     * (it stays in the signature so the callers do not change). The change is written to the storage log.
+     * (it stays in the signature so the callers do not change). The change is written to the storage log;
+     * [verified] is true when the owner verified a lowering with the phone's fingerprint or screen lock.
      */
     @Suppress("UNUSED_PARAMETER")
-    fun setStorageOffer(id: String, freeMb: Long, proMb: Long, premiumMb: Long, siteMb: Long) {
+    fun setStorageOffer(id: String, freeMb: Long, proMb: Long, premiumMb: Long, siteMb: Long, verified: Boolean = false) {
         if (id == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
         if (!app.googlePlayEnabled) return
@@ -2070,7 +2071,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ) return
         val text = app.name + " storage offered: Free " + StorageRules.textMb(updated.storageFreeMb) +
             ", Pro " + StorageRules.textMb(updated.storageProMb) +
-            ", Premium " + StorageRules.textMb(updated.storagePremiumMb)
+            ", Premium " + StorageRules.textMb(updated.storagePremiumMb) +
+            (if (verified) " (verified)" else "")
         saveLedger(
             ledger.copy(
                 apps = ledger.apps.map { if (it.id == id) updated else it },

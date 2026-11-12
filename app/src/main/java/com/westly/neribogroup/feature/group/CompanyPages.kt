@@ -57,6 +57,7 @@ import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.FlatCard
 import com.westly.neribogroup.feature.common.LabeledField
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.SectionTitle
@@ -118,6 +119,7 @@ fun ChannelBalanceScreen(
     fun balanceOf(app: AppData): Long = if (channel == Channel.APPLE) app.appleBalance else app.paystackBalance
     val apps = ledger.apps.filter { it.googlePlayEnabled && (if (channel == Channel.APPLE) it.appleOn else it.websiteOn) }
     val total = ledger.apps.filter { it.googlePlayEnabled }.sumOf { balanceOf(it) }
+    val gate = LocalBiometricGate.current
     var confirmAll by remember { mutableStateOf(false) }
     val feeText = if (channel == Channel.APPLE) {
         "Apple keeps 15% of every subscription and renewal."
@@ -174,7 +176,16 @@ fun ChannelBalanceScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(onClick = { onWithdrawApp(app.id) }, enabled = balanceOf(app) > 0L) { Text("Withdraw") }
+                OutlinedButton(
+                    onClick = {
+                        gate.verify(
+                            title = "Withdraw " + channel.label + " balance?",
+                            subtitle = formatNaira(balanceOf(app)) + " moves into " + app.name + "'s profit.",
+                            logText = channel.balanceName + " withdrawn for " + app.name + ": " + formatNaira(balanceOf(app))
+                        ) { onWithdrawApp(app.id) }
+                    },
+                    enabled = balanceOf(app) > 0L
+                ) { Text("Withdraw") }
             }
         }
     }
@@ -185,7 +196,11 @@ fun ChannelBalanceScreen(
             confirmLabel = "Withdraw",
             onConfirm = {
                 confirmAll = false
-                onWithdrawAll()
+                gate.verify(
+                    title = "Withdraw all " + channel.label + " balances?",
+                    subtitle = formatNaira(total) + " moves into the apps' profit.",
+                    logText = channel.balanceName + " withdrawn for all apps: " + formatNaira(total)
+                ) { onWithdrawAll() }
             },
             onDismiss = { confirmAll = false }
         )
@@ -223,6 +238,7 @@ fun DocumentsScreen(
     onDeletePhoto: (String) -> Unit
 ) {
     val assets = ledger.assets
+    val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf<CompanyDoc?>(null) }
     var adding by remember { mutableStateOf(false) }
     PageFrame("Company documents", onBack) {
@@ -276,10 +292,16 @@ fun DocumentsScreen(
             },
             onDelete = existing?.let { doc ->
                 {
-                    onDeletePhoto(doc.id)
-                    onSave(assets.copy(documents = assets.documents.filter { it.id != doc.id }))
-                    adding = false
-                    editing = null
+                    gate.verify(
+                        title = "Delete " + doc.title + "?",
+                        subtitle = "This document and its photo cannot be brought back.",
+                        logText = "Document deleted: " + doc.title
+                    ) {
+                        onDeletePhoto(doc.id)
+                        onSave(assets.copy(documents = assets.documents.filter { it.id != doc.id }))
+                        adding = false
+                        editing = null
+                    }
                 }
             }
         )

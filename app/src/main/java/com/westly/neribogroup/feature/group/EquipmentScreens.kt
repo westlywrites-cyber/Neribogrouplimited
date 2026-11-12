@@ -38,6 +38,7 @@ import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.FlatCard
 import com.westly.neribogroup.feature.common.LabeledField
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.TintedButton
@@ -105,6 +106,7 @@ fun EquipmentScreen(
     onDeletePhotos: (id: String) -> Unit
 ) {
     val context = LocalContext.current
+    val gate = LocalBiometricGate.current
     val assets = ledger.assets
     var query by remember { mutableStateOf("") }
     var openId by remember { mutableStateOf<String?>(null) }
@@ -323,9 +325,15 @@ fun EquipmentScreen(
             confirmLabel = "Delete",
             onConfirm = {
                 confirmDelete = false
-                onDeletePhotos(openTool.id)
-                onSave(assets.copy(tools = assets.tools.filter { it.id != openTool.id }))
-                openId = null
+                gate.verify(
+                    title = "Delete " + openTool.name + "?",
+                    subtitle = "This item and its photos cannot be brought back.",
+                    logText = "Equipment item deleted: " + openTool.name
+                ) {
+                    onDeletePhotos(openTool.id)
+                    onSave(assets.copy(tools = assets.tools.filter { it.id != openTool.id }))
+                    openId = null
+                }
             },
             onDismiss = { confirmDelete = false }
         )

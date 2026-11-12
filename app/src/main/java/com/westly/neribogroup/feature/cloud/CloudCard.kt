@@ -37,6 +37,7 @@ import com.westly.neribogroup.cloud.HistoryRow
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.TintedButton
@@ -159,6 +160,7 @@ fun CloudCard(
     onHistoryClose: () -> Unit = {},
     onRestoreVersion: (Int) -> Unit = {}
 ) {
+    val gate = LocalBiometricGate.current
     var confirmSignOut by remember { mutableStateOf(false) }
     var restoreAsk by remember { mutableStateOf<HistoryRow?>(null) }
     var showDetails by remember { mutableStateOf(false) }
@@ -314,7 +316,11 @@ fun CloudCard(
             confirmLabel = "Sign out",
             onConfirm = {
                 confirmSignOut = false
-                onSignOut()
+                gate.verify(
+                    title = "Disconnect the cloud?",
+                    subtitle = "Sign out of the cloud on this phone.",
+                    logText = "Cloud disconnected (signed out)"
+                ) { onSignOut() }
             },
             onDismiss = { confirmSignOut = false },
             destructive = false
@@ -351,7 +357,11 @@ fun CloudCard(
             confirmLabel = "Restore",
             onConfirm = {
                 restoreAsk = null
-                onRestoreVersion(ask.version)
+                gate.verify(
+                    title = "Restore a cloud version?",
+                    subtitle = picked.name + ": go back to version " + ask.version + ".",
+                    logText = "Cloud version restored: " + picked.name + " version " + ask.version
+                ) { onRestoreVersion(ask.version) }
             },
             onDismiss = { restoreAsk = null },
             destructive = false

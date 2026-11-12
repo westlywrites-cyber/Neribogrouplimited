@@ -3,16 +3,20 @@ package com.westly.neribogroup
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.westly.neribogroup.feature.common.BiometricGate
+import com.westly.neribogroup.feature.common.BiometricGateNotice
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
 import com.westly.neribogroup.cloud.CloudMode
 import com.westly.neribogroup.feature.cloud.AiCard
@@ -46,9 +50,13 @@ import com.westly.neribogroup.feature.software.SoftwareProjectScreen
 import com.westly.neribogroup.feature.staff.StaffDetailScreen
 import com.westly.neribogroup.ui.theme.NeriboTheme
 
-class MainActivity : ComponentActivity() {
+// FragmentActivity (a ComponentActivity underneath) is what Android's BiometricPrompt needs.
+class MainActivity : FragmentActivity() {
     // The same ViewModel that setContent gets below (both belong to this activity).
     private val cloudVm: AppViewModel by viewModels()
+
+    // The one gate for sensitive actions: fingerprint or screen lock, open for 5 minutes after a success.
+    private val gate: BiometricGate by lazy { BiometricGate(this) { cloudVm.logVerified(it) } }
 
     override fun onResume() {
         super.onResume()
@@ -71,7 +79,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: AppViewModel = viewModel()
             NeriboTheme(darkTheme = vm.darkTheme, fontStep = vm.fontStep) {
-                NeriboRoot(vm)
+                CompositionLocalProvider(LocalBiometricGate provides gate) {
+                    NeriboRoot(vm)
+                    BiometricGateNotice(gate)
+                }
             }
         }
     }
@@ -80,6 +91,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun NeriboRoot(vm: AppViewModel) {
     val context = LocalContext.current
+    val gate = LocalBiometricGate.current
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -107,19 +119,26 @@ private fun NeriboRoot(vm: AppViewModel) {
                     it.readBytes().toString(Charsets.UTF_8)
                 }
             }.getOrNull()
-            val toCloud = vm.importCopiesToCloud()
-            val ok = text != null && vm.importJson(text)
-            Toast.makeText(
-                context,
-                if (ok && toCloud) {
-                    "Backup restored. Imported data will be copied to the cloud"
-                } else if (ok) {
-                    "Backup restored"
-                } else {
-                    "That file is not a valid backup"
-                },
-                Toast.LENGTH_LONG
-            ).show()
+            // Replacing everything on the phone: the owner is verified right before it happens.
+            gate.verify(
+                title = "Import backup file?",
+                subtitle = "This replaces everything on this phone with the backup file."
+            ) {
+                val toCloud = vm.importCopiesToCloud()
+                val ok = text != null && vm.importJson(text)
+                if (ok) vm.logVerified("Backup file imported")
+                Toast.makeText(
+                    context,
+                    if (ok && toCloud) {
+                        "Backup restored. Imported data will be copied to the cloud"
+                    } else if (ok) {
+                        "Backup restored"
+                    } else {
+                        "That file is not a valid backup"
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
@@ -325,7 +344,9 @@ private fun NeriboRoot(vm: AppViewModel) {
             onEnableLive = { play, apple, website -> vm.enableLive(openApp.id, play, apple, website) },
             onSetChannels = { play, apple, website -> vm.setChannels(openApp.id, play, apple, website) },
             onSetDeploy = { vm.setDeployTracking(openApp.id, it) },
-            onSetStorage = { free, pro, premium, site -> vm.setStorageOffer(openApp.id, free, pro, premium, site) },
+            onSetStorage = { free, pro, premium, site, verified ->
+                vm.setStorageOffer(openApp.id, free, pro, premium, site, verified)
+            },
             onAddCompanyExpense = { title, amount -> vm.addAppExpense(openApp.id, title, amount) },
             onAddIncome = { title, amount -> vm.addAppIncome(openApp.id, title, amount) },
             onRenewalIncome = { userId, amount -> vm.recordRenewalIncome(openApp.id, userId, amount) },
@@ -448,8 +469,6 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onBack = { vm.openSection = null },
                 onSetTotal = { mb, confirmed -> vm.setCompanyStorageTotal(mb, confirmed) },
                 onSetShare = { id, mb, confirmed -> vm.setAppStorageShare(id, mb, confirmed) },
-                onSetPin = { pin, changed -> vm.setStoragePin(pin, changed) },
-                pinMatches = { vm.storagePinMatches(it) },
                 onBackUpOffsite = { vm.backUpOffsiteNow() },
                 onClearMessage = { vm.clearStorageMessage() }
             )
