@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.data.StorageUnit
 import com.westly.neribogroup.feature.common.DialogActions
@@ -159,7 +160,7 @@ fun CompanyStorageScreen(
     onClearMessage: () -> Unit
 ) {
     val assets = ledger.assets
-    val liveApps = ledger.apps.filter { it.googlePlayEnabled }
+    val liveApps = ledger.apps.filter { it.googlePlayEnabled || it.id != SOFTWARE_APP_ID }
     val liveKb = StorageRules.usedKb(ledger.apps)
     val offsiteKb = if (assets.offsiteMillis > 0L) assets.offsiteKb else 0L
     val copiesKb = liveKb + liveKb + offsiteKb
