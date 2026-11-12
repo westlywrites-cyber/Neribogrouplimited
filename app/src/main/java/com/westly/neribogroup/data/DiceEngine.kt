@@ -730,15 +730,12 @@ object DiceEngine {
         )
     }
 
-    /** Adds the day's storage growth (the backend's answer) to the app, never beyond what the users and sites could fill. */
-    private fun growStorage(app: AppData, today: String): AppData {
-        val rolls = app.dayRolls ?: return app
-        if (rolls.dayKey != today || rolls.storageBp <= 0) return app
-        val capacityKb = app.storageCapacityMb * 1024L
-        if (capacityKb <= 0L) return app
-        val grown = app.storageUsedKb + (capacityKb * rolls.storageBp.toLong() + 5_000L) / 10_000L
-        return app.copy(storageUsedKb = min(grown, capacityKb))
-    }
+    /**
+     * Storage no longer grows by dice: an app's storage is worked out from its users and what each plan offers
+     * (see [AppData.storageAllocatedMb]), so a roll leaves it as it is.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun growStorage(app: AppData, today: String): AppData = app
 
     // -----------------------------------------------------------------------------------------
     // Apple Store Balance and Paystack Balance

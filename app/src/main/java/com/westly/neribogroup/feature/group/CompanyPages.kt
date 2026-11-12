@@ -51,6 +51,7 @@ import com.westly.neribogroup.data.Channel
 import com.westly.neribogroup.data.CompanyAssets
 import com.westly.neribogroup.data.CompanyDoc
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.data.ToolItem
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.DialogActions
@@ -70,18 +71,14 @@ import java.io.File
 import java.util.Locale
 import java.util.UUID
 
-/** 1,536 KB -> "1.5 MB". Storage is kept in KB, shown in KB, MB or GB. */
-internal fun storageText(kb: Long): String = when {
-    kb < 1024L -> "$kb KB"
-    kb < 1024L * 1024L -> String.format(Locale.US, "%.1f MB", kb / 1024.0)
-    else -> String.format(Locale.US, "%.2f GB", kb / (1024.0 * 1024.0))
-}
+/** 1,536 KB -> "1.5 MB". The unit changes by itself: KB, MB, GB, TB or PB. */
+internal fun storageText(kb: Long): String = StorageRules.text(kb)
 
 private fun mbText(mb: Long): String = storageText(mb * 1024L)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PageFrame(title: String, onBack: () -> Unit, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
+internal fun PageFrame(title: String, onBack: () -> Unit, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
     BackHandler { onBack() }
     Scaffold(
         topBar = {
@@ -200,7 +197,7 @@ fun ChannelBalanceScreen(
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-private fun AssetPhoto(file: File, tick: Int, modifier: Modifier = Modifier) {
+internal fun AssetPhoto(file: File, tick: Int, modifier: Modifier = Modifier) {
     val bitmap = produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, file.path, tick) {
         value = withContext(Dispatchers.IO) { if (file.exists()) decodePhoto(file, 640)?.asImageBitmap() else null }
     }.value

@@ -47,6 +47,7 @@ import com.westly.neribogroup.data.CaseEngine
 import com.westly.neribogroup.data.DEFAULT_COMPANY_NAME
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.SocialsRules
+import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.feature.cloud.CloudDot
 import com.westly.neribogroup.feature.cloud.CloudStatusDot
 import com.westly.neribogroup.feature.common.ConfirmDialog
@@ -431,24 +432,28 @@ fun GroupDashboardScreen(
                     }
                     item {
                         SectionTile(
-                            title = "Tools and appliances",
-                            subtitle = shown.assets.tools.size.toString() + " items",
+                            title = "Equipment",
+                            subtitle = shown.assets.tools.size.toString() + " items · " +
+                                shown.assets.tools.sumOf { it.quantity } + " units",
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenSection(Section.TOOLS) }
                         )
                     }
-                    item {
-                        SectionTile(
-                            title = "Neribo Deploy sites",
-                            subtitle = formatCount(shown.apps.filter { it.googlePlayEnabled && it.deployTracking }.sumOf { it.totalSites }) + " sites deployed",
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = { onOpenSection(Section.DEPLOY) }
-                        )
+                    // Sites belong to the Neribo Deploy app only, so the tile is there only when that app is.
+                    if (shown.apps.any { it.googlePlayEnabled && it.isDeployApp }) {
+                        item {
+                            SectionTile(
+                                title = "Neribo Deploy sites",
+                                subtitle = formatCount(shown.apps.filter { it.googlePlayEnabled && it.deployTracking }.sumOf { it.totalSites }) + " sites deployed",
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = { onOpenSection(Section.DEPLOY) }
+                            )
+                        }
                     }
                     item {
                         SectionTile(
                             title = "Storage",
-                            subtitle = formatStorageKb(shown.apps.sumOf { it.storageUsedKb }) + " used" +
+                            subtitle = formatStorageKb(StorageRules.usedKb(shown.apps)) + " used" +
                                 (if (shown.assets.storageTotalMb > 0L) " of " + formatStorageKb(shown.assets.storageTotalMb * 1024L) else ""),
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenSection(Section.STORAGE) }

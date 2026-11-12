@@ -33,8 +33,8 @@ import com.westly.neribogroup.data.Channel
 import com.westly.neribogroup.feature.group.ChannelBalanceScreen
 import com.westly.neribogroup.feature.group.DeploySitesScreen
 import com.westly.neribogroup.feature.group.DocumentsScreen
-import com.westly.neribogroup.feature.group.StorageScreen
-import com.westly.neribogroup.feature.group.ToolsScreen
+import com.westly.neribogroup.feature.group.CompanyStorageScreen
+import com.westly.neribogroup.feature.group.EquipmentScreen
 import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
@@ -327,6 +327,9 @@ private fun NeriboRoot(vm: AppViewModel) {
             onSetDeploy = { vm.setDeployTracking(openApp.id, it) },
             onSetStorage = { free, pro, premium, site -> vm.setStorageOffer(openApp.id, free, pro, premium, site) },
             onAddCompanyExpense = { title, amount -> vm.addAppExpense(openApp.id, title, amount) },
+            onAddIncome = { title, amount -> vm.addAppIncome(openApp.id, title, amount) },
+            onRenewalIncome = { userId, amount -> vm.recordRenewalIncome(openApp.id, userId, amount) },
+            onWithdrawChannel = { channel -> vm.withdrawChannelApp(openApp.id, channel) },
             aiOn = vm.aiActive,
             aiStateFor = { n -> vm.aiRollStateFor(openApp, n) },
             aiChecking = vm.aiRunning,
@@ -425,23 +428,30 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onPickPhoto = { id, uri, done -> vm.saveAssetPhoto("doc", id, uri, done) },
                 onDeletePhoto = { vm.deleteAssetPhoto("doc", it) }
             )
-            Section.TOOLS -> ToolsScreen(
+            Section.TOOLS -> EquipmentScreen(
                 ledger = vm.ledger,
-                photoFile = { vm.assetPhotoFile("tool", it) },
+                photoFile = { id, index -> vm.toolPhotoFile(id, index) },
                 photoTick = vm.assetPhotoTick,
                 onBack = { vm.openSection = null },
                 onSave = { vm.saveAssets(it) },
-                onPickPhoto = { id, uri, done -> vm.saveAssetPhoto("tool", id, uri, done) },
-                onDeletePhoto = { vm.deleteAssetPhoto("tool", it) }
+                onPickPhoto = { id, index, uri, done -> vm.saveToolPhoto(id, index, uri, done) },
+                onRemovePhoto = { id, index, count -> vm.removeToolPhoto(id, index, count) },
+                onDeletePhotos = { vm.deleteToolPhotos(it) }
             )
             Section.DEPLOY -> DeploySitesScreen(
                 ledger = vm.ledger,
                 onBack = { vm.openSection = null }
             )
-            Section.STORAGE -> StorageScreen(
+            Section.STORAGE -> CompanyStorageScreen(
                 ledger = vm.ledger,
+                message = vm.storageMessage,
                 onBack = { vm.openSection = null },
-                onSave = { vm.saveAssets(it) }
+                onSetTotal = { mb, confirmed -> vm.setCompanyStorageTotal(mb, confirmed) },
+                onSetShare = { id, mb, confirmed -> vm.setAppStorageShare(id, mb, confirmed) },
+                onSetPin = { pin, changed -> vm.setStoragePin(pin, changed) },
+                pinMatches = { vm.storagePinMatches(it) },
+                onBackUpOffsite = { vm.backUpOffsiteNow() },
+                onClearMessage = { vm.clearStorageMessage() }
             )
             Section.SOCIALS -> SocialsScreen(
                 ledger = vm.ledger,

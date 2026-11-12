@@ -99,7 +99,7 @@ object AdvertBackend {
 
     /** True when an app needs the backend's decisions before its roll (adverts, several channels, sites or storage). */
     fun needsBackend(app: AppData): Boolean =
-        app.adverts.isNotEmpty() || ChannelRules.enabled(app).size > 1 || app.deployTracking || app.storageCapacityMb > 0L
+        app.adverts.isNotEmpty() || ChannelRules.enabled(app).size > 1 || app.deployTracking
 
     /**
      * Asks for the day's channel split (and the sites per user and storage growth when the app needs them). The
@@ -109,7 +109,8 @@ object AdvertBackend {
         val channels = ChannelRules.enabled(app)
         if (channels.isEmpty()) return AppDayFetch(null)
         val needSites = app.deployTracking
-        val needStorage = app.storageCapacityMb > 0L
+        // Storage is worked out from the users now, so the backend is never asked for storage growth.
+        val needStorage = false
         if (channels.size == 1 && !needSites && !needStorage) return AppDayFetch(null)
         val have = app.dayRolls
         if (have != null && have.dayKey == today) {

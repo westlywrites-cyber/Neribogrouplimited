@@ -64,6 +64,10 @@ import com.westly.neribogroup.data.AdvertAnswer
 import com.westly.neribogroup.data.AdvertType
 import com.westly.neribogroup.data.CompanyAssets
 import com.westly.neribogroup.data.CompanyPhotos
+import com.westly.neribogroup.data.ChannelRules
+import com.westly.neribogroup.data.Plan
+import com.westly.neribogroup.data.StorageLogLine
+import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.data.Channel
 import com.westly.neribogroup.data.DayRolls
 import com.westly.neribogroup.data.SocialDice
@@ -1686,6 +1690,172 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         assetPhotoTick += 1
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Equipment photos: up to 5 for each piece of equipment
+    // ---------------------------------------------------------------------------------------------
+
+    fun toolPhotoFile(id: String, index: Int): File =
+        CompanyPhotos.fileAt(getApplication<Application>(), "tool", id, index)
+
+    /** Makes a small JPEG of the picked photo and saves it as photo number [index] of the item. */
+    fun saveToolPhoto(id: String, index: Int, uri: Uri, done: (String) -> Unit) {
+        val context = getApplication<Application>()
+        Thread {
+            val processed = ImageProcessor.process(context, uri, 1600)
+            val message = when (processed) {
+                is ProcessedImage.Ok ->
+                    if (CompanyPhotos.writeAt(context, "tool", id, index, processed.bytes)) "" else "The photo could not be saved."
+                is ProcessedImage.Failed -> processed.message
+            }
+            mainHandler.post {
+                if (message.isEmpty()) assetPhotoTick += 1
+                done(message)
+            }
+        }.start()
+    }
+
+    /** Removes photo [index] of an item that has [count] photos; the later photos move up one place. */
+    fun removeToolPhoto(id: String, index: Int, count: Int) {
+        CompanyPhotos.removeAt(getApplication<Application>(), "tool", id, index, count)
+        assetPhotoTick += 1
+    }
+
+    /** Removes every photo of an item (when the item is deleted). */
+    fun deleteToolPhotos(id: String) {
+        CompanyPhotos.deleteAll(getApplication<Application>(), "tool", id)
+        assetPhotoTick += 1
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Company storage: the total, each app's share, the PIN, the log and the off-site copy
+    // ---------------------------------------------------------------------------------------------
+
+    /** A short message about the last storage action (for example the off-site backup). Empty when none. */
+    var storageMessage by mutableStateOf("")
+        private set
+
+    fun clearStorageMessage() {
+        storageMessage = ""
+    }
+
+    /** The assets with one more line at the top of the storage log (the newest 200 are kept). */
+    private fun CompanyAssets.withStorageLog(text: String): CompanyAssets = copy(
+        storageLog = (listOf(StorageLogLine(System.currentTimeMillis(), text)) + storageLog)
+            .take(ChannelRules.MAX_STORAGE_LOG)
+    )
+
+    /** Sets the company's total storage, in MB. [confirmed] is true when the owner's PIN was entered for it. */
+    fun setCompanyStorageTotal(totalMb: Long, confirmed: Boolean) {
+        val total = maxOf(0L, totalMb)
+        val old = ledger.assets.storageTotalMb
+        if (total == old) return
+        val text = "Company storage changed from " + StorageRules.textMb(old) + " to " + StorageRules.textMb(total) +
+            (if (confirmed) " (PIN confirmed)" else "")
+        saveAssets(ledger.assets.copy(storageTotalMb = total).withStorageLog(text))
+    }
+
+    /** Sets one app's share of the company storage, in MB. [confirmed] is true when the owner's PIN was entered. */
+    fun setAppStorageShare(id: String, shareMb: Long, confirmed: Boolean) {
+        if (id == SOFTWARE_APP_ID) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        val share = maxOf(0L, shareMb)
+        if (share == app.storageShareMb) return
+        val text = app.name + " storage share changed from " + StorageRules.textMb(app.storageShareMb) +
+            " to " + StorageRules.textMb(share) + (if (confirmed) " (PIN confirmed)" else "")
+        saveLedger(
+            ledger.copy(
+                apps = ledger.apps.map { if (it.id == id) it.copy(storageShareMb = share) else it },
+                assets = ledger.assets.withStorageLog(text)
+            )
+        )
+    }
+
+    /** Saves the PIN that guards storage reductions (4 to 8 digits). Only a salted hash is kept, never the PIN. */
+    fun setStoragePin(pin: String, changed: Boolean) {
+        if (!StorageRules.isValidPin(pin)) return
+        val salt = StorageRules.newSalt()
+        val updated = ledger.assets.copy(pinSalt = salt, pinHash = StorageRules.hashPin(salt, pin))
+        saveAssets(updated.withStorageLog(if (changed) "Storage PIN changed" else "Storage PIN created"))
+    }
+
+    fun storagePinMatches(pin: String): Boolean = StorageRules.pinMatches(ledger.assets, pin)
+
+    /**
+     * "Back up off-site now": the off-site copy is made equal to the live data right now. When the cloud is on, a
+     * real cloud backup of all records is kept too.
+     */
+    fun backUpOffsiteNow() {
+        val liveKb = StorageRules.usedKb(ledger.apps)
+        saveAssets(
+            ledger.assets.copy(offsiteKb = liveKb, offsiteMillis = System.currentTimeMillis())
+                .withStorageLog("Off-site copy made: " + StorageRules.text(liveKb))
+        )
+        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
+            storageMessage = "Off-site copy made. Connect to the cloud to also keep a cloud backup of all records."
+            return
+        }
+        if (cloudBackupBusy || cloudWorking || cloudSyncing || cloudHistory.restoring) {
+            storageMessage = "Off-site copy made. The cloud is busy right now, so no cloud backup was kept this time."
+            return
+        }
+        cloudBackupBusy = true
+        storageMessage = "Off-site copy made. Saving a cloud backup…"
+        Thread {
+            val outcome = try {
+                cloudEngine.createBackup("Off-site copy")
+            } catch (e: Throwable) {
+                BackupOutcome(false, "The backup did not finish. Your data on the phone is safe.")
+            }
+            mainHandler.post {
+                cloudBackupBusy = false
+                storageMessage = "Off-site copy made. " + outcome.message
+                refreshCloudState()
+            }
+        }.start()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Income you record yourself: straight into the app's income and profit, with no store cut
+    // ---------------------------------------------------------------------------------------------
+
+    /** Records income for a live app. It goes straight into the app's income and profit: no cut, no balance. */
+    fun addAppIncome(id: String, title: String, amount: Long) {
+        if (id == SOFTWARE_APP_ID || amount <= 0L) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (!app.googlePlayEnabled) return
+        val line = Entry(
+            title = title.trim().ifEmpty { "Income" },
+            amount = amount,
+            isIncome = true,
+            dateMillis = System.currentTimeMillis()
+        )
+        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) app.copy(entries = app.entries + line) else it }))
+    }
+
+    /**
+     * A renewal paid outside the app for a user you added: the plan end date moves forward and the money goes
+     * straight into the app's income and profit, with no cut.
+     */
+    fun recordRenewalIncome(id: String, userId: String, amount: Long) {
+        if (id == SOFTWARE_APP_ID || amount <= 0L) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (!app.googlePlayEnabled) return
+        val user = app.users.firstOrNull { it.id == userId } ?: return
+        if (user.simulated || user.plan == Plan.FREE) return
+        val now = System.currentTimeMillis()
+        val renewed = app.withUserRenewed(userId, now)
+        val label = if (user.plan == Plan.PREMIUM) "Premium" else "Pro"
+        val line = Entry(
+            title = user.name + " renewed " + label,
+            amount = amount,
+            isIncome = true,
+            dateMillis = now
+        )
+        saveLedger(
+            ledger.copy(apps = ledger.apps.map { if (it.id == id) renewed.copy(entries = renewed.entries + line) else it })
+        )
+    }
+
     fun startCampaign(id: String, size: CampaignSize, startInDays: Int, lastsDays: Int) {
         if (id == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
@@ -1878,20 +2048,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setDeployTracking(id: String, on: Boolean) {
         if (id == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
-        if (!app.googlePlayEnabled || app.deployTracking == on) return
+        if (!app.googlePlayEnabled || app.deployTracking == on || !app.isDeployApp) return
         saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) it.copy(deployTracking = on) else it }))
     }
 
-    /** What each plan offers in MB (and per deployed site). */
+    /**
+     * What each plan offers per user, in MB. Sites share the account's storage, so [siteMb] is not used any more
+     * (it stays in the signature so the callers do not change). The change is written to the storage log.
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun setStorageOffer(id: String, freeMb: Long, proMb: Long, premiumMb: Long, siteMb: Long) {
         if (id == SOFTWARE_APP_ID) return
         val app = ledger.apps.firstOrNull { it.id == id } ?: return
         if (!app.googlePlayEnabled) return
         val updated = app.copy(
             storageFreeMb = maxOf(0L, freeMb), storageProMb = maxOf(0L, proMb),
-            storagePremiumMb = maxOf(0L, premiumMb), storageSiteMb = maxOf(0L, siteMb)
+            storagePremiumMb = maxOf(0L, premiumMb)
         )
-        saveLedger(ledger.copy(apps = ledger.apps.map { if (it.id == id) updated else it }))
+        if (updated.storageFreeMb == app.storageFreeMb && updated.storageProMb == app.storageProMb &&
+            updated.storagePremiumMb == app.storagePremiumMb
+        ) return
+        val text = app.name + " storage offered: Free " + StorageRules.textMb(updated.storageFreeMb) +
+            ", Pro " + StorageRules.textMb(updated.storageProMb) +
+            ", Premium " + StorageRules.textMb(updated.storagePremiumMb)
+        saveLedger(
+            ledger.copy(
+                apps = ledger.apps.map { if (it.id == id) updated else it },
+                assets = ledger.assets.withStorageLog(text)
+            )
+        )
     }
 
     /** Adds one expense to Company costs for a Google Play app. It is not added to the app's own expenses. */

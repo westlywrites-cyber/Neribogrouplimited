@@ -75,7 +75,12 @@ data class AppUser(
     /** Where this user came from (Google Play, Apple Store or Website). */
     val channel: Channel = Channel.PLAY,
     /** Neribo Deploy style apps: how many sites this user has deployed. 0 = not set (counts as 1). */
-    val sites: Int = 0
+    val sites: Int = 0,
+    /**
+     * Only for users you add yourself ("Customize"): the storage you typed for this user, in MB. -1 = none, the
+     * user gets what the app offers to their plan. A Customize user is on the Free plan for money.
+     */
+    val customStorageMb: Long = -1L
 ) {
     /** The effective last active time: [lastActiveMillis] when known, otherwise the day the user was added. */
     fun lastSeenMillis(): Long = if (lastActiveMillis > 0L) lastActiveMillis else addedMillis
@@ -169,8 +174,10 @@ data class AppData(
     val storageProMb: Long = 0,
     val storagePremiumMb: Long = 0,
     val storageSiteMb: Long = 0,
-    /** Storage used so far, in KB. Grows by itself on every roll. */
-    val storageUsedKb: Long = 0
+    /** Old value from the time storage grew by dice. Not used any more: storage is worked out from the users. */
+    val storageUsedKb: Long = 0,
+    /** This app's share of the company's total storage, in MB. 0 = no share set yet. */
+    val storageShareMb: Long = 0L
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
@@ -209,12 +216,32 @@ data class AppData(
     val totalSites: Long
         get() = users.sumOf { maxOf(1, it.sites).toLong() } + audienceFree
 
-    /** What the app's users and sites could fill in total, in MB, from what each plan offers. */
-    val storageCapacityMb: Long
-        get() = freeUsers * storageFreeMb + proUsers * storageProMb + premiumUsers * storagePremiumMb +
-            (if (deployTracking) totalSites * storageSiteMb else 0L)
+    /** True for the Neribo Deploy app only: only it has users with sites. */
+    val isDeployApp: Boolean get() = name.contains("deploy", ignoreCase = true)
 
-    val storageUsedMb: Long get() = storageUsedKb / 1024L
+    /** Users you added yourself with a typed storage amount (Customize). They are Free users for money. */
+    val customStorageUsers: List<AppUser>
+        get() = if (googlePlayEnabled) users.filter { it.customStorageMb >= 0L && it.plan == Plan.FREE } else emptyList()
+
+    /**
+     * The storage given to every user of this app, in MB: what the app offers to each plan for the users of that
+     * plan, and the typed amount for each Customize user. Sites share the account's storage: they add nothing.
+     * Worked out from the users every time, so it is always up to date.
+     */
+    val storageAllocatedMb: Long
+        get() {
+            val custom = customStorageUsers
+            val planFree = maxOf(0L, freeUsers - custom.size.toLong())
+            return planFree * storageFreeMb + proUsers * storageProMb + premiumUsers * storagePremiumMb +
+                custom.sumOf { it.customStorageMb }
+        }
+
+    val storageAllocatedKb: Long get() = storageAllocatedMb * 1024L
+
+    /** Kept for older code: the same as [storageAllocatedMb]. */
+    val storageCapacityMb: Long get() = storageAllocatedMb
+
+    val storageUsedMb: Long get() = storageAllocatedMb
 
     fun newUsersToday(now: Long): Long {
         if (!googlePlayEnabled) {

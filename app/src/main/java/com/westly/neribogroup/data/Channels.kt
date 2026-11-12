@@ -69,27 +69,63 @@ data class CompanyDoc(
     val hasPhoto: Boolean = false
 )
 
-/** One tool or appliance the company owns. */
+/** One piece of equipment the company owns: a laptop, a monitor, a phone, a router and so on. */
 data class ToolItem(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val quantity: Int = 1,
     val note: String = "",
     val addedMillis: Long,
-    val hasPhoto: Boolean = false
+    val hasPhoto: Boolean = false,
+    /** For example "Laptop", "Monitor", "Phone" or "Router". */
+    val category: String = "",
+    val brand: String = "",
+    val model: String = "",
+    /** The exact specifications, for example "Intel Core i7-1270P, 32 GB RAM, 1 TB SSD". */
+    val specs: String = "",
+    /** The department that uses it. */
+    val department: String = "",
+    /** The staff member it is given to. */
+    val assignedTo: String = "",
+    /** What it is used for. */
+    val usedFor: String = "",
+    /** How many photos it has (0 to 5). Older items have one photo and [hasPhoto] true. */
+    val photos: Int = 0
+) {
+    /** The number of photos, counting the older single photo. */
+    val photoCount: Int get() = maxOf(photos, if (hasPhoto) 1 else 0).coerceIn(0, MAX_PHOTOS)
+
+    companion object {
+        const val MAX_PHOTOS = 5
+    }
+}
+
+/** One line of the storage log: what was changed, and when. */
+data class StorageLogLine(
+    val millis: Long,
+    val text: String
 )
 
 /** The company's documents, tools and the total storage the company has (typed by the owner, in MB). */
 data class CompanyAssets(
     val documents: List<CompanyDoc> = emptyList(),
     val tools: List<ToolItem> = emptyList(),
-    val storageTotalMb: Long = 0L
+    val storageTotalMb: Long = 0L,
+    /** The PIN that guards storage reductions, kept as a salted hash. The PIN itself is never saved. */
+    val pinHash: String = "",
+    val pinSalt: String = "",
+    /** What was changed in the company storage, newest first (the last [ChannelRules.MAX_STORAGE_LOG] are kept). */
+    val storageLog: List<StorageLogLine> = emptyList(),
+    /** The off-site copy: how much it held when it was made, in KB, and when (0 = never). */
+    val offsiteKb: Long = 0L,
+    val offsiteMillis: Long = 0L
 )
 
 object ChannelRules {
 
     const val MAX_DOCUMENTS = 200
-    const val MAX_TOOLS = 200
+    const val MAX_TOOLS = 1000
+    const val MAX_STORAGE_LOG = 200
 
     /** The channels an app is on, in the fixed order Google Play, Apple Store, Website. Empty for a Manual app. */
     fun enabled(app: AppData): List<Channel> {

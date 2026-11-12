@@ -33,6 +33,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.Plan
+import com.westly.neribogroup.data.StorageRules
+import com.westly.neribogroup.data.StorageUnit
 import com.westly.neribogroup.feature.common.ConfirmDialog
 
 /** True when there is text before an "@", text after it, a "." after it, and no spaces. */
@@ -75,6 +77,12 @@ fun UserDialog(
     /** Neribo Deploy style apps: the user's sites (null = no sites field). */
     sites: Int? = null,
     onSitesChange: (Int) -> Unit = {},
+    /**
+     * Live apps only: the storage typed for this user in MB (-1 = none). null = no Customize choice. A Customize
+     * user is on the Free plan for money, because payment is settled outside the app.
+     */
+    customMb: Long? = null,
+    onCustomChange: (Long) -> Unit = {},
     onSave: (name: String, email: String, phone: String, plan: Plan) -> Unit,
     onDismiss: () -> Unit,
     onDelete: (() -> Unit)? = null,
@@ -86,6 +94,16 @@ fun UserDialog(
     var phone by rememberSaveable { mutableStateOf(initial?.phone ?: "") }
     var planKey by rememberSaveable { mutableStateOf((initial?.plan ?: Plan.FREE).name) }
     var sitesText by rememberSaveable { mutableStateOf((sites ?: 1).toString()) }
+    var customOn by rememberSaveable { mutableStateOf(customMb != null && customMb >= 0L) }
+    var customUnitKey by rememberSaveable {
+        mutableStateOf(StorageRules.bestUnit(maxOf(0L, customMb ?: 0L)).name)
+    }
+    var customText by rememberSaveable {
+        mutableStateOf(
+            if (customMb != null && customMb >= 0L) (customMb / StorageRules.bestUnit(customMb).mb).toString() else ""
+        )
+    }
+    val customUnit = runCatching { StorageUnit.valueOf(customUnitKey) }.getOrDefault(StorageUnit.MB)
     var nameTouched by rememberSaveable { mutableStateOf(false) }
     var emailTouched by rememberSaveable { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -98,7 +116,7 @@ fun UserDialog(
     val emailFormatOk = isValidEmail(emailTrim)
     val duplicate = emailFormatOk &&
         otherUsers.any { it.email.trim().equals(emailTrim, ignoreCase = true) }
-    val valid = nameOk && emailFormatOk && !duplicate
+    val valid = nameOk && emailFormatOk && !duplicate && (!customOn || customText.isNotEmpty())
 
     val nameError = if (nameTouched && !nameOk) "Enter a name" else null
     val emailError = when {
@@ -111,7 +129,10 @@ fun UserDialog(
     val save: () -> Unit = {
         if (valid) {
             if (sites != null) onSitesChange((sitesText.toIntOrNull() ?: 1).coerceIn(1, 100000))
-            onSave(nameTrim, emailTrim, phone.trim(), plan)
+            if (customMb != null) {
+                onCustomChange(if (customOn) StorageRules.toMb(customText.toLongOrNull() ?: 0L, customUnit) else -1L)
+            }
+            onSave(nameTrim, emailTrim, phone.trim(), if (customOn) Plan.FREE else plan)
         }
     }
 
@@ -195,8 +216,11 @@ fun UserDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (choice in choices) {
                         FilterChip(
-                            selected = plan == choice,
-                            onClick = { planKey = choice.name },
+                            selected = !customOn && plan == choice,
+                            onClick = {
+                                planKey = choice.name
+                                customOn = false
+                            },
                             label = { Text(planLabel(choice)) },
                             modifier = Modifier.weight(1f)
                         )
@@ -210,6 +234,42 @@ fun UserDialog(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+
+                if (customMb != null) {
+                    FilterChip(
+                        selected = customOn,
+                        onClick = { customOn = true },
+                        label = { Text("Customize") }
+                    )
+                    if (customOn) {
+                        Text(
+                            text = "You type this user's storage. They are on the Free plan for money, because " +
+                                "payment is settled outside the app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            for (u in StorageUnit.values()) {
+                                FilterChip(
+                                    selected = customUnit == u,
+                                    onClick = { customUnitKey = u.name },
+                                    label = { Text(u.label) }
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = customText,
+                            onValueChange = { raw -> customText = raw.filter { it.isDigit() }.take(6) },
+                            label = { Text("Storage for this user (" + customUnit.label + ")") },
+                            singleLine = true,
+                            supportingText = {
+                                Text("= " + StorageRules.textMb(StorageRules.toMb(customText.toLongOrNull() ?: 0L, customUnit)))
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))

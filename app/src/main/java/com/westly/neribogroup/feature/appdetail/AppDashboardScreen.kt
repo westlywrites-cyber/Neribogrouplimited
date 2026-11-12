@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,6 +31,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -70,6 +72,7 @@ import com.westly.neribogroup.data.AdvertType
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.Entry
 import com.westly.neribogroup.data.Plan
+import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.feature.common.AddEntryDialog
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.FlatCard
@@ -83,6 +86,7 @@ import com.westly.neribogroup.feature.common.profitColor
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import com.westly.neribogroup.ui.lastSeenText
+import com.westly.neribogroup.ui.formatDate
 import com.westly.neribogroup.ui.formatNaira
 
 // The pages of an app dashboard in view mode. PAGE_MAIN is the short main page; every other
@@ -93,6 +97,9 @@ private const val PAGE_MONEY = "money"
 private const val PAGE_PLAY = "google-play"
 private const val PAGE_BENEFITS = "plan-benefits"
 private const val PAGE_ADVERTS = "adverts"
+private const val PAGE_APPLE = "apple-store"
+private const val PAGE_WEBSITE = "website"
+private const val PAGE_GROWTH = "campaign-rolls"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -114,6 +121,12 @@ fun AppDashboardScreen(
     onSetDeploy: (Boolean) -> Unit,
     onSetStorage: (Long, Long, Long, Long) -> Unit,
     onAddCompanyExpense: (String, Long) -> Unit,
+    /** Income you record yourself: straight into this app's income and profit, with no cut. */
+    onAddIncome: (String, Long) -> Unit,
+    /** A renewal paid outside the app: (user id, amount). Moves the plan end date and records the income. */
+    onRenewalIncome: (String, Long) -> Unit,
+    /** Moves one channel's balance (Apple Store or Paystack) into this app's income. */
+    onWithdrawChannel: (Channel) -> Unit,
     /** Phase 4B: true when AI mode is ON. The dice screen is then replaced by the "Today's roll" card. */
     aiOn: Boolean = false,
     aiStateFor: (Long) -> AiRollState = { AiRollState(AiRollKind.NO_JOBS) },
@@ -140,6 +153,9 @@ fun AppDashboardScreen(
     var showAddIncome by remember { mutableStateOf(false) }
     var showAddExpense by remember { mutableStateOf(false) }
     var showCompanyExpense by remember { mutableStateOf(false) }
+    var showLiveIncome by remember { mutableStateOf(false) }
+    var showRenewalIncome by remember { mutableStateOf(false) }
+    var storageDialog by remember { mutableStateOf(false) }
     // The "Add user i of N" sequence after Save in a Manual app. 0 = not running.
     var queueTotal by remember { mutableStateOf(0) }
     var queueIndex by remember { mutableStateOf(0) }
@@ -196,6 +212,9 @@ fun AppDashboardScreen(
                                     PAGE_USERS_PLANS -> "Users & plans"
                                     PAGE_MONEY -> "Money"
                                     PAGE_PLAY -> "Google Play"
+                                    PAGE_APPLE -> "Apple Store"
+                                    PAGE_WEBSITE -> "Website"
+                                    PAGE_GROWTH -> "Campaign & rolls"
                                     PAGE_BENEFITS -> "Plan benefits"
                                     PAGE_ADVERTS -> "Adverts"
                                     else -> app.name
@@ -726,7 +745,8 @@ fun AppDashboardScreen(
                         if (app.googlePlayEnabled) {
                             item {
                                 Text(
-                                    text = "Google Play Balance money is not in profit until you withdraw it.",
+                                    text = "Money in the store balances (Google Play, Apple Store, Paystack) is not in profit " +
+                                        "until you withdraw it. Income you add yourself goes straight into profit.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -753,6 +773,26 @@ fun AppDashboardScreen(
                             }
                             item {
                                 Button(
+                                    onClick = { showLiveIncome = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Add income") }
+                            }
+                            item {
+                                OutlinedButton(
+                                    onClick = { showRenewalIncome = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Add renewal income") }
+                            }
+                            item {
+                                Text(
+                                    text = "Income you add goes straight into this app's income and profit. " +
+                                        "No store takes a cut of it.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            item {
+                                Button(
                                     onClick = { showCompanyExpense = true },
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("Add expense to company costs") }
@@ -769,33 +809,29 @@ fun AppDashboardScreen(
                     }
 
                     // ---------------------------------------------------------------------
-                    // Google Play: status, balance, campaign and roll history.
+                    // Google Play, Apple Store and Website: each channel has its own page.
                     // ---------------------------------------------------------------------
-                    PAGE_PLAY -> {
-                        item {
-                            ChannelsCard(
-                                app = app,
-                                onEnableLive = onEnableLive,
-                                onSetChannels = onSetChannels,
-                                onSetDeploy = onSetDeploy,
-                                onSetStorage = onSetStorage
-                            )
-                        }
+                    PAGE_PLAY -> channelPageItems(
+                        app = app, channel = Channel.PLAY, now = now,
+                        onEnableLive = onEnableLive, onSetChannels = onSetChannels,
+                        onWithdraw = onWithdraw, onWithdrawChannel = onWithdrawChannel
+                    )
+                    PAGE_APPLE -> channelPageItems(
+                        app = app, channel = Channel.APPLE, now = now,
+                        onEnableLive = onEnableLive, onSetChannels = onSetChannels,
+                        onWithdraw = onWithdraw, onWithdrawChannel = onWithdrawChannel
+                    )
+                    PAGE_WEBSITE -> channelPageItems(
+                        app = app, channel = Channel.WEBSITE, now = now,
+                        onEnableLive = onEnableLive, onSetChannels = onSetChannels,
+                        onWithdraw = onWithdraw, onWithdrawChannel = onWithdrawChannel
+                    )
 
+                    // ---------------------------------------------------------------------
+                    // Campaign and roll history (live apps).
+                    // ---------------------------------------------------------------------
+                    PAGE_GROWTH -> {
                         if (app.googlePlayEnabled) {
-                            item { SectionTitle("Users and money by channel") }
-                            item { ChannelBreakdownCard(app) }
-                            item { SectionTitle("Google Play Balance") }
-                            item {
-                                StatTile(
-                                    label = "Earned today (after Google's cut)",
-                                    value = formatNaira(app.playEarningsToday(now)),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    valueColor = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                            item { PlayAppCard(app = app, onWithdraw = onWithdraw, showName = false) }
-
                             item { SectionTitle("Campaign") }
                             item {
                                 CampaignCard(
@@ -929,17 +965,30 @@ fun AppDashboardScreen(
                                 onClick = { page = PAGE_MONEY }
                             )
                         }
-                        item {
-                            NavCard(
-                                title = "Google Play",
-                                summary = if (app.googlePlayEnabled) {
-                                    "Balance " + formatNaira(app.playBalance) +
-                                        " · Ads " + (if (app.adsEnabled) "on" else "off")
-                                } else {
-                                    "Not turned on"
-                                },
-                                onClick = { page = PAGE_PLAY }
-                            )
+                        for (channel in Channel.values()) {
+                            item(key = "nav-" + channel.name) {
+                                NavCard(
+                                    title = channel.label,
+                                    summary = channelSummary(app, channel),
+                                    onClick = { page = channelPage(channel) }
+                                )
+                            }
+                        }
+                        if (app.googlePlayEnabled) {
+                            item {
+                                NavCard(
+                                    title = "Campaign & rolls",
+                                    summary = if (app.rolls.isEmpty()) "No rolls yet" else app.rolls.size.toString() + " days rolled",
+                                    onClick = { page = PAGE_GROWTH }
+                                )
+                            }
+                            item {
+                                NavCard(
+                                    title = "Storage",
+                                    summary = storageSummary(app),
+                                    onClick = { storageDialog = true }
+                                )
+                            }
                         }
                         item {
                             val benefitNames = buildList {
@@ -971,6 +1020,7 @@ fun AppDashboardScreen(
     }
 
     var pendingSites by remember { mutableStateOf(1) }
+    var pendingCustomMb by remember { mutableStateOf(-1L) }
     if (addUser) {
         UserDialog(
             heading = "Add user",
@@ -980,6 +1030,8 @@ fun AppDashboardScreen(
             proAvailable = draft.proPrice > 0L,
             sites = if (draft.deployTracking) 1 else null,
             onSitesChange = { pendingSites = it },
+            customMb = if (draft.googlePlayEnabled) -1L else null,
+            onCustomChange = { pendingCustomMb = it },
             onSave = { name, email, phone, plan ->
                 draft = draft.withUserAdded(
                     AppUser(
@@ -989,7 +1041,8 @@ fun AppDashboardScreen(
                         plan = plan,
                         addedMillis = System.currentTimeMillis(),
                         lastActiveMillis = System.currentTimeMillis(),
-                        sites = if (draft.deployTracking) pendingSites else 0
+                        sites = if (draft.deployTracking) pendingSites else 0,
+                        customStorageMb = if (draft.googlePlayEnabled) pendingCustomMb else -1L
                     )
                 )
                 fieldsKey += 1
@@ -1000,6 +1053,7 @@ fun AppDashboardScreen(
     }
 
     var pendingEditSites by remember { mutableStateOf(1) }
+    var pendingEditCustomMb by remember { mutableStateOf(-1L) }
     val userBeingEdited = editUserId?.let { id -> draft.users.firstOrNull { it.id == id } }
     if (editing && userBeingEdited != null && !userBeingEdited.simulated) {
         key(userBeingEdited.id) {
@@ -1011,6 +1065,8 @@ fun AppDashboardScreen(
                 proAvailable = draft.proPrice > 0L,
                 sites = if (draft.deployTracking) maxOf(1, userBeingEdited.sites) else null,
                 onSitesChange = { pendingEditSites = it },
+                customMb = if (draft.googlePlayEnabled) userBeingEdited.customStorageMb else null,
+                onCustomChange = { pendingEditCustomMb = it },
                 onSave = { name, email, phone, plan ->
                     draft = draft.withUserUpdated(
                         userBeingEdited.copy(
@@ -1018,7 +1074,8 @@ fun AppDashboardScreen(
                             email = email,
                             phone = phone,
                             plan = plan,
-                            sites = if (draft.deployTracking) pendingEditSites else userBeingEdited.sites
+                            sites = if (draft.deployTracking) pendingEditSites else userBeingEdited.sites,
+                            customStorageMb = if (draft.googlePlayEnabled) pendingEditCustomMb else -1L
                         )
                     )
                     fieldsKey += 1
@@ -1097,6 +1154,40 @@ fun AppDashboardScreen(
             onAdd = { title, amount ->
                 showCompanyExpense = false
                 onAddCompanyExpense(title, amount)
+            }
+        )
+    }
+
+    if (showLiveIncome) {
+        AddEntryDialog(
+            heading = "Add income",
+            onDismiss = { showLiveIncome = false },
+            onAdd = { title, amount ->
+                showLiveIncome = false
+                onAddIncome(title, amount)
+            }
+        )
+    }
+
+    if (showRenewalIncome) {
+        RenewalIncomeDialog(
+            app = app,
+            onDismiss = { showRenewalIncome = false },
+            onSave = { userId, amount ->
+                showRenewalIncome = false
+                onRenewalIncome(userId, amount)
+            }
+        )
+    }
+
+    if (storageDialog) {
+        StorageOfferDialog(
+            app = app,
+            onDismiss = { storageDialog = false },
+            onSetDeploy = onSetDeploy,
+            onSave = { free, pro, premium ->
+                storageDialog = false
+                onSetStorage(free, pro, premium, 0L)
             }
         )
     }
@@ -1266,11 +1357,12 @@ internal fun UserRow(
                 }
             }
         }
+        val isCustom = user.customStorageMb >= 0L && user.plan == Plan.FREE
         Text(
-            text = planText(user.plan),
+            text = if (isCustom) "Customize" else planText(user.plan),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium,
-            color = if (user.plan == Plan.FREE) MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (user.plan == Plan.FREE && !isCustom) MaterialTheme.colorScheme.onSurfaceVariant
             else MaterialTheme.colorScheme.primary
         )
     }
@@ -1299,136 +1391,273 @@ private fun ChannelSwitchRow(label: String, on: Boolean, onChange: (Boolean) -> 
     }
 }
 
-@Composable
-private fun ChannelsCard(
+private fun channelPage(channel: Channel): String = when (channel) {
+    Channel.PLAY -> PAGE_PLAY
+    Channel.APPLE -> PAGE_APPLE
+    Channel.WEBSITE -> PAGE_WEBSITE
+}
+
+private fun channelOn(app: AppData, channel: Channel): Boolean = when (channel) {
+    Channel.PLAY -> app.playOn
+    Channel.APPLE -> app.appleOn
+    Channel.WEBSITE -> app.websiteOn
+}
+
+private fun channelBalance(app: AppData, channel: Channel): Long = when (channel) {
+    Channel.PLAY -> app.playBalance
+    Channel.APPLE -> app.appleBalance
+    Channel.WEBSITE -> app.paystackBalance
+}
+
+private fun channelSummary(app: AppData, channel: Channel): String {
+    if (!app.googlePlayEnabled) return "Not turned on"
+    if (!channelOn(app, channel)) return "Turned off"
+    return formatCount(app.usersOfChannel(channel)) + " users · Balance " + formatNaira(channelBalance(app, channel)) +
+        (if (channel == Channel.PLAY) " · Ads " + (if (app.adsEnabled) "on" else "off") else "")
+}
+
+private fun storageSummary(app: AppData): String =
+    StorageRules.text(app.storageAllocatedKb) + " given to users" +
+        (if (app.storageShareMb > 0L) " of " + StorageRules.textMb(app.storageShareMb) else "")
+
+/** The page of one channel: its own switch, its users and its own balance. Each channel works on its own. */
+private fun LazyListScope.channelPageItems(
     app: AppData,
+    channel: Channel,
+    now: Long,
     onEnableLive: (Boolean, Boolean, Boolean) -> Unit,
     onSetChannels: (Boolean, Boolean, Boolean) -> Unit,
-    onSetDeploy: (Boolean) -> Unit,
-    onSetStorage: (Long, Long, Long, Long) -> Unit
+    onWithdraw: () -> Unit,
+    onWithdrawChannel: (Channel) -> Unit
 ) {
-    var pickLive by remember { mutableStateOf(false) }
-    var storageDialog by remember { mutableStateOf(false) }
-    FlatCard {
-        if (!app.googlePlayEnabled) {
-            Text(
-                text = "Live apps use the daily dice, the balances and adverts. Choose where this app is: " +
-                    "Google Play, the Apple Store or a website. This cannot go back to typed numbers.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            TintedButton(text = "Turn on live mode", onClick = { pickLive = true }, modifier = Modifier.fillMaxWidth())
-        } else {
-            Text("Channels", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Spacer(modifier = Modifier.height(8.dp))
-            ChannelSwitchRow("Google Play", app.playOn) { on ->
-                if (on || app.appleOn || app.websiteOn) onSetChannels(on, app.appleOn, app.websiteOn)
+    item { ChannelSwitchCard(app, channel, onEnableLive, onSetChannels) }
+    if (app.googlePlayEnabled) {
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                StatTile("Users from " + channel.label, formatCount(app.usersOfChannel(channel)), Modifier.weight(1f))
+                StatTile("Balance", formatNaira(channelBalance(app, channel)), Modifier.weight(1f))
             }
-            ChannelSwitchRow("Apple Store", app.appleOn) { on ->
-                if (on || app.playOn || app.websiteOn) onSetChannels(app.playOn, on, app.websiteOn)
-            }
-            ChannelSwitchRow("Website", app.websiteOn) { on ->
-                if (on || app.playOn || app.appleOn) onSetChannels(app.playOn, app.appleOn, on)
-            }
-            Text(
-                text = "At least one channel stays on. Users and money follow the channel they came from: " +
-                    "Google Play Balance, Apple Store Balance and Paystack Balance.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(8.dp))
-            ChannelSwitchRow("Neribo Deploy sites (users have sites)", app.deployTracking, onSetDeploy)
-            Spacer(modifier = Modifier.height(4.dp))
-            OutlinedButton(onClick = { storageDialog = true }) { Text("Storage offered") }
         }
-    }
-    if (pickLive) {
-        var play by remember { mutableStateOf(true) }
-        var apple by remember { mutableStateOf(false) }
-        var website by remember { mutableStateOf(false) }
-        NeriboDialog(
-            onDismiss = { pickLive = false },
-            title = "Turn on live mode?",
-            subtitle = "This cannot be undone. Your typed user numbers are replaced by the user list. " +
-                "Your income, expenses and users you added stay."
-        ) {
-            ChannelSwitchRow("Google Play", play) { play = it }
-            ChannelSwitchRow("Apple Store", apple) { apple = it }
-            ChannelSwitchRow("Website", website) { website = it }
-            DialogActions {
-                OutlinedButton(onClick = { pickLive = false }) { Text("Cancel") }
-                TintedButton(
-                    text = "Turn on",
-                    enabled = play || apple || website,
-                    onClick = {
-                        pickLive = false
-                        onEnableLive(play, apple, website)
-                    }
+        if (channel == Channel.PLAY) {
+            item { SectionTitle("Google Play Balance") }
+            item {
+                StatTile(
+                    label = "Earned today (after Google's cut)",
+                    value = formatNaira(app.playEarningsToday(now)),
+                    modifier = Modifier.fillMaxWidth(),
+                    valueColor = MaterialTheme.colorScheme.primary
                 )
             }
-        }
-    }
-    if (storageDialog) {
-        var free by remember { mutableStateOf(app.storageFreeMb) }
-        var pro by remember { mutableStateOf(app.storageProMb) }
-        var premium by remember { mutableStateOf(app.storagePremiumMb) }
-        var site by remember { mutableStateOf(app.storageSiteMb) }
-        NeriboDialog(
-            onDismiss = { storageDialog = false },
-            title = "Storage offered",
-            subtitle = "In MB per user. The app's storage grows by itself from its users" +
-                (if (app.deployTracking) " and sites." else ".")
-        ) {
-            NumberField(label = "Free users (MB)", value = free, onChange = { free = it }, maxDigits = 9)
-            Spacer(modifier = Modifier.height(8.dp))
-            NumberField(label = "Pro users (MB)", value = pro, onChange = { pro = it }, maxDigits = 9)
-            Spacer(modifier = Modifier.height(8.dp))
-            NumberField(label = "Premium users (MB)", value = premium, onChange = { premium = it }, maxDigits = 9)
-            if (app.deployTracking) {
-                Spacer(modifier = Modifier.height(8.dp))
-                NumberField(label = "Per deployed site (MB)", value = site, onChange = { site = it }, maxDigits = 9)
-            }
-            DialogActions {
-                OutlinedButton(onClick = { storageDialog = false }) { Text("Cancel") }
-                TintedButton(text = "Save", onClick = {
-                    storageDialog = false
-                    onSetStorage(free, pro, premium, site)
-                })
-            }
+            item { PlayAppCard(app = app, onWithdraw = onWithdraw, showName = false) }
+        } else {
+            item { ChannelBalanceCard(app, channel) { onWithdrawChannel(channel) } }
         }
     }
 }
 
+/** The switch of one channel. Turning on the first channel of a Manual app turns on live mode. */
 @Composable
-private fun ChannelBreakdownCard(app: AppData) {
-    val shown = Channel.values().filter { it in ChannelRules.enabled(app) || app.usersOfChannel(it) > 0L }
+private fun ChannelSwitchCard(
+    app: AppData,
+    channel: Channel,
+    onEnableLive: (Boolean, Boolean, Boolean) -> Unit,
+    onSetChannels: (Boolean, Boolean, Boolean) -> Unit
+) {
+    var confirmLive by remember { mutableStateOf(false) }
+    val on = app.googlePlayEnabled && channelOn(app, channel)
+    val onlyOne = on && ChannelRules.enabled(app).size == 1
     FlatCard {
-        for (channel in shown) {
-            val balance = when (channel) {
-                Channel.PLAY -> app.playBalance
-                Channel.APPLE -> app.appleBalance
-                Channel.WEBSITE -> app.paystackBalance
+        ChannelSwitchRow(channel.label, on) { wantOn ->
+            if (!app.googlePlayEnabled) {
+                if (wantOn) confirmLive = true
+            } else {
+                val play = if (channel == Channel.PLAY) wantOn else app.playOn
+                val apple = if (channel == Channel.APPLE) wantOn else app.appleOn
+                val website = if (channel == Channel.WEBSITE) wantOn else app.websiteOn
+                if (play || apple || website) onSetChannels(play, apple, website)
             }
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(channel.label, style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        formatCount(app.usersOfChannel(channel)) + " users",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Text(formatNaira(balance), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-            }
-            Spacer(modifier = Modifier.height(6.dp))
         }
+        Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Total users: " + formatCount(app.totalUsers),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium
+            text = when {
+                !app.googlePlayEnabled ->
+                    "Not turned on. Turn it on to start getting users and money from " + channel.label +
+                        ". Each channel works on its own."
+                onlyOne -> "On. At least one channel stays on, so this one cannot be turned off while it is the only one."
+                on -> "On. New users and money from this channel go to its own balance."
+                else -> "Off. No new users come from this channel. Money already waiting can still be withdrawn."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+    if (confirmLive) {
+        ConfirmDialog(
+            heading = "Turn on " + channel.label + "?",
+            message = "This turns on live mode for this app and cannot be undone. Your typed user numbers are " +
+                "replaced by the user list. Your income, expenses and users you added stay.",
+            confirmLabel = "Turn on",
+            onConfirm = {
+                confirmLive = false
+                onEnableLive(channel == Channel.PLAY, channel == Channel.APPLE, channel == Channel.WEBSITE)
+            },
+            onDismiss = { confirmLive = false }
+        )
+    }
+}
+
+/** The Apple Store Balance or the Paystack Balance of one app, with a Withdraw button. */
+@Composable
+private fun ChannelBalanceCard(app: AppData, channel: Channel, onWithdraw: () -> Unit) {
+    val balance = channelBalance(app, channel)
+    var confirm by remember { mutableStateOf(false) }
+    FlatCard {
+        Text(
+            text = if (channel == Channel.APPLE) "Apple Store Balance" else "Paystack Balance",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(formatNaira(balance), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(
+            text = "Subscription and renewal money waits here after " +
+                (if (channel == Channel.APPLE) "Apple's share" else "Paystack's fees") +
+                ". It is not profit until you withdraw it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(onClick = { confirm = true }, enabled = balance > 0L) { Text("Withdraw") }
+    }
+    if (confirm) {
+        ConfirmDialog(
+            heading = "Withdraw " + formatNaira(balance) + "?",
+            message = "This moves the balance into " + app.name + "'s income and profit.",
+            confirmLabel = "Withdraw",
+            onConfirm = {
+                confirm = false
+                onWithdraw()
+            },
+            onDismiss = { confirm = false }
+        )
+    }
+}
+
+/**
+ * What each plan gives every user of this app, in MB. The app's used storage is worked out from its users, so it is
+ * always up to date. The Neribo Deploy switch is only here for the Neribo Deploy app.
+ */
+@Composable
+private fun StorageOfferDialog(
+    app: AppData,
+    onDismiss: () -> Unit,
+    onSetDeploy: (Boolean) -> Unit,
+    onSave: (Long, Long, Long) -> Unit
+) {
+    var free by remember { mutableStateOf(app.storageFreeMb) }
+    var pro by remember { mutableStateOf(app.storageProMb) }
+    var premium by remember { mutableStateOf(app.storagePremiumMb) }
+    val trial = app.copy(storageFreeMb = free, storageProMb = pro, storagePremiumMb = premium)
+    val newKb = trial.storageAllocatedKb
+    val shareKb = app.storageShareMb * 1024L
+    val tooBig = shareKb > 0L && newKb > shareKb && newKb > app.storageAllocatedKb
+    NeriboDialog(
+        onDismiss = onDismiss,
+        title = "Storage",
+        subtitle = "What each plan gives every user, in MB. Used storage is worked out from the users, so it is " +
+            "always up to date."
+    ) {
+        NumberField(label = "Free users (MB)", value = free, onChange = { free = it }, maxDigits = 9)
+        Spacer(modifier = Modifier.height(8.dp))
+        NumberField(label = "Pro users (MB)", value = pro, onChange = { pro = it }, maxDigits = 9)
+        Spacer(modifier = Modifier.height(8.dp))
+        NumberField(label = "Premium users (MB)", value = premium, onChange = { premium = it }, maxDigits = 9)
+        if (app.isDeployApp) {
+            Spacer(modifier = Modifier.height(12.dp))
+            ChannelSwitchRow("Neribo Deploy sites (users have sites)", app.deployTracking, onSetDeploy)
+            Text(
+                text = "All of an account's sites share that account's storage.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "Given to users: " + StorageRules.text(newKb) +
+                (if (app.storageShareMb > 0L) " of " + StorageRules.textMb(app.storageShareMb) else ""),
+            style = MaterialTheme.typography.bodyMedium
+        )
+        if (tooBig) {
+            Text(
+                text = "That is more than this app's share. Raise the share on the company Storage page first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        DialogActions {
+            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+            TintedButton(text = "Save", enabled = !tooBig, onClick = { onSave(free, pro, premium) })
+        }
+    }
+}
+
+/**
+ * A renewal paid outside the app, for a Premium or Pro user you added: the plan end date moves forward and the money
+ * goes straight into this app's income and profit, with no cut.
+ */
+@Composable
+private fun RenewalIncomeDialog(
+    app: AppData,
+    onDismiss: () -> Unit,
+    onSave: (String, Long) -> Unit
+) {
+    val users = app.users.filter { !it.simulated && it.plan != Plan.FREE }
+    fun priceOf(user: AppUser): Long = if (user.plan == Plan.PREMIUM) app.premiumPrice else app.proPrice
+    var selectedId by remember { mutableStateOf(users.firstOrNull()?.id ?: "") }
+    var amount by remember { mutableStateOf(users.firstOrNull()?.let { priceOf(it) } ?: 0L) }
+    val selected = users.firstOrNull { it.id == selectedId }
+    NeriboDialog(
+        onDismiss = onDismiss,
+        title = "Add renewal income",
+        subtitle = "For a user you added who paid you outside the app. Their plan end date moves forward."
+    ) {
+        if (users.isEmpty()) {
+            Text(
+                text = "There is no Premium or Pro user that you added yourself. Use Add income instead.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            DialogActions { TintedButton(text = "Close", onClick = onDismiss) }
+        } else {
+            for (user in users) {
+                FilterChip(
+                    selected = user.id == selectedId,
+                    onClick = {
+                        selectedId = user.id
+                        amount = priceOf(user)
+                    },
+                    label = { Text(user.name + " · " + planText(user.plan)) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+            if (selected != null && selected.planExpiryMillis > 0L) {
+                Text(
+                    text = "Plan ends " + formatDate(selected.planExpiryMillis),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            key(selectedId) {
+                NumberField(label = "Amount paid (₦)", value = amount, onChange = { amount = it }, maxDigits = 12)
+            }
+            DialogActions {
+                OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                TintedButton(
+                    text = "Record",
+                    enabled = selected != null && amount > 0L,
+                    onClick = { if (selected != null) onSave(selected.id, amount) }
+                )
+            }
+        }
     }
 }

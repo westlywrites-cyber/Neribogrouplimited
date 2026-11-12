@@ -109,6 +109,7 @@ object LedgerStorage {
             o.put("storagePremiumMb", app.storagePremiumMb)
             o.put("storageSiteMb", app.storageSiteMb)
             o.put("storageUsedKb", app.storageUsedKb)
+            o.put("storageShareMb", app.storageShareMb)
             val campaign = app.campaign
             if (campaign != null) {
                 val co = JSONObject()
@@ -458,12 +459,14 @@ object LedgerStorage {
                     storageBp = d.optInt("storage")
                 )
             },
-            deployTracking = o.optBoolean("deployTracking"),
+            // Only the Neribo Deploy app has users with sites; any other app is kept off, whatever an older file says.
+            deployTracking = o.optBoolean("deployTracking") && o.optString("name").contains("deploy", ignoreCase = true),
             storageFreeMb = o.optLong("storageFreeMb"),
             storageProMb = o.optLong("storageProMb"),
             storagePremiumMb = o.optLong("storagePremiumMb"),
             storageSiteMb = o.optLong("storageSiteMb"),
-            storageUsedKb = o.optLong("storageUsedKb")
+            storageUsedKb = o.optLong("storageUsedKb"),
+            storageShareMb = maxOf(0L, o.optLong("storageShareMb"))
         )
     }
 
@@ -743,6 +746,13 @@ object LedgerStorage {
     private fun assetsToJson(assets: CompanyAssets): JSONObject {
         val o = JSONObject()
         o.put("storageTotalMb", assets.storageTotalMb)
+        if (assets.pinHash.isNotEmpty()) o.put("pinHash", assets.pinHash).put("pinSalt", assets.pinSalt)
+        if (assets.offsiteMillis > 0L) o.put("offsiteKb", assets.offsiteKb).put("offsiteMillis", assets.offsiteMillis)
+        val log = JSONArray()
+        for (line in assets.storageLog.take(ChannelRules.MAX_STORAGE_LOG)) {
+            log.put(JSONObject().put("t", line.millis).put("x", line.text))
+        }
+        o.put("storageLog", log)
         val docs = JSONArray()
         for (d in assets.documents) {
             docs.put(
@@ -756,6 +766,8 @@ object LedgerStorage {
             tools.put(
                 JSONObject().put("id", t.id).put("name", t.name).put("qty", t.quantity).put("note", t.note)
                     .put("added", t.addedMillis).put("photo", t.hasPhoto)
+                    .put("cat", t.category).put("brand", t.brand).put("model", t.model).put("specs", t.specs)
+                    .put("dept", t.department).put("to", t.assignedTo).put("use", t.usedFor).put("photos", t.photos)
             )
         }
         o.put("tools", tools)
@@ -797,12 +809,39 @@ object LedgerStorage {
                         quantity = maxOf(1, t.optInt("qty", 1)),
                         note = t.optString("note"),
                         addedMillis = t.optLong("added"),
-                        hasPhoto = t.optBoolean("photo")
+                        hasPhoto = t.optBoolean("photo"),
+                        category = t.optString("cat"),
+                        brand = t.optString("brand"),
+                        model = t.optString("model"),
+                        specs = t.optString("specs"),
+                        department = t.optString("dept"),
+                        assignedTo = t.optString("to"),
+                        usedFor = t.optString("use"),
+                        photos = t.optInt("photos").coerceIn(0, ToolItem.MAX_PHOTOS)
                     )
                 )
             }
         }
-        return CompanyAssets(docs, tools, maxOf(0L, o.optLong("storageTotalMb")))
+        val logLines = ArrayList<StorageLogLine>()
+        val la = o.optJSONArray("storageLog")
+        if (la != null) {
+            for (i in 0 until la.length()) {
+                val l = la.optJSONObject(i) ?: continue
+                val text = l.optString("x")
+                if (text.isEmpty()) continue
+                logLines.add(StorageLogLine(l.optLong("t"), text))
+            }
+        }
+        return CompanyAssets(
+            documents = docs,
+            tools = tools,
+            storageTotalMb = maxOf(0L, o.optLong("storageTotalMb")),
+            pinHash = o.optString("pinHash"),
+            pinSalt = o.optString("pinSalt"),
+            storageLog = logLines.take(ChannelRules.MAX_STORAGE_LOG),
+            offsiteKb = maxOf(0L, o.optLong("offsiteKb")),
+            offsiteMillis = maxOf(0L, o.optLong("offsiteMillis"))
+        )
     }
 
     private fun usersToJson(users: List<AppUser>): JSONArray {
@@ -822,6 +861,7 @@ object LedgerStorage {
             if (u.lastActiveMillis > 0L) o.put("la", u.lastActiveMillis)
             if (u.channel != Channel.PLAY) o.put("ch", u.channel.name)
             if (u.sites > 0) o.put("st", u.sites)
+            if (u.customStorageMb >= 0L) o.put("cs", u.customStorageMb)
             array.put(o)
         }
         return array
@@ -849,7 +889,8 @@ object LedgerStorage {
                     simulated = o.optBoolean("simulated"),
                     lastActiveMillis = o.optLong("la"),
                     channel = runCatching { Channel.valueOf(o.optString("ch", "PLAY")) }.getOrDefault(Channel.PLAY),
-                    sites = o.optInt("st")
+                    sites = o.optInt("st"),
+                    customStorageMb = if (o.has("cs")) maxOf(0L, o.optLong("cs")) else -1L
                 )
             )
         }
