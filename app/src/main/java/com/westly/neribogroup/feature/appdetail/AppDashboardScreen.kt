@@ -924,6 +924,11 @@ fun AppDashboardScreen(
                             }
                         }
 
+                        val storageWarning = StorageRules.appWarning(app, now)
+                        if (storageWarning != null) {
+                            item { StorageWarningCard(storageWarning.title, storageWarning.text) }
+                        }
+
                         if (app.googlePlayEnabled && aiOn) {
                             item {
                                 AiRollCard(
@@ -1476,6 +1481,30 @@ private fun channelSummary(app: AppData, channel: Channel): String {
     if (!channelOn(app, channel)) return "Turned off"
     return formatCount(app.usersOfChannel(channel)) + " users · Balance " + formatNaira(channelBalance(app, channel)) +
         (if (channel == Channel.PLAY) " · Ads " + (if (app.adsEnabled) "on" else "off") else "")
+}
+
+/** The serious warning that an app might lose its users' data because its storage is over or about to be full. */
+@Composable
+private fun StorageWarningCard(title: String, text: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+        }
+    }
 }
 
 private fun storageSummary(app: AppData): String =

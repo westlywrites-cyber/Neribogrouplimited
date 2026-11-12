@@ -1035,7 +1035,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (selfCheckRunning || cloudWorking || cloudHistory.restoring) return
         selfCheckRunning = true
         val online = cloudSignedIn && cloudInitialized
-        val canSync = online && cloudConfig.cloudMode == CloudMode.ON && !cloudSyncing
+        val canSync = online && cloudConfig.cloudMode == CloudMode.ON && !cloudSyncing &&
+            StorageRules.companyOverKb(ledger.assets, ledger.apps) <= 0L
         if (canSync) {
             cloudSyncing = true
             cloudStatus = CloudStatus.SYNCING
@@ -1105,6 +1106,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (cloudSyncing) {
             cloudBackupMessage = "Please wait, syncing…"
+            return
+        }
+        val storageOver = StorageRules.companyOverKb(ledger.assets, ledger.apps)
+        if (storageOver > 0L) {
+            cloudBackupMessage = StorageRules.backupStoppedText(storageOver)
             return
         }
         cloudBackupBusy = true
@@ -1400,6 +1406,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (cloudWorking || cloudSyncing) return
         if (cloudConfig.cloudMode != CloudMode.ON) {
             cloudSyncMessage = "Connect to the cloud first."
+            return
+        }
+        // Company storage is over its total: nothing is sent to or pulled from the cloud. The phone keeps saving.
+        val storageOver = StorageRules.companyOverKb(ledger.assets, ledger.apps)
+        if (storageOver > 0L) {
+            cloudSyncMessage = StorageRules.syncStoppedText(storageOver)
             return
         }
         cloudSyncing = true
@@ -1785,6 +1797,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * real cloud backup of all records is kept too.
      */
     fun backUpOffsiteNow() {
+        // The off-site copy is one more full copy: when it would not fit in the company total, it is not made.
+        val wouldOver = StorageRules.offsiteWouldOverKb(ledger.assets, ledger.apps)
+        if (wouldOver > 0L) {
+            storageMessage = StorageRules.offsiteStoppedText(wouldOver)
+            return
+        }
         val liveKb = StorageRules.usedKb(ledger.apps)
         saveAssets(
             ledger.assets.copy(offsiteKb = liveKb, offsiteMillis = System.currentTimeMillis())

@@ -32,6 +32,7 @@ import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.TintedButton
+import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -160,6 +161,7 @@ fun CompanyStorageScreen(
     onClearMessage: () -> Unit
 ) {
     val assets = ledger.assets
+    val now = rememberNowMillis()
     val liveApps = ledger.apps.filter { it.googlePlayEnabled || it.id != SOFTWARE_APP_ID }
     val liveKb = StorageRules.usedKb(ledger.apps)
     val offsiteKb = if (assets.offsiteMillis > 0L) assets.offsiteKb else 0L
@@ -270,6 +272,16 @@ fun CompanyStorageScreen(
                     color = if (totalMb > 0L && copiesKb > totalKb) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (totalMb > 0L && copiesKb > totalKb) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Sync and backups are stopped until the copies fit in the company total. " +
+                            "Raise the company storage or lower what users get. Your data on the phone is safe.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
                 if (sharesMb > 0L) {
                     Text(
                         "With the standby and off-site copies, the apps' shares could need up to " +
@@ -336,6 +348,21 @@ fun CompanyStorageScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = if (over > 0L) MaterialTheme.colorScheme.error
                             else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    val warning = StorageRules.appWarning(app, now)
+                    if (warning != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            warning.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            warning.text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
                     Spacer(modifier = Modifier.height(6.dp))

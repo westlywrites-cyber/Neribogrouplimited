@@ -304,6 +304,20 @@ fun GroupDashboardScreen(
             } else {
                 item { OverviewCard(shown) }
 
+                val storageOver = StorageRules.companyOverKb(shown.assets, shown.apps)
+                if (storageOver > 0L && !editing) {
+                    item {
+                        AttentionCard(
+                            text = "Storage is full: sync and backups are stopped",
+                            lines = listOf(
+                                "Over the company total by " + StorageRules.text(storageOver),
+                                "Tap to open Storage"
+                            ),
+                            onClick = { onOpenSection(Section.STORAGE) }
+                        )
+                    }
+                }
+
                 val attention = shown.renewalsNeedingAttention(now)
                 if (attention.isNotEmpty() && !editing) {
                     item {
