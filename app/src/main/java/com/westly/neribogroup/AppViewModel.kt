@@ -58,6 +58,8 @@ import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.data.ProjectStage
 import com.westly.neribogroup.data.SOCIALS_APP_ID
+import com.westly.neribogroup.data.HostingCustomer
+import com.westly.neribogroup.data.HostingEngine
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.SOCIAL_PHOTO_MAX_SIDE
 import com.westly.neribogroup.cloud.AdvertBackend
@@ -2209,17 +2211,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (updated !== ledger) saveLedger(updated)
     }
 
-    /** Records the next unpaid maintenance month of a project. One call is one month. */
-    fun recordMaintenancePayment(id: String) {
-        val updated = SoftwareEngine.recordMaintenance(ledger, id, System.currentTimeMillis())
-        if (updated !== ledger) saveLedger(updated)
-    }
-
-    fun stopProjectMaintenance(id: String) {
-        val updated = SoftwareEngine.stopMaintenance(ledger, id, System.currentTimeMillis())
-        if (updated !== ledger) saveLedger(updated)
-    }
-
     /** Adds one expense of a software project to Company costs (it is not added to the app's own entries). */
     fun addProjectExpense(id: String, title: String, amount: Long) {
         val updated = SoftwareEngine.addProjectExpense(ledger, id, title, amount, System.currentTimeMillis())
@@ -2237,6 +2228,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Keeps the highest "now" ever seen, so setting the phone clock back cannot undo a roll or an expiry. */
     fun updateSoftwareClock(now: Long) {
         val updated = SoftwareEngine.withClockAtLeast(ledger, now)
+        if (updated !== ledger) saveLedger(updated)
+    }
+
+    // ---- Client Hosting ----
+
+    /** Keeps the highest "now" ever seen by the Client Hosting screen. */
+    fun updateHostingClock(now: Long) {
+        val updated = HostingEngine.withClock(ledger, now)
+        if (updated !== ledger) saveLedger(updated)
+    }
+
+    /** Adds a customer. With [paidNow] the first period is already paid and goes into the company income. */
+    fun addHostingCustomer(customer: HostingCustomer, paidNow: Boolean) {
+        val updated = HostingEngine.addCustomer(ledger, customer, paidNow, System.currentTimeMillis())
+        if (updated !== ledger) saveLedger(updated)
+    }
+
+    fun updateHostingCustomer(customer: HostingCustomer) {
+        val updated = HostingEngine.updateCustomer(ledger, customer)
+        if (updated !== ledger) saveLedger(updated)
+    }
+
+    /** Renew: starts the next period and adds the price to the company income. */
+    fun renewHostingCustomer(id: String) {
+        val updated = HostingEngine.renew(ledger, id, System.currentTimeMillis())
+        if (updated !== ledger) saveLedger(updated)
+    }
+
+    fun deleteHostingCustomer(id: String) {
+        val updated = HostingEngine.deleteCustomer(ledger, id)
         if (updated !== ledger) saveLedger(updated)
     }
 

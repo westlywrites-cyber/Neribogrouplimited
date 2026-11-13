@@ -192,15 +192,11 @@ object SoftwareGenerator {
         val requirements = ArrayList<String>(type.pool.shuffled(random).take(pickedCount))
         if (isCode) {
             requirements.add("Payment: 50% when you accept, 50% on handover.")
-            requirements.add("Full handoff. No maintenance after delivery.")
+            requirements.add("Full handoff of the source code on delivery.")
         } else {
             requirements.add(HOSTING_LINES.random(random))
             requirements.add(CONTENT_LINES.random(random))
             requirements.add("Payment: 50% when you accept, 50% on delivery.")
-            requirements.add(
-                "Monthly maintenance after delivery: " + formatMoney(feeUnits / 10, currency) +
-                    " every 30 days."
-            )
         }
         val deliveryWeeks = when {
             isCode -> random.nextInt(1, 3)
@@ -357,13 +353,9 @@ object SoftwareGenerator {
         val requirements = ArrayList<String>(reqs)
         if (isCode) {
             requirements.add("Payment: 50% when you accept, 50% on handover.")
-            requirements.add("Full handoff. No maintenance after delivery.")
+            requirements.add("Full handoff of the source code on delivery.")
         } else {
             requirements.add("Payment: 50% when you accept, 50% on delivery.")
-            requirements.add(
-                "Monthly maintenance after delivery: " + formatMoney(fee / 10, slot.currency) +
-                    " every 30 days."
-            )
         }
         val created = createdTimeToday(effectiveNow, random)
         return SoftwareOffer(
@@ -394,7 +386,7 @@ object SoftwareGenerator {
     /**
      * Part C: makes one proposal from what Claude wrote and the app has already checked ([claude] comes
      * from SoftwareAi.validate). The app-owned fields (id, ref, times, status, e-mail, phone, the payment,
-     * hosting, content and maintenance lines) are made here exactly as createOfferFromSlot makes them.
+     * hosting, content and payment lines) are made here exactly as createOfferFromSlot makes them.
      */
     fun buildFromClaude(
         claude: ClaudeOffer,
@@ -427,15 +419,11 @@ object SoftwareGenerator {
         val requirements = ArrayList<String>(claude.requirements)
         if (isCode) {
             requirements.add("Payment: 50% when you accept, 50% on handover.")
-            requirements.add("Full handoff. No maintenance after delivery.")
+            requirements.add("Full handoff of the source code on delivery.")
         } else {
             requirements.add(HOSTING_LINES.random(random))
             requirements.add(CONTENT_LINES.random(random))
             requirements.add("Payment: 50% when you accept, 50% on delivery.")
-            requirements.add(
-                "Monthly maintenance after delivery: " + formatMoney(claude.feeUnits / 10, claude.currency) +
-                    " every 30 days."
-            )
         }
         val prefix = "Source code purchase: "
         val title = if (isCode && !claude.title.startsWith(prefix, ignoreCase = true)) prefix + claude.title else claude.title

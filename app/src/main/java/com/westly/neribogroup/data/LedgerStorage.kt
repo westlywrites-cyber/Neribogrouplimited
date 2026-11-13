@@ -14,13 +14,13 @@ object LedgerStorage {
 
     fun load(context: Context): Ledger {
         val file = File(context.filesDir, FILE_NAME)
-        if (!file.exists()) return Ledger().withSoftwareApp().withSocialsSeeded(System.currentTimeMillis())
+        if (!file.exists()) return Ledger().withSoftwareApp().withHostingApp().withSocialsSeeded(System.currentTimeMillis())
         return try {
             fromJson(file.readText())
         } catch (e: Exception) {
             // Keep the unreadable file instead of overwriting it.
             runCatching { file.renameTo(File(context.filesDir, "ledger.corrupt.json")) }
-            Ledger().withSoftwareApp().withSocialsSeeded(System.currentTimeMillis())
+            Ledger().withSoftwareApp().withHostingApp().withSocialsSeeded(System.currentTimeMillis())
         }
     }
 
@@ -212,6 +212,7 @@ object LedgerStorage {
         root.put("software", SoftwareJson.toJson(ledger.software))
         root.put("socials", SocialsJson.toJson(ledger.socials))
         root.put("assets", assetsToJson(ledger.assets))
+        root.put("hosting", HostingJson.toJson(ledger.hosting))
 
         return root.toString(2)
     }
@@ -368,8 +369,9 @@ object LedgerStorage {
             casesClockMillis = root.optLong("casesClockMillis"),
             software = SoftwareJson.fromJson(root.optJSONObject("software")),
             socials = if (socialsObject != null) SocialsJson.fromJson(socialsObject) else SocialsData(),
-            assets = jsonToAssets(root.optJSONObject("assets"))
-        ).withSoftwareApp().withoutDuplicateLegalExpenses()
+            assets = jsonToAssets(root.optJSONObject("assets")),
+            hosting = HostingJson.fromJson(root.optJSONObject("hosting"))
+        ).withSoftwareApp().withHostingApp().withoutDuplicateLegalExpenses()
         return if (socialsObject == null) loaded.withSocialsSeeded(System.currentTimeMillis()) else loaded
     }
 

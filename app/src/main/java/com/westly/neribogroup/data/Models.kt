@@ -815,7 +815,9 @@ data class Ledger(
     /** Socials: the company's social accounts and their followers (made only by the social dice). */
     val socials: SocialsData = SocialsData(),
     /** Company documents, tools and the total storage the company has. */
-    val assets: CompanyAssets = CompanyAssets()
+    val assets: CompanyAssets = CompanyAssets(),
+    /** Client Hosting: customers, their storage, price and renewal. */
+    val hosting: HostingData = HostingData()
 ) {
     /** Renewals that are inside a reminder stage or expired, soonest first. */
     fun renewalsNeedingAttention(now: Long): List<Renewal> =

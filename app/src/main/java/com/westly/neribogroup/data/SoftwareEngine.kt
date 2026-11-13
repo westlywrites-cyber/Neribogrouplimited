@@ -17,12 +17,10 @@ import kotlin.random.Random
 object SoftwareEngine {
 
     const val OFFER_VALID_DAYS = 7L
-    const val MAINTENANCE_DAYS = 30L
     const val MAX_WAITING = 10
     const val KEEP_PAST_OFFERS = 100
     const val KEEP_ROLLS = 30
     const val KEEP_USD_TX = 200
-    private const val MAINTENANCE_MILLIS = MAINTENANCE_DAYS * DAY_MILLIS
 
     /** Die 1: how many clients contacted you, by face 0..5. */
     private val CONTACTS_BY_FACE = intArrayOf(0, 0, 1, 1, 2, 3)
@@ -58,26 +56,6 @@ object SoftwareEngine {
     /** Whole calendar days left before a proposal runs out. Never below 0. */
     fun offerDaysLeft(offer: SoftwareOffer, effectiveNow: Long): Long =
         maxOf(0L, calendarDaysLeft(effectiveNow, offer.expiresMillis))
-
-    fun maintenancePaidCount(project: SoftwareProject): Int =
-        project.payments.count { it.purpose == PaymentPurpose.MAINTENANCE }
-
-    fun maintenancePeriodsDue(project: SoftwareProject, effectiveNow: Long): Int {
-        if (!project.maintenanceActive || project.deliveredMillis <= 0L) return 0
-        val elapsed = effectiveNow - project.deliveredMillis
-        if (elapsed <= 0L) return 0
-        return (elapsed / MAINTENANCE_MILLIS).toInt()
-    }
-
-    fun maintenanceOwed(project: SoftwareProject, effectiveNow: Long): Int =
-        maxOf(0, maintenancePeriodsDue(project, effectiveNow) - maintenancePaidCount(project))
-
-    /** When the next unpaid maintenance month is (or was) due. */
-    fun maintenanceNextDueMillis(project: SoftwareProject): Long =
-        project.deliveredMillis + (maintenancePaidCount(project) + 1) * MAINTENANCE_MILLIS
-
-    fun maintenanceOwedTotal(ledger: Ledger, effectiveNow: Long): Int =
-        ledger.software.projects.sumOf { maintenanceOwed(it, effectiveNow) }
 
     /** Everything received for a project, in the project's currency. */
     fun projectReceivedUnits(project: SoftwareProject): Long = project.payments.sumOf { it.units }
@@ -349,7 +327,7 @@ object SoftwareEngine {
             clientName = offer.clientName,
             title = offer.title,
             summary = offer.summary,
-            requirements = offer.requirements,
+            requirements = offer.requirements.withoutMaintenanceLines(),
             kind = offer.kind,
             currency = offer.currency,
             feeUnits = offer.feeUnits,
@@ -516,12 +494,11 @@ object SoftwareEngine {
         val eff = effectiveNow(ledger, now)
 
         if (stage == ProjectStage.DELIVERED) {
-            val isCode = project.kind == OfferKind.CODE_PURCHASE
             val delivered = project.copy(
                 stage = ProjectStage.DELIVERED,
                 deliveredMillis = eff,
-                maintenanceActive = !isCode,
-                maintenanceUnits = if (isCode) 0L else project.feeUnits / 10
+                maintenanceActive = false,
+                maintenanceUnits = 0L
             )
             val base = ledger.copy(
                 software = sw.copy(
@@ -536,44 +513,6 @@ object SoftwareEngine {
         return ledger.copy(
             software = sw.copy(
                 projects = sw.projects.map { if (it.id == projectId) it.copy(stage = stage) else it },
-                clockMillis = maxOf(sw.clockMillis, eff)
-            )
-        )
-    }
-
-    // ---- Maintenance ----
-
-    /** Records the next unpaid month. One call is one month. */
-    fun recordMaintenance(ledger: Ledger, projectId: String, now: Long): Ledger {
-        val sw = ledger.software
-        val project = sw.projects.firstOrNull { it.id == projectId } ?: return ledger
-        val eff = effectiveNow(ledger, now)
-        if (!project.maintenanceActive) return ledger
-        if (maintenanceOwed(project, eff) <= 0) return ledger
-        val period = maintenancePaidCount(project) + 1
-        return applyPayment(
-            ledger.copy(software = sw.copy(clockMillis = maxOf(sw.clockMillis, eff))),
-            projectId,
-            PaymentPurpose.MAINTENANCE,
-            period,
-            eff
-        ) ?: ledger
-    }
-
-    fun stopMaintenance(ledger: Ledger, projectId: String, now: Long): Ledger {
-        val sw = ledger.software
-        val project = sw.projects.firstOrNull { it.id == projectId } ?: return ledger
-        if (!project.maintenanceActive) return ledger
-        val eff = effectiveNow(ledger, now)
-        return ledger.copy(
-            software = sw.copy(
-                projects = sw.projects.map {
-                    if (it.id == projectId) {
-                        it.copy(maintenanceActive = false, maintenanceStoppedMillis = eff)
-                    } else {
-                        it
-                    }
-                },
                 clockMillis = maxOf(sw.clockMillis, eff)
             )
         )

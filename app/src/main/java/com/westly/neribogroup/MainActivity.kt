@@ -26,6 +26,7 @@ import com.westly.neribogroup.feature.cloud.CloudCardState
 import com.westly.neribogroup.feature.cloud.ConflictDialog
 import com.westly.neribogroup.feature.cloud.cloudDotFor
 import com.westly.neribogroup.feature.cloud.LoginScreen
+import com.westly.neribogroup.data.HOSTING_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.feature.group.AppsScreen
@@ -41,6 +42,7 @@ import com.westly.neribogroup.feature.group.CompanyStorageScreen
 import com.westly.neribogroup.feature.group.EquipmentScreen
 import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
+import com.westly.neribogroup.feature.hosting.HostingScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
 import com.westly.neribogroup.feature.group.SocialsScreen
 import com.westly.neribogroup.feature.group.StaffListScreen
@@ -303,8 +305,6 @@ private fun NeriboRoot(vm: AppViewModel) {
             onBack = { vm.openProjectId = null },
             onClock = { vm.updateSoftwareClock(it) },
             onStage = { vm.changeProjectStage(openProject.id, it) },
-            onRecordMaintenance = { vm.recordMaintenancePayment(openProject.id) },
-            onStopMaintenance = { vm.stopProjectMaintenance(openProject.id) },
             onAddExpense = { title, amount -> vm.addProjectExpense(openProject.id, title, amount) }
         )
     } else if (openApp != null && openApp.id == SOFTWARE_APP_ID) {
@@ -326,6 +326,16 @@ private fun NeriboRoot(vm: AppViewModel) {
             aiChecking = vm.aiRunning,
             onAiCheck = { vm.runAiJobs() },
             softwareAttempts = vm.softwareAttemptsToday(System.currentTimeMillis())
+        )
+    } else if (openApp != null && openApp.id == HOSTING_APP_ID) {
+        HostingScreen(
+            ledger = vm.ledger,
+            onBack = { vm.openAppId = null },
+            onClock = { vm.updateHostingClock(it) },
+            onAdd = { customer, paidNow -> vm.addHostingCustomer(customer, paidNow) },
+            onEdit = { vm.updateHostingCustomer(it) },
+            onRenew = { vm.renewHostingCustomer(it) },
+            onDelete = { vm.deleteHostingCustomer(it) }
         )
     } else if (openApp != null) {
         AppDashboardScreen(

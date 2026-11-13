@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.data.isHosting
 import com.westly.neribogroup.data.isSoftware
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.LocalBiometricGate
@@ -177,7 +178,7 @@ fun AppsScreen(
                 app = app,
                 editing = editing,
                 onClick = { onOpenApp(app.id) },
-                onDelete = { if (!app.isSoftware) appToDelete = app }
+                onDelete = { if (!app.isSoftware && !app.isHosting) appToDelete = app }
             )
         }
 
@@ -255,6 +256,8 @@ internal fun AppCard(
                 Text(
                     text = if (app.isSoftware) {
                         "Client projects, proposals and a \$ account"
+                    } else if (app.isHosting) {
+                        "Customers, storage and monthly renewals"
                     } else {
                         formatCount(app.totalUsers) + " users · " +
                             formatCount(app.proUsers) + " Pro · " +
@@ -270,7 +273,7 @@ internal fun AppCard(
                     color = profitColor(app.profit)
                 )
             }
-            if (editing && !app.isSoftware) {
+            if (editing && !app.isSoftware && !app.isHosting) {
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Filled.Delete, contentDescription = "Delete app")
                 }

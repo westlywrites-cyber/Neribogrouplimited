@@ -197,7 +197,6 @@ fun SoftwareClientsScreen(
         .sortedByDescending { it.createdMillis }
     val delivered = sw.projects.filter { it.stage == ProjectStage.DELIVERED }
         .sortedByDescending { it.deliveredMillis }
-    val maintenanceDue = SoftwareEngine.maintenanceOwedTotal(ledger, eff)
     val canRoll = SoftwareEngine.canRoll(ledger, now)
     val todayRoll = sw.rolls.firstOrNull { it.dayKey == dayKey(eff) }
 
@@ -243,15 +242,6 @@ fun SoftwareClientsScreen(
                 stats.add(StatCardItem("Ongoing projects", ongoing.size.toString()))
                 stats.add(StatCardItem("Delivered", delivered.size.toString()))
                 stats.add(StatCardItem("Clients", sw.clients.size.toString()))
-                if (maintenanceDue > 0) {
-                    stats.add(
-                        StatCardItem(
-                            "Maintenance due",
-                            maintenanceDue.toString(),
-                            MaterialTheme.colorScheme.error
-                        )
-                    )
-                }
                 StatCard(items = stats, columns = 2)
             }
 
@@ -358,7 +348,6 @@ fun SoftwareClientsScreen(
             items(shownProjects, key = { "project-" + it.id }) { project ->
                 ProjectCard(
                     project = project,
-                    owed = SoftwareEngine.maintenanceOwed(project, eff),
                     onClick = { onOpenProject(project.id) }
                 )
             }
@@ -683,7 +672,7 @@ private fun OfferCard(
 }
 
 @Composable
-private fun ProjectCard(project: SoftwareProject, owed: Int, onClick: () -> Unit) {
+private fun ProjectCard(project: SoftwareProject, onClick: () -> Unit) {
     FlatCard(modifier = Modifier.clickable { onClick() }) {
         Row(modifier = Modifier.fillMaxWidth()) {
             Text(
@@ -717,12 +706,5 @@ private fun ProjectCard(project: SoftwareProject, owed: Int, onClick: () -> Unit
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
-        if (project.stage == ProjectStage.DELIVERED && owed > 0) {
-            Text(
-                text = "Maintenance due: $owed",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.error
-            )
-        }
     }
 }

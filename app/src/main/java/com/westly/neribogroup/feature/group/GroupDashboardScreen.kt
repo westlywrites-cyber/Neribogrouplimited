@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.Section
 import com.westly.neribogroup.data.CaseEngine
 import com.westly.neribogroup.data.DEFAULT_COMPANY_NAME
+import com.westly.neribogroup.data.HOSTING_APP_ID
+import com.westly.neribogroup.data.HostingEngine
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.SocialsRules
 import com.westly.neribogroup.data.StorageRules
@@ -326,6 +328,20 @@ fun GroupDashboardScreen(
                             else attention.size.toString() + " renewals need attention",
                             lines = attention.take(3).map { it.name + " · " + renewalStatus(it.daysLeft(now)) },
                             onClick = { onOpenSection(Section.RENEWALS) }
+                        )
+                    }
+                }
+
+                val hostingAttention = HostingEngine.needingAttention(shown, now)
+                if (hostingAttention.isNotEmpty() && !editing) {
+                    item {
+                        AttentionCard(
+                            text = if (hostingAttention.size == 1) "1 hosting customer needs attention"
+                            else hostingAttention.size.toString() + " hosting customers need attention",
+                            lines = hostingAttention.take(3).map {
+                                it.name + " · " + HostingEngine.statusText(it.daysLeft(now))
+                            },
+                            onClick = { onOpenApp(HOSTING_APP_ID) }
                         )
                     }
                 }

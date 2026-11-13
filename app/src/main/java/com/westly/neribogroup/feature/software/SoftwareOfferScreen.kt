@@ -195,7 +195,7 @@ fun SoftwareOfferScreen(
                 FlatCard {
                     SectionTitle("Requirements")
                     Spacer(modifier = Modifier.height(6.dp))
-                    for (line in offer.requirements) {
+                    for (line in offer.requirements.withoutMaintenanceLines()) {
                         Text(
                             text = "• " + line,
                             modifier = Modifier.padding(vertical = 2.dp),
@@ -234,8 +234,7 @@ fun SoftwareOfferScreen(
                         text = if (isCode) {
                             "Payment: 50% now, 50% on handover. Full handoff, no maintenance."
                         } else {
-                            "Payment: 50% now, 50% on delivery. Maintenance: 10% of the fee per month (" +
-                                formatMoney(offer.feeUnits / 10, offer.currency) + ")."
+                            "Payment: 50% now, 50% on delivery. No maintenance is included."
                         },
                         style = MaterialTheme.typography.bodyMedium
                     )

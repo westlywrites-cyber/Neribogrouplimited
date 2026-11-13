@@ -33,6 +33,10 @@ fun Ledger.withSoftwareApp(): Ledger {
     return this
 }
 
+/** Older proposals carried a "Monthly maintenance" line. Companies no longer offer maintenance, so it is hidden. */
+fun List<String>.withoutMaintenanceLines(): List<String> =
+    filterNot { it.trimStart().startsWith("Monthly maintenance", ignoreCase = true) }
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------

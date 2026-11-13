@@ -331,8 +331,8 @@ object SoftwareJson {
             createdMillis = j.optLong("created"),
             deliveredMillis = j.optLong("delivered"),
             payments = payments.distinctBy { it.id },
-            maintenanceActive = j.optBoolean("maintenanceActive"),
-            maintenanceUnits = j.optLong("maintenanceUnits"),
+            maintenanceActive = false,
+            maintenanceUnits = 0L,
             maintenanceStoppedMillis = j.optLong("maintenanceStopped")
         )
     }

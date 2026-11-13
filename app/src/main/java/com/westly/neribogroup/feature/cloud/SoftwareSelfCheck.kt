@@ -128,7 +128,8 @@ object SoftwareSelfCheck {
             when {
                 o == null -> "A good proposal was refused"
                 o.writer != "Claude" -> "Writer is not Claude"
-                o.requirements.size != 7 -> "Payment and maintenance lines are missing"
+                o.requirements.size != 6 -> "Hosting, content or payment lines are missing"
+                o.requirements.any { it.contains("maintenance", ignoreCase = true) } -> "A maintenance line was added"
                 o.feeUnits != 450_000L || o.country != "Nigeria" || o.currency != "NGN" -> "Slot values not used"
                 else -> null
             }

@@ -24,7 +24,7 @@ object StorageRoomRules {
 
     /** The apps the room lists: the same ones the Storage page lists. */
     fun roomApps(apps: List<AppData>): List<AppData> =
-        apps.filter { it.googlePlayEnabled || it.id != SOFTWARE_APP_ID }
+        apps.filter { it.googlePlayEnabled || (it.id != SOFTWARE_APP_ID && it.id != HOSTING_APP_ID) }
 
     /** KB rounded up to whole MB. */
     fun mbUp(kb: Long): Long = (maxOf(0L, kb) + 1023L) / 1024L

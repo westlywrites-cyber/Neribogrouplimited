@@ -69,7 +69,7 @@ private fun MoneyLine(label: String, value: String, bold: Boolean = false) {
     }
 }
 
-/** One project: stage, money, payments, maintenance and the expenses of building it. */
+/** One project: stage, money, payments and the expenses of building it. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SoftwareProjectScreen(
@@ -78,8 +78,6 @@ fun SoftwareProjectScreen(
     onBack: () -> Unit,
     onClock: (Long) -> Unit,
     onStage: (ProjectStage) -> Unit,
-    onRecordMaintenance: () -> Unit,
-    onStopMaintenance: () -> Unit,
     onAddExpense: (String, Long) -> Unit
 ) {
     val now = rememberNowMillis()
@@ -97,12 +95,8 @@ fun SoftwareProjectScreen(
     val expenses = SoftwareEngine.projectExpenses(ledger, project.id)
     val expenseTotal = expenses.sumOf { it.amount }
     val anyForeign = project.payments.any { it.currency != "NGN" }
-    val owed = SoftwareEngine.maintenanceOwed(project, eff)
-    val nextMonth = SoftwareEngine.maintenancePaidCount(project) + 1
 
     var confirmDeliver by remember { mutableStateOf(false) }
-    var confirmRecord by remember { mutableStateOf(false) }
-    var confirmStop by remember { mutableStateOf(false) }
     var showExpense by remember { mutableStateOf(false) }
 
     BackHandler { onBack() }
@@ -225,7 +219,7 @@ fun SoftwareProjectScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                     SectionTitle("Requirements")
                     Spacer(modifier = Modifier.height(6.dp))
-                    for (line in project.requirements) {
+                    for (line in project.requirements.withoutMaintenanceLines()) {
                         Text(
                             text = "• " + line,
                             modifier = Modifier.padding(vertical = 2.dp),
@@ -273,63 +267,6 @@ fun SoftwareProjectScreen(
                 }
             }
 
-            item(key = "maintenance") {
-                FlatCard {
-                    SectionTitle("Maintenance")
-                    Spacer(modifier = Modifier.height(6.dp))
-                    if (isCode) {
-                        Text(
-                            text = "Full handoff. No maintenance.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    } else if (!delivered) {
-                        Text(
-                            text = "Starts after delivery: " + formatMoney(project.feeUnits / 10, currency) +
-                                " every 30 days (10% of the fee).",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    } else if (!project.maintenanceActive) {
-                        Text(
-                            text = "Maintenance stopped on " + formatDate(project.maintenanceStoppedMillis) + ".",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    } else {
-                        MoneyLine("Monthly amount", formatMoney(project.maintenanceUnits, currency))
-                        MoneyLine(
-                            "Next due",
-                            formatDate(SoftwareEngine.maintenanceNextDueMillis(project))
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = if (owed > 0) {
-                                "Maintenance due: " + owed + " month" + (if (owed == 1) "" else "s") +
-                                    " — " + formatMoney(project.maintenanceUnits, currency) + " each"
-                            } else {
-                                "Nothing due right now."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (owed > 0) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        TintedButton(
-                            text = "Record maintenance payment",
-                            onClick = { confirmRecord = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = owed > 0
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        TintedButton(
-                            text = "Stop maintenance",
-                            onClick = { confirmStop = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            destructive = true
-                        )
-                    }
-                }
-            }
-
             item(key = "expenses-title") { SectionTitle("Expenses for this project") }
             if (expenses.isEmpty()) {
                 item(key = "expenses-empty") {
@@ -367,36 +304,6 @@ fun SoftwareProjectScreen(
                 onStage(ProjectStage.DELIVERED)
             },
             onDismiss = { confirmDeliver = false }
-        )
-    }
-
-    if (confirmRecord) {
-        ConfirmDialog(
-            heading = "Record maintenance?",
-            message = "Record maintenance month " + nextMonth + " (" +
-                formatMoney(project.maintenanceUnits, currency) + ") received from " +
-                project.clientName + "?",
-            confirmLabel = "Record",
-            onConfirm = {
-                confirmRecord = false
-                onRecordMaintenance()
-            },
-            onDismiss = { confirmRecord = false }
-        )
-    }
-
-    if (confirmStop) {
-        ConfirmDialog(
-            heading = "Stop maintenance?",
-            message = "Stop maintenance for " + project.ref + "? " + owed + " unpaid month" +
-                (if (owed == 1) "" else "s") + " will no longer be counted. This cannot be undone.",
-            confirmLabel = "Stop maintenance",
-            onConfirm = {
-                confirmStop = false
-                onStopMaintenance()
-            },
-            onDismiss = { confirmStop = false },
-            destructive = true
         )
     }
 
