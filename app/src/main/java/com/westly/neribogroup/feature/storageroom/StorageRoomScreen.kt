@@ -59,6 +59,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -395,6 +396,25 @@ private fun RoomContent(
     val now = rememberNowMillis()
     var linked by remember { mutableStateOf(false) }
 
+    // Like the preview, every change to the numbers (an edit, a new user, an off-site copy) makes the sync lights run
+    // for a moment, on top of the real cloud sync.
+    var pulse by remember { mutableStateOf(false) }
+    var firstKey by remember { mutableStateOf(true) }
+    val changeKey = listOf(
+        StorageRules.usedKb(apps), ledger.assets.offsiteKb, ledger.assets.storageTotalMb, StorageRules.sharesMb(apps)
+    )
+    LaunchedEffect(changeKey) {
+        if (firstKey) {
+            firstKey = false
+            return@LaunchedEffect
+        }
+        pulse = true
+        delay(1500L)
+        pulse = false
+        StorageRoomLog.add(RoomLevel.SYNC, "main → backup", "in sync")
+    }
+    val shownCloud = cloud.copy(syncing = cloud.syncing || pulse)
+
     // The line under the monitor clears itself after a few seconds.
     LaunchedEffect(controller.message) {
         if (controller.message != null) {
@@ -512,7 +532,7 @@ private fun RoomContent(
     // The monitor, desk, console and live cards scroll above it.
     Column(modifier = Modifier.fillMaxSize().pinchZoom(onPinch)) {
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            item { RoomScene(controller, ledger, cloud, linked, zoom) }
+            item { RoomScene(controller, ledger, shownCloud, linked, zoom) }
             item { Box(modifier = Modifier.fillMaxWidth().zoomed(zoom)) { LiveCards(ledger, now) } }
         }
         Box(
@@ -652,7 +672,7 @@ private fun Monitor(controller: RoomController, ledger: Ledger, cloud: RoomCloud
                             .padding(horizontal = 10.dp, vertical = 9.dp)
                     ) {
                         when (controller.page) {
-                            RoomController.OVERVIEW -> OverviewPage(ledger)
+                            RoomController.OVERVIEW -> OverviewPage(ledger, cloud)
                             RoomController.APPS -> AppsPage(controller, ledger)
                             RoomController.PLANS -> PlansPage(controller, ledger)
                             RoomController.COPIES -> CopiesPage(controller, ledger, cloud)
@@ -706,6 +726,13 @@ private fun DrawScope.drawBezel(image: ImageBitmap, edgePx: Float, footPx: Float
 private fun MonitorTabs(controller: RoomController) {
     val names = listOf("Overview", "Apps", "Plans", "Copies", "Log")
     val keys = listOf("O", "A", "P", "C", "L")
+    var clock by remember { mutableStateOf(StorageRoomLog.timeText(System.currentTimeMillis())) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            clock = StorageRoomLog.timeText(System.currentTimeMillis())
+            delay(1000L)
+        }
+    }
     Row(modifier = Modifier.fillMaxWidth().background(Color(0x33000000))) {
         for (i in names.indices) {
             val on = controller.page == i + 1
@@ -726,6 +753,12 @@ private fun MonitorTabs(controller: RoomController) {
                 )
             }
         }
+        Text(
+            text = clock,
+            color = Color(0xFF9FC3E6),
+            fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)
+        )
     }
 }
 
@@ -841,15 +874,62 @@ private fun EditCell(edit: RoomEdit, withUnit: Boolean) {
 // ---- the five pages ----
 
 @Composable
-private fun OverviewPage(ledger: Ledger) {
+private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
     val assets = ledger.assets
     val apps = StorageRoomRules.roomApps(ledger.apps)
     val totalMb = assets.storageTotalMb
     val liveKb = StorageRules.usedKb(apps)
     val copiesKb = StorageRules.copiesKb(assets, apps)
     val overKb = StorageRules.companyOverKb(assets, apps)
-    MonText(if (totalMb > 0L) StorageRules.textMb(totalMb) else "Not set", Color.White, 26f, bold = true)
-    MonText("Company storage", ScreenDim)
+    val ssdKb = 2L * 1024L * 1024L * 1024L
+    val syncing = cloud.syncing
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column {
+            Text(
+                "NERIBO GROUP LIMITED",
+                color = Color(0xFF8FB0FF),
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+            )
+            Text("Company Storage", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 26.sp)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(Color(0xFF43D17A)))
+            Spacer(modifier = Modifier.width(5.dp))
+            Text("Online", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+    Spacer(modifier = Modifier.height(8.dp))
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SsdCard(
+            "Main Storage",
+            StorageRules.text(liveKb) + " used · " + StorageRules.text(maxOf(0L, ssdKb - liveKb)) + " free",
+            liveKb,
+            ssdKb,
+            Modifier.weight(1f)
+        )
+        SsdCard(
+            "Backup Storage",
+            when {
+                overKb > 0L -> "Stopped: over the total"
+                syncing -> "Syncing…"
+                else -> "Copy of main drive"
+            },
+            liveKb,
+            ssdKb,
+            Modifier.weight(1f)
+        )
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp).horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        SyncPill("Router online", false)
+        SyncPill("Nightly backup", false)
+        SyncPill(if (syncing) "Syncing" else "Server on", syncing)
+    }
+    MonLine("Company storage", if (totalMb > 0L) StorageRules.textMb(totalMb) else "Not set")
     MonBar(copiesKb, totalMb * 1024L)
     MonLine("Used by users (live)", StorageRules.text(liveKb))
     MonLine("Used by all copies", StorageRules.text(copiesKb))
@@ -859,7 +939,7 @@ private fun OverviewPage(ledger: Ledger) {
         overKb > 0L -> MonLine("Over the total by", StorageRules.text(overKb), ScreenBad)
         else -> MonLine("Free", StorageRules.text(totalMb * 1024L - copiesKb))
     }
-    Spacer(modifier = Modifier.height(8.dp))
+    Spacer(modifier = Modifier.height(6.dp))
     MonText("Each app", ScreenDim)
     for (app in apps) {
         val usedKb = app.storageAllocatedKb
@@ -869,6 +949,63 @@ private fun OverviewPage(ledger: Ledger) {
         )
         MonBar(usedKb, app.storageShareMb * 1024L)
     }
+}
+
+/** One of the two SSD cards of the Overview: the orange bar shows the live data against the 2 TB drive. */
+@Composable
+private fun SsdCard(title: String, note: String, valueKb: Long, ofKb: Long, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0x0DFFFFFF))
+            .border(1.dp, Color(0xAA5F86D6), RoundedCornerShape(10.dp))
+            .padding(8.dp)
+    ) {
+        Text(title, color = Color.White, fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+        Text("SanDisk Extreme SSD · 2 TB", color = Color(0xFF9FC3E6), fontSize = 9.5.sp)
+        Spacer(modifier = Modifier.height(6.dp))
+        OrangeBar(valueKb, ofKb)
+        Text(note, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 5.dp))
+    }
+}
+
+@Composable
+private fun OrangeBar(valueKb: Long, ofKb: Long) {
+    val percent = if (ofKb > 0L) valueKb.toDouble() / ofKb.toDouble() * 100.0 else 0.0
+    val color = if (percent > 100.0) Color(0xFFFF6B5E) else if (percent > 85.0) Color(0xFFFFD23F) else Color(0xFFF7931E)
+    val fraction = (maxOf(2.0, minOf(100.0, percent)) / 100.0).toFloat()
+    Box(modifier = Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(5.dp)).background(Color(0xFF0A1D44))) {
+        Box(modifier = Modifier.fillMaxWidth(fraction).height(9.dp).clip(RoundedCornerShape(5.dp)).background(color))
+    }
+}
+
+/** A status pill. While syncing its light pulses amber, like the preview. */
+@Composable
+private fun SyncPill(text: String, syncing: Boolean) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0x880A1D44))
+            .border(1.dp, Color(0xAA5F86D6), RoundedCornerShape(12.dp))
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (syncing) SyncDot() else Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF43D17A)))
+        Spacer(modifier = Modifier.width(5.dp))
+        Text(text, color = Color.White, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun SyncDot() {
+    val transition = rememberInfiniteTransition(label = "pill")
+    val alpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "pillAlpha"
+    )
+    Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(BarWarn.copy(alpha = alpha)))
 }
 
 @Composable
@@ -904,7 +1041,9 @@ private fun AppsPage(controller: RoomController, ledger: Ledger) {
             }
             if (app.storageShareMb > 0L) MonBar(usedKb, app.storageShareMb * 1024L)
             if (overShareKb > 0L) {
-                MonText("uses " + StorageRules.text(usedKb) + " · over its share by " + StorageRules.text(overShareKb), ScreenBad, 11.5f)
+                MonText("Over its share by " + StorageRules.text(overShareKb), ScreenBad, 11.5f)
+            } else if (app.storageShareMb > 0L) {
+                MonText("Free: " + StorageRules.text(app.storageShareMb * 1024L - usedKb), ScreenDim, 11.5f)
             } else {
                 MonText("uses " + StorageRules.text(usedKb), ScreenDim, 11.5f)
             }
@@ -935,7 +1074,7 @@ private fun PlansPage(controller: RoomController, ledger: Ledger) {
     MonBar(usedKb, app.storageShareMb * 1024L)
     MonText(
         if (app.storageShareMb > 0L) {
-            "uses " + StorageRules.text(usedKb) + " of its share of " + StorageRules.textMb(app.storageShareMb)
+            StorageRules.text(usedKb) + " of its share of " + StorageRules.textMb(app.storageShareMb)
         } else {
             "uses " + StorageRules.text(usedKb) + ". No share set yet."
         },
@@ -988,6 +1127,11 @@ private fun PlansPage(controller: RoomController, ledger: Ledger) {
             MonText(note, ScreenDim, 11.5f)
         }
     }
+    Spacer(modifier = Modifier.height(6.dp))
+    val shows = (0..3)
+        .filter { StorageRoomRules.planUsers(app, it) > 0L }
+        .joinToString(" · ") { StorageRoomRules.PLAN_NAMES[it] + " " + sizeText(StorageRoomRules.planSizeMb(app, it)) }
+    MonText(app.name + " app now shows: " + shows, ScreenDim, 11.5f)
 }
 
 @Composable
@@ -1009,8 +1153,8 @@ private fun CopiesPage(controller: RoomController, ledger: Ledger, cloud: RoomCl
         MonBar(liveKb, totalKb)
         val status = when {
             overKb > 0L -> "backup stopped: company storage is over its total"
-            cloud.syncing -> "syncing…"
-            else -> "in sync, follows the live copy"
+            cloud.syncing -> "Syncing…"
+            else -> "In sync, follows live in real time"
         }
         MonText(status, if (overKb > 0L) ScreenBad else ScreenDim, 11.5f)
     }
