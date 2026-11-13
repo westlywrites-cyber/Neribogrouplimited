@@ -24,7 +24,7 @@ object StorageRoomRules {
 
     /** The apps the room lists: the same ones the Storage page lists. */
     fun roomApps(apps: List<AppData>): List<AppData> =
-        apps.filter { it.googlePlayEnabled || (it.id != SOFTWARE_APP_ID && it.id != HOSTING_APP_ID) }
+        apps.filter { it.googlePlayEnabled || it.id != SOFTWARE_APP_ID }
 
     /** KB rounded up to whole MB. */
     fun mbUp(kb: Long): Long = (maxOf(0L, kb) + 1023L) / 1024L
@@ -94,6 +94,9 @@ object StorageRoomRules {
 
     private fun refuse(text: String): RoomVerdict = RoomVerdict(text, false)
 
+    private const val hostingPlanRefusal =
+        "Client Hosting's storage comes from its customers. Change it on the Client Hosting page."
+
     // ---- The checks ----
 
     /** The company total. Not below the shares given, not below what the copies already use, lowering needs the PIN. */
@@ -150,6 +153,7 @@ object StorageRoomRules {
 
     /** The size each user of a plan gets. Lowering it needs the PIN. */
     fun checkSize(assets: CompanyAssets, apps: List<AppData>, app: AppData, row: Int, newMb: Long): RoomVerdict {
+        if (app.isHosting) return refuse(hostingPlanRefusal)
         if (!sizeEditable(row)) return refuse("Custom storage is set for each user in the app.")
         val problem = checkCopies(assets, apps, withSize(app, row, newMb))
         if (problem != null) return refuse(problem)
@@ -158,6 +162,7 @@ object StorageRoomRules {
 
     /** The number of users of a plan (Manual apps only). */
     fun checkUsers(assets: CompanyAssets, apps: List<AppData>, app: AppData, row: Int, newCount: Long): RoomVerdict {
+        if (app.isHosting) return refuse(hostingPlanRefusal)
         if (!usersEditable(app, row)) {
             return refuse(app.name + "'s users come from its user list. Add or remove them in the app.")
         }

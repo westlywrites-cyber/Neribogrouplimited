@@ -21,7 +21,7 @@ val AppData.isHosting: Boolean get() = id == HOSTING_APP_ID
 fun Ledger.withHostingApp(): Ledger {
     val matches = apps.count { it.id == HOSTING_APP_ID }
     if (matches == 0) {
-        return copy(apps = apps + AppData(id = HOSTING_APP_ID, name = HOSTING_APP_NAME))
+        return copy(apps = apps + AppData(id = HOSTING_APP_ID, name = HOSTING_APP_NAME)).withHostedStorage()
     }
     if (matches > 1) {
         var seen = false
@@ -35,9 +35,26 @@ fun Ledger.withHostingApp(): Ledger {
                 false
             }
         }
-        return copy(apps = cleaned)
+        return copy(apps = cleaned).withHostedStorage()
     }
-    return this
+    return withHostedStorage()
+}
+
+/**
+ * Copies what the customers hold into the Client Hosting app, so the Storage page and the Storage room treat it
+ * like any other app (its share, the company total and the warnings). Worked out from the customers every time,
+ * never typed and never saved. Returns the same ledger when nothing changes.
+ */
+fun Ledger.withHostedStorage(): Ledger {
+    val app = apps.firstOrNull { it.id == HOSTING_APP_ID } ?: return this
+    val mb = hosting.customers.sumOf { it.storageMb }
+    val added = hosting.customers.map { it.addedMillis }
+    if (app.hostedStorageMb == mb && app.hostedAddedMillis == added) return this
+    return copy(
+        apps = apps.map {
+            if (it.id == HOSTING_APP_ID) it.copy(hostedStorageMb = mb, hostedAddedMillis = added) else it
+        }
+    )
 }
 
 /** The two currencies a hosting customer can pay in. */
@@ -187,8 +204,8 @@ object HostingEngine {
                 clockMillis = maxOf(ledger.hosting.clockMillis, eff)
             )
         )
-        if (!paidNow) return base
-        return recordPayment(base, fresh.id, eff, moveDate = false) ?: base
+        if (!paidNow) return base.withHostedStorage()
+        return (recordPayment(base, fresh.id, eff, moveDate = false) ?: base).withHostedStorage()
     }
 
     /** Changes the details of a customer. Dates, payments and history are never touched here. */
@@ -210,7 +227,7 @@ object HostingEngine {
             hosting = ledger.hosting.copy(
                 customers = ledger.hosting.customers.map { if (it.id == edited.id) merged else it }
             )
-        )
+        ).withHostedStorage()
     }
 
     fun deleteCustomer(ledger: Ledger, customerId: String): Ledger {
@@ -219,7 +236,7 @@ object HostingEngine {
             hosting = ledger.hosting.copy(
                 customers = ledger.hosting.customers.filter { it.id != customerId }
             )
-        )
+        ).withHostedStorage()
     }
 
     /**

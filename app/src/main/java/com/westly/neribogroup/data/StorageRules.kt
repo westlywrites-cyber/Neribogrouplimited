@@ -110,15 +110,17 @@ object StorageRules {
         if (app.storageShareMb <= 0L) return null
         val shareKb = app.storageShareMb * 1024L
         val usedKb = app.storageAllocatedKb
+        // Client Hosting has customers instead of users.
+        val who = if (app.isHosting) "customers" else "users"
         if (usedKb > shareKb) {
             return AppStorageWarning(
-                title = app.name + " might lose users' data",
-                text = "Its users hold " + text(usedKb - shareKb) + " more than its share of " +
-                    textMb(app.storageShareMb) + ". Raise this app's share or lower what its users get."
+                title = app.name + " might lose " + who + "' data",
+                text = "Its " + who + " hold " + text(usedKb - shareKb) + " more than its share of " +
+                    textMb(app.storageShareMb) + ". Raise this app's share or lower what its " + who + " get."
             )
         }
-        val newToday = app.newUsersToday(now)
-        val users = app.totalUsers
+        val newToday = if (app.isHosting) app.hostedNewToday(now) else app.newUsersToday(now)
+        val users = if (app.isHosting) app.hostedAddedMillis.size.toLong() else app.totalUsers
         if (newToday <= 0L || users <= 0L || usedKb <= 0L) return null
         val perDayKb = usedKb.toDouble() / users.toDouble() * newToday.toDouble()
         if (perDayKb <= 0.0) return null
@@ -126,8 +128,8 @@ object StorageRules {
         if (hours > WARN_WITHIN_HOURS) return null
         val shown = maxOf(1L, hours)
         return AppStorageWarning(
-            title = app.name + " might lose users' data in about " + shown + (if (shown == 1L) " hour" else " hours"),
-            text = "At today's pace (" + newToday + (if (newToday == 1L) " new user" else " new users") +
+            title = app.name + " might lose " + who + "' data in about " + shown + (if (shown == 1L) " hour" else " hours"),
+            text = "At today's pace (" + newToday + (if (newToday == 1L) " new " + who.dropLast(1) else " new " + who) +
                 ") its share of " + textMb(app.storageShareMb) +
                 " will be full in about " + shown + (if (shown == 1L) " hour" else " hours") +
                 ". This is an estimate. Raise this app's share to be safe."

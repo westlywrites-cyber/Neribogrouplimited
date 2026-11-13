@@ -177,7 +177,11 @@ data class AppData(
     /** Old value from the time storage grew by dice. Not used any more: storage is worked out from the users. */
     val storageUsedKb: Long = 0,
     /** This app's share of the company's total storage, in MB. 0 = no share set yet. */
-    val storageShareMb: Long = 0L
+    val storageShareMb: Long = 0L,
+    /** Client Hosting only: the storage its customers hold, in MB. Worked out from the customers, never saved. */
+    val hostedStorageMb: Long = 0L,
+    /** Client Hosting only: the time each customer was added (one per customer). Worked out, never saved. */
+    val hostedAddedMillis: List<Long> = emptyList()
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
@@ -241,8 +245,14 @@ data class AppData(
             val custom = customStorageUsers
             val planFree = plainFreeUsers
             return planFree * storageFreeMb + proUsers * storageProMb + premiumUsers * storagePremiumMb +
-                custom.sumOf { it.customStorageMb }
+                custom.sumOf { it.customStorageMb } + hostedStorageMb
         }
+
+    /** Client Hosting only: how many customers were added on the day of [now]. */
+    fun hostedNewToday(now: Long): Long {
+        val today = dayKey(now)
+        return hostedAddedMillis.count { dayKey(it) == today }.toLong()
+    }
 
     val storageAllocatedKb: Long get() = storageAllocatedMb * 1024L
 

@@ -22,10 +22,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Ledger
-import com.westly.neribogroup.data.HOSTING_APP_ID
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
 import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.data.StorageUnit
+import com.westly.neribogroup.data.isHosting
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.FlatCard
 import com.westly.neribogroup.feature.common.LocalBiometricGate
@@ -163,7 +163,7 @@ fun CompanyStorageScreen(
 ) {
     val assets = ledger.assets
     val now = rememberNowMillis()
-    val liveApps = ledger.apps.filter { it.googlePlayEnabled || (it.id != SOFTWARE_APP_ID && it.id != HOSTING_APP_ID) }
+    val liveApps = ledger.apps.filter { it.googlePlayEnabled || it.id != SOFTWARE_APP_ID }
     val liveKb = StorageRules.usedKb(ledger.apps)
     val offsiteKb = if (assets.offsiteMillis > 0L) assets.offsiteKb else 0L
     val copiesKb = liveKb + liveKb + offsiteKb
@@ -369,6 +369,15 @@ fun CompanyStorageScreen(
                     Spacer(modifier = Modifier.height(6.dp))
                     val custom = app.customStorageUsers
                     val plainFree = app.plainFreeUsers
+                    if (app.isHosting) {
+                        val count = app.hostedAddedMillis.size
+                        Text(
+                            formatCount(count.toLong()) + (if (count == 1) " customer: " else " customers: ") +
+                                StorageRules.textMb(app.hostedStorageMb),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
                     Text(
                         "Free " + formatCount(plainFree) + " × " + StorageRules.textMb(app.storageFreeMb),
                         style = MaterialTheme.typography.bodySmall,
@@ -402,6 +411,7 @@ fun CompanyStorageScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedButton(onClick = { shareAppId = app.id }) { Text("Edit share") }
