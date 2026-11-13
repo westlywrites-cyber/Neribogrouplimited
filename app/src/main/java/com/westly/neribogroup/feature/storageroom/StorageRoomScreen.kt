@@ -87,6 +87,15 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.layout
+import kotlin.math.roundToInt
 import com.westly.neribogroup.R
 import com.westly.neribogroup.cloud.StorageRoomCloud
 import com.westly.neribogroup.data.AppData
@@ -133,6 +142,8 @@ fun StorageRoomScreen(
 ) {
     BackHandler { onBack() }
     var unlocked by rememberSaveable { mutableStateOf(false) }
+    // Zoom of the Storage room only: 1.0 is the full size, lower shows the whole room smaller.
+    var zoom by rememberSaveable { mutableStateOf(1f) }
     val hasPin = StorageRules.hasPin(ledger.assets)
 
     Scaffold(
@@ -142,6 +153,21 @@ fun StorageRoomScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (hasPin && unlocked) {
+                        IconButton(onClick = { zoom = maxOf(ZOOM_MIN, (Math.round(zoom * 10f) - 1) / 10f) }) {
+                            Text("−", fontSize = 24.sp)
+                        }
+                        Text(
+                            text = Math.round(zoom * 100f).toString() + "%",
+                            fontSize = 14.sp,
+                            modifier = Modifier.clickable { zoom = 1f }.padding(horizontal = 4.dp, vertical = 8.dp)
+                        )
+                        IconButton(onClick = { zoom = minOf(1f, (Math.round(zoom * 10f) + 1) / 10f) }) {
+                            Text("+", fontSize = 24.sp)
+                        }
                     }
                 }
             )
@@ -160,7 +186,9 @@ fun StorageRoomScreen(
                     }
                 )
                 !unlocked -> PinEnter(ledger = ledger, onOpened = { unlocked = true })
-                else -> RoomContent(ledger, cloud, cloudFeed, actions, onPullFromCloud)
+                else -> RoomContent(ledger, cloud, cloudFeed, actions, onPullFromCloud, zoom) {
+                    zoom = (zoom * it).coerceIn(ZOOM_MIN, 1f)
+                }
             }
         }
     }
@@ -354,7 +382,9 @@ private fun RoomContent(
     cloud: RoomCloudInfo,
     cloudFeed: StorageRoomCloud,
     actions: RoomActions,
-    onPullFromCloud: () -> Unit
+    onPullFromCloud: () -> Unit,
+    zoom: Float,
+    onPinch: (Float) -> Unit
 ) {
     val actionsState = rememberUpdatedState(actions)
     val pullState = rememberUpdatedState(onPullFromCloud)
@@ -478,9 +508,21 @@ private fun RoomContent(
         onDispose { client.stop() }
     }
 
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        item { RoomScene(controller, ledger, cloud, linked) }
-        item { LiveCards(ledger, now) }
+    // The keyboard is docked at the bottom of the screen so it is always visible together with the monitor.
+    // The monitor, desk, console and live cards scroll above it.
+    Column(modifier = Modifier.fillMaxSize().pinchZoom(onPinch)) {
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            item { RoomScene(controller, ledger, cloud, linked, zoom) }
+            item { Box(modifier = Modifier.fillMaxWidth().zoomed(zoom)) { LiveCards(ledger, now) } }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
+        ) {
+            RoomKeyboard(isLit = { controller.isLit(it) }, onKey = { controller.press(it) })
+        }
     }
 }
 
@@ -491,14 +533,14 @@ private fun warningKind(app: AppData, now: Long): String {
 }
 
 @Composable
-private fun RoomScene(controller: RoomController, ledger: Ledger, cloud: RoomCloudInfo, linked: Boolean) {
+private fun RoomScene(controller: RoomController, ledger: Ledger, cloud: RoomCloudInfo, linked: Boolean, zoom: Float) {
     // The scene follows the app's own light or dark theme.
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val top = if (dark) Color(0xFF3B3A36) else Color(0xFFECE8DF)
     val wall = if (dark) Color(0xFF31302C) else Color(0xFFE2DDD2)
     val deskTop = if (dark) Color(0xFF6B5638) else Color(0xFFE8D6B8)
     val deskBottom = if (dark) Color(0xFF574429) else Color(0xFFDCBB8C)
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(
@@ -506,21 +548,61 @@ private fun RoomScene(controller: RoomController, ledger: Ledger, cloud: RoomClo
                     0f to top, 0.18f to wall, 0.18f to deskTop, 1f to deskBottom
                 )
             )
+    ) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .zoomed(zoom)
             .padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 22.dp)
     ) {
         Monitor(controller, ledger, cloud)
         DeskPhoto(controller, cloud)
         Text(
-            "Tap the keys below, or tap lines on the monitor like a mouse click. Keys with a teal outline work right now. " +
+            "Tap the keys at the bottom of the screen, or tap lines on the monitor like a mouse click. Keys with a teal outline work right now. " +
                 "Tap a drive to open Copies, or the laptop to open the Log.",
             color = if (dark) Color.White.copy(alpha = 0.9f) else Color(0xFF2A2A2A),
             fontSize = 13.sp,
             modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 10.dp)
         )
-        Spacer(modifier = Modifier.height(10.dp))
-        RoomKeyboard(isLit = { controller.isLit(it) }, onKey = { controller.press(it) })
         Spacer(modifier = Modifier.height(12.dp))
         RoomConsole()
+    }
+    }
+}
+
+/** The lowest zoom of the Storage room. */
+private const val ZOOM_MIN = 0.3f
+
+/**
+ * Shows the content smaller (zoom below 1) as one picture, centred at the top, and gives the layout the smaller height,
+ * so there is no empty space below it. The content is laid out at its normal width, so nothing inside changes shape.
+ */
+private fun Modifier.zoomed(zoom: Float): Modifier = layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints)
+    val height = (placeable.height * zoom).roundToInt()
+    layout(placeable.width, height) {
+        placeable.placeWithLayer(0, 0) {
+            scaleX = zoom
+            scaleY = zoom
+            transformOrigin = TransformOrigin(0.5f, 0f)
+        }
+    }
+}
+
+/** Two fingers zoom the room. One finger is left alone, so taps, scrolling and the keyboard work as before. */
+private fun Modifier.pinchZoom(onZoom: (Float) -> Unit): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.size >= 2) {
+                val change = event.calculateZoom()
+                if (change != 1f) {
+                    onZoom(change)
+                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                }
+            }
+        } while (event.changes.any { it.pressed })
     }
 }
 
