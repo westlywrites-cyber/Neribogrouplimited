@@ -60,6 +60,9 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.2")
+
+    // Storage room: a WebSocket for Supabase Realtime (the live feed from the owner's other phones).
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
 
     // Biometric verification. BiometricPrompt needs a FragmentActivity; its fallback dialog on Android 8 needs an

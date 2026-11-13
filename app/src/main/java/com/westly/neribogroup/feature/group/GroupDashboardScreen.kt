@@ -473,6 +473,14 @@ fun GroupDashboardScreen(
                             onClick = { onOpenSection(Section.STORAGE) }
                         )
                     }
+                    item {
+                        SectionTile(
+                            title = "Storage room",
+                            subtitle = "Server desk, keyboard and live console · PIN protected",
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { onOpenSection(Section.STORAGE_ROOM) }
+                        )
+                    }
                 }
             }
 

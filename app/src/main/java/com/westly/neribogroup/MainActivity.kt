@@ -44,6 +44,9 @@ import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
 import com.westly.neribogroup.feature.group.SocialsScreen
 import com.westly.neribogroup.feature.group.StaffListScreen
+import com.westly.neribogroup.feature.storageroom.RoomActions
+import com.westly.neribogroup.feature.storageroom.RoomCloudInfo
+import com.westly.neribogroup.feature.storageroom.StorageRoomScreen
 import com.westly.neribogroup.feature.software.SoftwareClientsScreen
 import com.westly.neribogroup.feature.software.SoftwareOfferScreen
 import com.westly.neribogroup.feature.software.SoftwareProjectScreen
@@ -471,6 +474,28 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onSetShare = { id, mb, confirmed -> vm.setAppStorageShare(id, mb, confirmed) },
                 onBackUpOffsite = { vm.backUpOffsiteNow() },
                 onClearMessage = { vm.clearStorageMessage() }
+            )
+            Section.STORAGE_ROOM -> StorageRoomScreen(
+                ledger = vm.ledger,
+                cloud = RoomCloudInfo(
+                    on = vm.cloudMode == CloudMode.ON && vm.cloudSignedIn,
+                    syncing = vm.cloudSyncing,
+                    problem = vm.cloudLastError
+                ),
+                cloudFeed = vm.storageRoomCloud,
+                actions = RoomActions(
+                    setTotal = { mb, confirmed -> vm.setCompanyStorageTotal(mb, confirmed) },
+                    setShare = { id, mb, confirmed -> vm.setAppStorageShare(id, mb, confirmed) },
+                    setOffer = { id, free, pro, premium, verified ->
+                        val site = vm.ledger.apps.firstOrNull { it.id == id }?.storageSiteMb ?: 0L
+                        vm.setStorageOffer(id, free, pro, premium, site, verified)
+                    },
+                    setUsers = { id, free, pro, premium -> vm.setManualPlanUsers(id, free, pro, premium) },
+                    backUpOffsite = { vm.backUpOffsiteNow() }
+                ),
+                onCreatePin = { vm.setStoragePin(it) },
+                onPullFromCloud = { vm.syncNowAction() },
+                onBack = { vm.openSection = null }
             )
             Section.SOCIALS -> SocialsScreen(
                 ledger = vm.ledger,

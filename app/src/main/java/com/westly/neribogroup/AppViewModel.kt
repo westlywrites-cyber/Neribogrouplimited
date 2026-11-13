@@ -35,6 +35,7 @@ import com.westly.neribogroup.cloud.LedgerSplitter
 import com.westly.neribogroup.cloud.MediaSync
 import com.westly.neribogroup.cloud.sha256Hex
 import com.westly.neribogroup.cloud.RestoreOutcome
+import com.westly.neribogroup.cloud.StorageRoomCloud
 import com.westly.neribogroup.cloud.SupabaseApi
 import com.westly.neribogroup.cloud.SyncHost
 import com.westly.neribogroup.cloud.SyncResult
@@ -106,7 +107,7 @@ import kotlin.concurrent.thread
 import kotlin.random.Random
 
 /** The pages that open from the home screen tiles. */
-enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES, USD, SOCIALS, APPLE, PAYSTACK, DOCS, TOOLS, DEPLOY, STORAGE }
+enum class Section { APPS, RENEWALS, STAFF, COSTS, PLAY, CASES, USD, SOCIALS, APPLE, PAYSTACK, DOCS, TOOLS, DEPLOY, STORAGE, STORAGE_ROOM }
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -1750,11 +1751,63 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         storageMessage = ""
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Storage room: its PIN, typed user numbers of Manual apps and the live feed to the other phones
+    // ---------------------------------------------------------------------------------------------
+
+    /** The Storage room's live feed (table storage_events). It does nothing while the cloud is off. */
+    val storageRoomCloud = StorageRoomCloud(cloudConfig, cloudApi) {
+        StorageRules.companyOverKb(ledger.assets, ledger.apps) > 0L
+    }
+
+    /**
+     * Saves the Storage room's access PIN. Only a salted hash is kept (in the same place the PIN helpers of
+     * StorageRules already use); the PIN itself is never saved. False when it is not 4 to 8 digits.
+     */
+    fun setStoragePin(pin: String): Boolean {
+        if (!StorageRules.isValidPin(pin)) return false
+        val salt = StorageRules.newSalt()
+        val hadPin = StorageRules.hasPin(ledger.assets)
+        saveAssets(
+            ledger.assets.copy(pinHash = StorageRules.hashPin(salt, pin), pinSalt = salt)
+                .withStorageLog(if (hadPin) "Storage room PIN changed" else "Storage room PIN created")
+        )
+        return true
+    }
+
+    /**
+     * Sets how many Free, Pro and Premium users a Manual app has: the same typed numbers its Edit page sets.
+     * A live app is refused (its users come from its real user list).
+     */
+    fun setManualPlanUsers(id: String, free: Long, pro: Long, premium: Long) {
+        if (id == SOFTWARE_APP_ID) return
+        val app = ledger.apps.firstOrNull { it.id == id } ?: return
+        if (app.googlePlayEnabled) return
+        val f = maxOf(0L, free)
+        val p = maxOf(0L, pro)
+        val pr = maxOf(0L, premium)
+        val updated = app.copy(manualTotalUsers = f + p + pr, manualProUsers = p, manualPremiumUsers = pr)
+        if (updated.manualTotalUsers == app.manualTotalUsers && updated.manualProUsers == app.manualProUsers &&
+            updated.manualPremiumUsers == app.manualPremiumUsers
+        ) return
+        val text = app.name + " users changed: Free " + f + ", Pro " + p + ", Premium " + pr
+        saveLedger(
+            ledger.copy(
+                apps = ledger.apps.map { if (it.id == id) updated else it },
+                assets = ledger.assets.withStorageLog(text)
+            )
+        )
+    }
+
     /** The assets with one more line at the top of the storage log (the newest 200 are kept). */
-    private fun CompanyAssets.withStorageLog(text: String): CompanyAssets = copy(
-        storageLog = (listOf(StorageLogLine(System.currentTimeMillis(), text)) + storageLog)
-            .take(ChannelRules.MAX_STORAGE_LOG)
-    )
+    private fun CompanyAssets.withStorageLog(text: String): CompanyAssets {
+        // The Storage room's live feed: the owner's other phones see this change at once (nothing is sent with the cloud off).
+        storageRoomCloud.send("CHANGE", "owner", text)
+        return copy(
+            storageLog = (listOf(StorageLogLine(System.currentTimeMillis(), text)) + storageLog)
+                .take(ChannelRules.MAX_STORAGE_LOG)
+        )
+    }
 
     /**
      * Writes one line to the storage log for an action the owner verified with the phone's fingerprint or screen
