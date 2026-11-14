@@ -76,7 +76,13 @@ object RoomPinGuard {
  * does. It follows the preview (O A P C L and F1 to F5, arrows, Enter, Esc, Tab on Plans, digits and "." and
  * M, G, T). Every change is checked by [StorageRoomRules] first and done by [RoomActions].
  */
-class RoomController(initial: Ledger, private val actions: () -> RoomActions) {
+class RoomController(
+    initial: Ledger,
+    private val power: () -> PowerView = { PowerView.ON },
+    /** Called with true to switch the server on and false to turn it off. Local to this phone only. */
+    private val onPower: (Boolean) -> Unit = {},
+    private val actions: () -> RoomActions
+) {
 
     var page by mutableStateOf(OVERVIEW)
         private set
@@ -91,6 +97,10 @@ class RoomController(initial: Ledger, private val actions: () -> RoomActions) {
     var pin by mutableStateOf<RoomPin?>(null)
         private set
     var message by mutableStateOf<RoomMessage?>(null)
+        private set
+
+    /** True while the "Turn off the server?" warning is on the monitor. */
+    var warn by mutableStateOf(false)
         private set
 
     private var current: Ledger = initial
@@ -114,7 +124,13 @@ class RoomController(initial: Ledger, private val actions: () -> RoomActions) {
 
     // ---- Which keys work right now ----
 
+    fun powerView(): PowerView = power()
+
     fun isLit(k: String): Boolean {
+        val phase = power().phase
+        if (k == "PWR") return (phase == PowerPhase.ON && pin == null && edit == null && !warn) || phase == PowerPhase.OFF
+        if (phase != PowerPhase.ON) return false
+        if (warn) return k == "Escape" || k == "Enter"
         val digit = k.length == 1 && k[0] in '0'..'9'
         if (pin != null) return digit || k == "Backspace" || k == "Escape" || k == "Enter"
         val e = edit
@@ -129,6 +145,13 @@ class RoomController(initial: Ledger, private val actions: () -> RoomActions) {
     }
 
     fun hint(): String {
+        when (power().phase) {
+            PowerPhase.OFF -> return "The server is off. Press PWR to switch it on."
+            PowerPhase.SHUTTING -> return "The server is shutting down. Please wait."
+            PowerPhase.BOOTING -> return "The server is starting up. Please wait."
+            else -> Unit
+        }
+        if (warn) return "Enter continues. Esc cancels."
         val e = edit
         if (e != null) {
             return if (e.kind == RoomEditKind.USERS) {
@@ -149,6 +172,26 @@ class RoomController(initial: Ledger, private val actions: () -> RoomActions) {
     // ---- Keys ----
 
     fun press(k: String) {
+        val phase = power().phase
+        if (k == "PWR") {
+            if (phase == PowerPhase.OFF) {
+                onPower(true)
+            } else if (phase == PowerPhase.ON && pin == null && edit == null && !warn) {
+                warn = true
+                message = null
+            }
+            return
+        }
+        if (phase != PowerPhase.ON) return
+        if (warn) {
+            if (k == "Escape") {
+                warn = false
+            } else if (k == "Enter") {
+                warn = false
+                askPin("Turn off the server") { onPower(false) }
+            }
+            return
+        }
         if (pin != null) {
             pinKey(k)
             return
@@ -162,13 +205,13 @@ class RoomController(initial: Ledger, private val actions: () -> RoomActions) {
 
     /** A tap on a tab of the monitor, like F1 to F5. */
     fun tapTab(p: Int) {
-        if (pin != null || edit != null) return
+        if (pin != null || edit != null || warn || power().phase != PowerPhase.ON) return
         go(p)
     }
 
     /** A tap on a line of the monitor: the first tap picks it, a tap on the picked line changes it. */
     fun tapRow(index: Int, column: Int) {
-        if (pin != null || edit != null) return
+        if (pin != null || edit != null || warn || power().phase != PowerPhase.ON) return
         if (page == PLANS) {
             if (sel == index && col == column) enter() else {
                 sel = index

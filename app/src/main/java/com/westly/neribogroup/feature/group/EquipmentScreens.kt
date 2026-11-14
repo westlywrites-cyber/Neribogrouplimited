@@ -2,19 +2,27 @@ package com.westly.neribogroup.feature.group
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -22,14 +30,21 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.westly.neribogroup.data.ChannelRules
 import com.westly.neribogroup.data.CompanyAssets
 import com.westly.neribogroup.data.Ledger
@@ -42,7 +57,10 @@ import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NeriboDialog
 import com.westly.neribogroup.feature.common.NumberField
 import com.westly.neribogroup.feature.common.TintedButton
+import com.westly.neribogroup.feature.staff.decodePhoto
 import com.westly.neribogroup.ui.formatDate
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
@@ -114,6 +132,8 @@ fun EquipmentScreen(
     var adding by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     val openTool = openId?.let { id -> assets.tools.firstOrNull { it.id == id } }
+    // Which photo of the open item is shown full screen (-1 = none).
+    var viewerIndex by remember(openId) { mutableStateOf(-1) }
 
     val pickPhoto = rememberSinglePhotoPicker { uri ->
         val tool = openTool
@@ -151,20 +171,11 @@ fun EquipmentScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             for (index in 0 until openTool.photoCount) {
-                                Column {
-                                    AssetPhoto(photoFile(openTool.id, index), photoTick, Modifier.size(110.dp))
-                                    TextButton(onClick = {
-                                        val left = openTool.photoCount - 1
-                                        onRemovePhoto(openTool.id, index, openTool.photoCount)
-                                        onSave(
-                                            assets.copy(
-                                                tools = assets.tools.map {
-                                                    if (it.id == openTool.id) it.copy(photos = left, hasPhoto = left > 0) else it
-                                                }
-                                            )
-                                        )
-                                    }) { Text("Remove") }
-                                }
+                                AssetPhoto(
+                                    photoFile(openTool.id, index),
+                                    photoTick,
+                                    Modifier.size(110.dp).clickable { viewerIndex = index }
+                                )
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
@@ -318,6 +329,28 @@ fun EquipmentScreen(
             }
         )
     }
+    if (openTool != null && viewerIndex >= 0 && openTool.photoCount > 0) {
+        EquipmentPhotoViewer(
+            toolId = openTool.id,
+            count = openTool.photoCount,
+            startIndex = viewerIndex.coerceAtMost(openTool.photoCount - 1),
+            photoFile = photoFile,
+            photoTick = photoTick,
+            onClose = { viewerIndex = -1 },
+            onDelete = { index ->
+                val left = openTool.photoCount - 1
+                onRemovePhoto(openTool.id, index, openTool.photoCount)
+                onSave(
+                    assets.copy(
+                        tools = assets.tools.map {
+                            if (it.id == openTool.id) it.copy(photos = left, hasPhoto = left > 0) else it
+                        }
+                    )
+                )
+                if (left <= 0) viewerIndex = -1
+            }
+        )
+    }
     if (confirmDelete && openTool != null) {
         ConfirmDialog(
             heading = "Delete " + openTool.name + "?",
@@ -436,5 +469,71 @@ private fun EquipmentDialog(
                 }
             )
         }
+    }
+}
+
+/** Full-screen, swipeable viewer for one equipment item's photos (same feel as the staff photo viewer). */
+@Composable
+private fun EquipmentPhotoViewer(
+    toolId: String,
+    count: Int,
+    startIndex: Int,
+    photoFile: (id: String, index: Int) -> File,
+    photoTick: Int,
+    onClose: () -> Unit,
+    onDelete: (Int) -> Unit
+) {
+    val pager = rememberPagerState(initialPage = startIndex, pageCount = { count })
+    var confirm by remember { mutableStateOf(false) }
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
+                val file = photoFile(toolId, page)
+                val bitmap by produceState<android.graphics.Bitmap?>(null, file.path, photoTick) {
+                    value = withContext(Dispatchers.IO) { decodePhoto(file, 2048) }
+                }
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    val b = bitmap
+                    if (b != null) {
+                        Image(
+                            bitmap = b.asImageBitmap(),
+                            contentDescription = "Equipment photo " + (page + 1),
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        CircularProgressIndicator(color = Color.White)
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onClose) { Text("Close", color = Color.White) }
+                Text(
+                    text = (pager.currentPage + 1).toString() + " of " + count,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { confirm = true }) { Text("Delete", color = Color(0xFFFF8A80)) }
+            }
+        }
+    }
+    if (confirm) {
+        ConfirmDialog(
+            heading = "Delete this photo?",
+            message = "It is removed from this item.",
+            confirmLabel = "Delete",
+            onConfirm = {
+                confirm = false
+                onDelete(pager.currentPage)
+            },
+            onDismiss = { confirm = false }
+        )
     }
 }

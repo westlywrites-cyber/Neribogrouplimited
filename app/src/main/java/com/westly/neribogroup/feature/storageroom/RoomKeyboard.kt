@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,6 +30,8 @@ private class RoomKey(val id: String, val label: String, val weight: Float = 1f,
         const val NORMAL = 0
         const val FUNCTION = 1
         const val ENTER = 2
+        const val POWER = 3
+        const val SPACER = 4
     }
 }
 
@@ -42,7 +45,9 @@ private val KEY_ROWS: List<List<RoomKey>> = listOf(
         RoomKey("F2", "F2", 1f, RoomKey.FUNCTION),
         RoomKey("F3", "F3", 1f, RoomKey.FUNCTION),
         RoomKey("F4", "F4", 1f, RoomKey.FUNCTION),
-        RoomKey("F5", "F5", 1f, RoomKey.FUNCTION)
+        RoomKey("F5", "F5", 1f, RoomKey.FUNCTION),
+        RoomKey("", "", 4.4f, RoomKey.SPACER),
+        RoomKey("PWR", "PWR", 1.6f, RoomKey.POWER)
     ),
     letters("1234567890") + listOf(RoomKey(".", "."), RoomKey("Backspace", "⌫", 1.6f)),
     listOf(RoomKey("Tab", "Tab", 1.6f)) + letters("QWERTYUIOP"),
@@ -61,6 +66,9 @@ private val KeyFunction = Color(0xFF1F3A3A)
 private val KeyFunctionText = Color(0xFFBFF3EC)
 private val KeyAccent = Color(0xFF7FD1C7)
 private val KeyAccentText = Color(0xFF04202A)
+private val KeyPower = Color(0xFF4A1F1F)
+private val KeyPowerText = Color(0xFFFFB4AB)
+private val KeyPowerRing = Color(0xFFFF6B6B)
 
 /**
  * The full keyboard of the Storage room. A key that works right now is outlined; the others are dimmed and do
@@ -88,15 +96,21 @@ fun RoomKeyboard(isLit: (String) -> Boolean, onKey: (String) -> Unit, modifier: 
 
 @Composable
 private fun RowScope.KeyButton(key: RoomKey, lit: Boolean, onKey: (String) -> Unit) {
+    if (key.kind == RoomKey.SPACER) {
+        Spacer(modifier = Modifier.weight(key.weight).height(38.dp))
+        return
+    }
     val shape = RoundedCornerShape(6.dp)
     val background = when (key.kind) {
         RoomKey.ENTER -> KeyAccent
         RoomKey.FUNCTION -> KeyFunction
+        RoomKey.POWER -> KeyPower
         else -> KeyBody
     }
     val textColor = when (key.kind) {
         RoomKey.ENTER -> KeyAccentText
         RoomKey.FUNCTION -> KeyFunctionText
+        RoomKey.POWER -> KeyPowerText
         else -> KeyText
     }
     var modifier = Modifier
@@ -105,7 +119,7 @@ private fun RowScope.KeyButton(key: RoomKey, lit: Boolean, onKey: (String) -> Un
         .alpha(if (lit) 1f else 0.32f)
         .clip(shape)
         .background(background)
-    if (lit) modifier = modifier.border(2.dp, KeyAccent, shape)
+    if (lit) modifier = modifier.border(2.dp, if (key.kind == RoomKey.POWER) KeyPowerRing else KeyAccent, shape)
     Box(
         modifier = modifier.clickable(enabled = lit) { onKey(key.id) },
         contentAlignment = Alignment.Center

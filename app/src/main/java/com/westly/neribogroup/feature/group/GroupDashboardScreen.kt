@@ -184,6 +184,7 @@ fun GroupDashboardScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            item { com.westly.neribogroup.feature.storageroom.ServerOfflineBanner() }
             if (editing) {
                 item {
                     OutlinedTextField(

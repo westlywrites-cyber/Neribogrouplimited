@@ -7,6 +7,9 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -22,13 +25,19 @@ private const val HUM_VOLUME = 0.5f
  * If the sound cannot be played for any reason, the room simply stays quiet and nothing else is affected.
  */
 @Composable
-internal fun RoomHum() {
+internal fun RoomHum(playing: Boolean = true) {
     val context = LocalContext.current
+    val wanted = rememberUpdatedState(playing)
+    val control = remember { arrayOfNulls<() -> Unit>(1) }
+    // When the servers are switched off or on, the hum stops or starts with them.
+    LaunchedEffect(playing) { control[0]?.invoke() }
     DisposableEffect(context) {
         var player: MediaPlayer? = null
 
+        var resumed = false
+
         fun start() {
-            if (player != null) return
+            if (player != null || !wanted.value) return
             try {
                 val attributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -62,17 +71,32 @@ internal fun RoomHum() {
         }
 
         val owner = context.findLifecycleOwner()
+        control[0] = {
+            if (wanted.value) {
+                if (resumed) start()
+            } else {
+                stop()
+            }
+        }
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) start()
-            if (event == Lifecycle.Event.ON_PAUSE) stop()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                resumed = true
+                start()
+            }
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                resumed = false
+                stop()
+            }
         }
         if (owner != null) {
             // Adding the observer plays the lifecycle up to now, so a screen opened while the app is showing starts at once.
             owner.lifecycle.addObserver(observer)
         } else {
+            resumed = true
             start()
         }
         onDispose {
+            control[0] = null
             owner?.lifecycle?.removeObserver(observer)
             stop()
         }

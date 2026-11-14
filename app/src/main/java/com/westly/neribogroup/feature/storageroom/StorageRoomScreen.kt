@@ -389,11 +389,21 @@ private fun RoomContent(
 ) {
     val actionsState = rememberUpdatedState(actions)
     val pullState = rememberUpdatedState(onPullFromCloud)
-    val controller = remember { RoomController(ledger) { actionsState.value } }
+    // The power of the pretend server lives only on this phone (a private file). It never touches the ledger or the cloud.
+    val power = rememberRoomPower()
+    val powerContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val controller = remember {
+        RoomController(
+            ledger,
+            power = { power.value },
+            onPower = { on -> if (on) RoomPower.startBoot(powerContext) else RoomPower.startShutdown(powerContext) }
+        ) { actionsState.value }
+    }
     controller.update(ledger)
 
-    // The server hum plays while the room is open and stops when it is left or the app goes to the background.
-    RoomHum()
+    // The server hum plays while the room is open and the servers run; it stops when the room is left, the app goes
+    // to the background, or the server is switched off.
+    RoomHum(playing = RoomPower.humPlaying(power.value))
 
     val apps = StorageRoomRules.roomApps(ledger.apps)
     val now = rememberNowMillis()
@@ -638,6 +648,8 @@ private fun Monitor(controller: RoomController, ledger: Ledger, cloud: RoomCloud
     val scroll = rememberScrollState()
     LaunchedEffect(controller.page) { scroll.scrollTo(0) }
     val message = controller.message
+    val power = controller.powerView()
+    val dark = power.phase == PowerPhase.OFF || power.phase == PowerPhase.BOOTING
     val footColor = if (message == null) {
         Color(0xFFD6EBFF)
     } else if (message.bad) {
@@ -663,10 +675,13 @@ private fun Monitor(controller: RoomController, ledger: Ledger, cloud: RoomCloud
                     .fillMaxWidth()
                     .height(410.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Brush.linearGradient(listOf(Color(0xFF0B2D6B), Color(0xFF06142E))))
+                    .background(
+                        if (dark) Brush.linearGradient(listOf(Color.Black, Color.Black))
+                        else Brush.linearGradient(listOf(Color(0xFF0B2D6B), Color(0xFF06142E)))
+                    )
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    MonitorTabs(controller)
+                    if (power.phase == PowerPhase.ON) MonitorTabs(controller)
                     Column(
                         modifier = Modifier
                             .weight(1f)
@@ -674,7 +689,13 @@ private fun Monitor(controller: RoomController, ledger: Ledger, cloud: RoomCloud
                             .verticalScroll(scroll)
                             .padding(horizontal = 10.dp, vertical = 9.dp)
                     ) {
-                        when (controller.page) {
+                        when {
+                            controller.warn -> PowerWarnPanel()
+                            power.busy -> PowerProgressPanel(power)
+                            power.phase == PowerPhase.OFF -> PowerOffPanel()
+                            else -> Unit
+                        }
+                        if (power.phase == PowerPhase.ON && !controller.warn) when (controller.page) {
                             RoomController.OVERVIEW -> OverviewPage(ledger, cloud)
                             RoomController.APPS -> AppsPage(controller, ledger)
                             RoomController.PLANS -> PlansPage(controller, ledger)
@@ -777,7 +798,12 @@ private fun PinOverlay(pin: RoomPin) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             MonText(pin.title, Color.White, 15f, bold = true)
-            MonText("This lowers a limit, so type your PIN on the keyboard.", ScreenDim, 12f)
+            MonText(
+                if (pin.title.startsWith("Turn off")) "This takes all your apps offline, so type your PIN on the keyboard."
+                else "This lowers a limit, so type your PIN on the keyboard.",
+                ScreenDim,
+                12f
+            )
             PinDots(count = pin.buf.length, color = Accent, dot = 13.dp)
             MonText(pin.message, ScreenBad, 12f)
             MonText("Enter checks it. Esc cancels.", ScreenDim, 11f)
@@ -1221,7 +1247,16 @@ private fun wirePaths(): List<Path> {
 
 @Composable
 private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
-    val photo = ImageBitmap.imageResource(R.drawable.room_desk)
+    val power = controller.powerView()
+    val picture = RoomPower.picture(power)
+    val photo = ImageBitmap.imageResource(
+        when (picture) {
+            "off" -> R.drawable.room_pwr_off
+            "s1" -> R.drawable.room_pwr_s1
+            "s2" -> R.drawable.room_pwr_s2
+            else -> R.drawable.room_desk
+        }
+    )
     val wires = remember { wirePaths() }
     // The sync lines only move while the cloud is syncing; otherwise nothing animates and nothing redraws.
     val transition = rememberInfiniteTransition(label = "wires")
@@ -1235,7 +1270,8 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
     } else {
         remember { mutableStateOf(0f) }
     }
-    val syncing = cloud.syncing
+    // The sync lines and drive lights only show while the servers are running.
+    val syncing = cloud.syncing && picture == "on"
     BoxWithConstraints(modifier = Modifier.fillMaxWidth().offset(y = (-6).dp)) {
         val w = maxWidth
         val h = w * (DESK_H / DESK_W)
@@ -1270,8 +1306,10 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                         }
                     }
                     // The drive lights of the two servers (main on top, backup below).
-                    for (c in listOf(Offset(427f, 484f), Offset(427f, 504f), Offset(427f, 623f), Offset(427f, 643f))) {
-                        drawCircle(Color(0x5543D17A), radius = 9f, center = c)
+                    if (picture == "on") {
+                        for (c in listOf(Offset(427f, 484f), Offset(427f, 504f), Offset(427f, 623f), Offset(427f, 643f))) {
+                            drawCircle(Color(0x5543D17A), radius = 9f, center = c)
+                        }
                     }
                 }
             }
@@ -1384,5 +1422,50 @@ private fun SegmentBar(valueKb: Long, ofKb: Long) {
         if (used < 99.5f) {
             Box(modifier = Modifier.weight(100f - used).height(6.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF4B4458)))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The power screens of the monitor (shown on this phone only)
+// ---------------------------------------------------------------------------------------------
+
+@Composable
+private fun PowerWarnPanel() {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        MonText("⚠ Turn off the server?", Color(0xFFFFC24D), 16f, bold = true)
+        MonText("This takes ALL your apps offline until you switch the server on again.")
+        MonText("Shutdown takes about 5 minutes. Starting up again takes about 10 minutes.")
+        MonText("Enter continues. Esc cancels.", ScreenDim, 11.5f)
+    }
+}
+
+@Composable
+private fun PowerOffPanel() {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        MonText("Server is off.", ScreenDim, 13f)
+        MonText("Press PWR to switch it on.", ScreenDim, 12f)
+    }
+}
+
+@Composable
+private fun PowerProgressPanel(power: PowerView) {
+    val lines = RoomPower.lines(power).takeLast(11)
+    val verb = if (power.phase == PowerPhase.SHUTTING) "Shutting down" else "Starting up"
+    val left = power.secondsLeft
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        for (line in lines) MonText(line, Color(0xFFBFE3FF), 11.5f)
+        MonText("▌", Accent, 12f)
+        Spacer(modifier = Modifier.height(8.dp))
+        androidx.compose.material3.LinearProgressIndicator(
+            progress = { power.percent / 100f },
+            modifier = Modifier.fillMaxWidth().height(8.dp),
+            color = Accent,
+            trackColor = Color(0x33FFFFFF)
+        )
+        MonText(
+            verb + " " + power.percent + "% · about " + (left / 60) + " min " + (left % 60).toString().padStart(2, '0') + " s left",
+            ScreenDim,
+            10.5f
+        )
     }
 }

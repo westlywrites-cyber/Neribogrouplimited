@@ -93,6 +93,7 @@ fun AppsScreen(
             }
         }
     ) {
+        item { com.westly.neribogroup.feature.storageroom.ServerOfflineBanner() }
         if (editing) {
             item {
                 Button(
