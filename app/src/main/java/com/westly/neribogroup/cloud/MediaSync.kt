@@ -371,6 +371,11 @@ class MediaSync(
             if (syncToolPhotos(uid, ledgerNow())) changedFiles = true
         }
 
+        // 5) Company document photos, the same way (one photo per document).
+        if (!offline) {
+            if (syncDocPhotos(uid, ledgerNow())) changedFiles = true
+        }
+
         cleanLeftovers(ledgerNow())
         cleanSocialLeftovers(ledgerNow())
         return changedFiles
@@ -527,6 +532,124 @@ class MediaSync(
         return changed
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Company document photos
+    // ---------------------------------------------------------------------------------------------
+
+    private fun loadDocState(): MutableMap<String, String> {
+        val result = HashMap<String, String>()
+        try {
+            val file = File(app.filesDir, DOC_STATE_FILE)
+            if (!file.exists()) return result
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                if (!isValidMediaId(id)) continue
+                val sha = root.optString(id, "")
+                if (sha.isNotEmpty()) result[id] = sha
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "The document photo record could not be read; starting with an empty one.")
+            result.clear()
+        }
+        return result
+    }
+
+    private fun saveDocState(state: Map<String, String>) {
+        try {
+            val root = JSONObject()
+            for ((id, sha) in state) if (sha.isNotEmpty()) root.put(id, sha)
+            val file = File(app.filesDir, DOC_STATE_FILE)
+            val tmp = File(app.filesDir, "$DOC_STATE_FILE.tmp")
+            tmp.writeText(root.toString(), Charsets.UTF_8)
+            if (file.exists()) file.delete()
+            tmp.renameTo(file)
+        } catch (e: Exception) {
+            // The next sync simply sends the photos again.
+        }
+    }
+
+    /**
+     * Keeps the company document photos in step with the cloud. Cloud path: <owner_uid>/doc/<document_id>.jpg.
+     * Returns true when a photo file on this phone changed (a download arrived). Stops quietly when offline.
+     */
+    private fun syncDocPhotos(uid: String, ledger: Ledger): Boolean {
+        var changed = false
+        var dirty = false
+        var offline = false
+        val state = loadDocState()
+
+        for (doc in ledger.assets.documents) {
+            if (offline) break
+            if (!isValidMediaId(doc.id)) continue
+            val file = CompanyPhotos.file(app, "doc", doc.id)
+            val path = "$uid/doc/${doc.id}.jpg"
+            val sent = state[doc.id] ?: ""
+            if (doc.hasPhoto) {
+                if (file.exists()) {
+                    val bytes = try {
+                        file.readBytes()
+                    } catch (e: Exception) {
+                        continue
+                    }
+                    val sha = sha256Hex(bytes)
+                    if (sent == sha) continue
+                    when (api.uploadMedia(path, bytes, upsert = true)) {
+                        is MediaResult.Ok, MediaResult.Duplicate -> {
+                            state[doc.id] = sha
+                            dirty = true
+                        }
+                        MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                        MediaResult.NotFound -> {}
+                        is MediaResult.Http -> {}
+                    }
+                } else if (sent.isEmpty()) {
+                    when (val r = api.downloadMedia(path)) {
+                        is MediaResult.Ok -> {
+                            if (CompanyPhotos.write(app, "doc", doc.id, r.bytes)) {
+                                state[doc.id] = sha256Hex(r.bytes)
+                                dirty = true
+                                changed = true
+                            }
+                        }
+                        MediaResult.NotFound, MediaResult.Duplicate -> {}
+                        MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                        is MediaResult.Http -> {}
+                    }
+                }
+            } else if (sent.isNotEmpty() && !file.exists()) {
+                when (api.deleteMedia(path)) {
+                    is MediaResult.Ok, MediaResult.NotFound, MediaResult.Duplicate -> {
+                        state.remove(doc.id)
+                        dirty = true
+                    }
+                    MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                    is MediaResult.Http -> {}
+                }
+            }
+        }
+
+        // Documents deleted on this phone: remove the cloud photo once no photo file of it is left here.
+        val liveIds = ledger.assets.documents.map { it.id }.toSet()
+        for (id in state.keys.toList()) {
+            if (offline) break
+            if (id in liveIds) continue
+            if (CompanyPhotos.file(app, "doc", id).exists()) continue
+            when (api.deleteMedia("$uid/doc/$id.jpg")) {
+                is MediaResult.Ok, MediaResult.NotFound, MediaResult.Duplicate -> {
+                    state.remove(id)
+                    dirty = true
+                }
+                MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                is MediaResult.Http -> {}
+            }
+        }
+
+        if (dirty) saveDocState(state)
+        return changed
+    }
+
     /**
      * One waiting profile-picture job. Returns true when the cloud cannot be reached (so the pass stops).
      * Cloud path: <owner_uid>/socials/<account_id>/profile.jpg (an upload replaces the old picture, x-upsert true).
@@ -639,6 +762,7 @@ class MediaSync(
         private const val TAG = "MediaSync"
         private const val FILE_NAME = "media_queue.json"
         private const val TOOL_STATE_FILE = "tool_photo_sync.json"
+        private const val DOC_STATE_FILE = "doc_photo_sync.json"
         const val UPLOAD = "UPLOAD"
         const val DELETE = "DELETE"
         const val KIND_STAFF = "staff"

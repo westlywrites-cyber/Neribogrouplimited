@@ -3,6 +3,10 @@ package com.westly.neribogroup.feature.group
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -28,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -38,6 +44,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -241,10 +253,11 @@ fun DocumentsScreen(
     val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf<CompanyDoc?>(null) }
     var adding by remember { mutableStateOf(false) }
+    var viewing by remember { mutableStateOf<CompanyDoc?>(null) }
     PageFrame("Company documents", onBack) {
         item {
             Text(
-                "Registration papers and other company documents. Add a photo of each paper. Photos stay on this phone for now.",
+                "Registration papers and other company documents. Add a photo of each paper. Tap a photo to open it full screen. Photos are saved on this phone and synced to your cloud.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -257,7 +270,7 @@ fun DocumentsScreen(
             FlatCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (doc.hasPhoto) {
-                        AssetPhoto(photoFile(doc.id), photoTick, Modifier.size(72.dp))
+                        AssetPhoto(photoFile(doc.id), photoTick, Modifier.size(72.dp).clickable { viewing = doc })
                         Spacer(modifier = Modifier.width(12.dp))
                     }
                     Column(modifier = Modifier.weight(1f)) {
@@ -271,6 +284,9 @@ fun DocumentsScreen(
                 OutlinedButton(onClick = { editing = doc }) { Text("Edit") }
             }
         }
+    }
+    viewing?.let { doc ->
+        DocumentPhotoViewer(photoFile(doc.id), photoTick, doc.title, onClose = { viewing = null })
     }
     if (adding || editing != null) {
         val existing = editing
@@ -325,6 +341,7 @@ private fun DocumentDialog(
     var kind by remember { mutableStateOf(existing?.kind ?: "") }
     var note by remember { mutableStateOf(existing?.note ?: "") }
     var hasPhoto by remember { mutableStateOf(existing?.hasPhoto ?: false) }
+    var viewPhoto by remember { mutableStateOf(false) }
     var tick by remember { mutableStateOf(photoTick) }
     val pick = rememberSinglePhotoPicker { uri ->
         onPickPhoto(id, uri) { message ->
@@ -348,9 +365,10 @@ private fun DocumentDialog(
         LabeledField(label = "Number or note", value = note, onValueChange = { note = it.take(200) }, singleLine = false, minLines = 2)
         Spacer(modifier = Modifier.height(12.dp))
         if (hasPhoto) {
-            AssetPhoto(photoFile(id), tick, Modifier.fillMaxWidth().height(180.dp))
+            AssetPhoto(photoFile(id), tick, Modifier.fillMaxWidth().height(180.dp).clickable { viewPhoto = true })
             Spacer(modifier = Modifier.height(8.dp))
         }
+        if (viewPhoto) DocumentPhotoViewer(photoFile(id), tick, title.ifBlank { "Document" }, onClose = { viewPhoto = false })
         OutlinedButton(onClick = pick) { Text(if (hasPhoto) "Change photo" else "Add photo") }
         DialogActions {
             if (onDelete != null) TintedButton(text = "Delete", onClick = onDelete, destructive = true)
@@ -633,6 +651,57 @@ fun StorageScreen(ledger: Ledger, onBack: () -> Unit, onSave: (CompanyAssets) ->
                     onSave(assets.copy(storageTotalMb = value))
                     editTotal = false
                 })
+            }
+        }
+    }
+}
+
+/** Full-screen view of one document photo. Pinch to zoom, drag to move, double-tap to reset. */
+@Composable
+internal fun DocumentPhotoViewer(file: File, tick: Int, title: String, onClose: () -> Unit) {
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    val bitmap by produceState<android.graphics.Bitmap?>(null, file.path, tick) {
+        value = withContext(Dispatchers.IO) { decodePhoto(file, 2048) }
+    }
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            val b = bitmap
+            if (b != null) {
+                Image(
+                    bitmap = b.asImageBitmap(),
+                    contentDescription = title,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures(onDoubleTap = {
+                                scale = 1f
+                                offset = Offset.Zero
+                            })
+                        }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 5f)
+                                offset = if (scale <= 1f) Offset.Zero else offset + pan
+                            }
+                        }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                        }
+                )
+            } else {
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.align(Alignment.Center))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onClose) { Text("Close", color = Color.White) }
+                Text(title, color = Color.White, maxLines = 1, modifier = Modifier.weight(1f).padding(start = 8.dp))
             }
         }
     }
