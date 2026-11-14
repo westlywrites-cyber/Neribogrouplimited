@@ -392,6 +392,9 @@ private fun RoomContent(
     val controller = remember { RoomController(ledger) { actionsState.value } }
     controller.update(ledger)
 
+    // The server hum plays while the room is open and stops when it is left or the app goes to the background.
+    RoomHum()
+
     val apps = StorageRoomRules.roomApps(ledger.apps)
     val now = rememberNowMillis()
     var linked by remember { mutableStateOf(false) }
@@ -579,7 +582,7 @@ private fun RoomScene(controller: RoomController, ledger: Ledger, cloud: RoomClo
         DeskPhoto(controller, cloud)
         Text(
             "Tap the keys at the bottom of the screen, or tap lines on the monitor like a mouse click. Keys with a teal outline work right now. " +
-                "Tap a drive to open Copies, or the laptop to open the Log.",
+                "Tap a server to open Copies, or the rack to open the Log.",
             color = if (dark) Color.White.copy(alpha = 0.9f) else Color(0xFF2A2A2A),
             fontSize = 13.sp,
             modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 10.dp)
@@ -881,7 +884,8 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
     val liveKb = StorageRules.usedKb(apps)
     val copiesKb = StorageRules.copiesKb(assets, apps)
     val overKb = StorageRules.companyOverKb(assets, apps)
-    val ssdKb = 2L * 1024L * 1024L * 1024L
+    // Each server holds two 24 TB drives: about 43 TB of room for the live data (and the same again for the backup).
+    val ssdKb = 43L * 1024L * 1024L * 1024L
     val syncing = cloud.syncing
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Column {
@@ -951,7 +955,7 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
     }
 }
 
-/** One of the two SSD cards of the Overview: the orange bar shows the live data against the 2 TB drive. */
+/** One of the two server cards of the Overview: the orange bar shows the live data against the server's 43 TB. */
 @Composable
 private fun SsdCard(title: String, note: String, valueKb: Long, ofKb: Long, modifier: Modifier = Modifier) {
     Column(
@@ -962,7 +966,7 @@ private fun SsdCard(title: String, note: String, valueKb: Long, ofKb: Long, modi
             .padding(8.dp)
     ) {
         Text(title, color = Color.White, fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
-        Text("SanDisk Extreme SSD · 2 TB", color = Color(0xFF9FC3E6), fontSize = 9.5.sp)
+        Text("IronWolf Pro 24 TB × 2", color = Color(0xFF9FC3E6), fontSize = 9.5.sp)
         Spacer(modifier = Modifier.height(6.dp))
         OrangeBar(valueKb, ofKb)
         Text(note, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 5.dp))
@@ -1191,7 +1195,7 @@ private fun LogPage(ledger: Ledger) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The desk: one photo with the laptop, hub, two SSDs, router and Starlink
+// The server room: one photo with the rack (two servers), two UPS units, router and Starlink
 // ---------------------------------------------------------------------------------------------
 
 /** The desk is drawn in a 1448 x 1086 space and scaled to the screen width, like the preview's stage. */
@@ -1201,35 +1205,18 @@ private const val DESK_H = 1086f
 private fun wirePaths(): List<Path> {
     fun path(build: Path.() -> Unit): Path = Path().apply(build)
     return listOf(
-        path { moveTo(548f, 500f); cubicTo(610f, 515f, 618f, 575f, 655f, 603f) },
-        path { moveTo(756f, 548f); cubicTo(752f, 470f, 760f, 350f, 766f, 250f); cubicTo(772f, 150f, 776f, 80f, 786f, 0f) },
-        path { moveTo(938f, 621f); cubicTo(1010f, 630f, 1070f, 590f, 1052f, 500f); cubicTo(1034f, 410f, 1044f, 470f, 1040f, 458f) },
-        path { moveTo(742f, 668f); cubicTo(738f, 705f, 680f, 715f, 620f, 760f); cubicTo(560f, 805f, 590f, 790f, 585f, 800f) },
-        path { moveTo(800f, 670f); cubicTo(802f, 720f, 828f, 745f, 815f, 780f); cubicTo(802f, 815f, 805f, 800f, 800f, 810f) },
-        path { moveTo(1285f, 390f); cubicTo(1345f, 385f, 1372f, 430f, 1345f, 490f); cubicTo(1318f, 550f, 1315f, 515f, 1305f, 520f) }
+        // Router to the main server: the blue cable.
+        path {
+            moveTo(1140f, 480f)
+            cubicTo(1132f, 540f, 1100f, 580f, 1040f, 580f)
+            cubicTo(990f, 580f, 950f, 574f, 925f, 564f)
+            cubicTo(880f, 546f, 830f, 492f, 760f, 458f)
+        },
+        // Main server to the backup server: the 10G link.
+        path { moveTo(578f, 522f); lineTo(578f, 596f) },
+        // Starlink to the router.
+        path { moveTo(1302f, 482f); lineTo(1282f, 482f) }
     )
-}
-
-/** The laptop screen is a flat 300 x 200 panel laid onto the photo with the same perspective the preview uses. */
-private fun laptopMatrix(scale: Float): android.graphics.Matrix {
-    val m = android.graphics.Matrix()
-    m.setValues(
-        floatArrayOf(
-            1.251388f, -0.206643f, 140f,
-            0.099102f, 1.417016f, 58f,
-            -0.00052146f, -0.00006643f, 1f
-        )
-    )
-    m.postScale(scale, scale)
-    return m
-}
-
-private fun laptopLevelColor(level: RoomLevel): Int = when (level) {
-    RoomLevel.INFO -> 0xFF5FD38A.toInt()
-    RoomLevel.SYNC -> 0xFF6BB7FF.toInt()
-    RoomLevel.WARN -> 0xFFFFC27A.toInt()
-    RoomLevel.ERROR -> 0xFFFF8A80.toInt()
-    RoomLevel.CHANGE -> 0xFFC7A8FF.toInt()
 }
 
 @Composable
@@ -1255,23 +1242,23 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
         Box(modifier = Modifier.fillMaxWidth().height(h)) {
             Image(
                 bitmap = photo,
-                contentDescription = "Server desk: laptop, hub, two SSDs, router and Starlink",
+                contentDescription = "Server room: rack with two servers, two UPS units, router and Starlink",
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                     .drawWithContent {
                         drawContent()
-                        // The photo fades into the table at its top and bottom edges.
+                        // The photo fades into the room background at its top and bottom edges (gently, so the AC stays clear).
                         drawRect(
                             brush = Brush.verticalGradient(
-                                0f to Color.Transparent, 0.07f to Color.Black, 0.94f to Color.Black, 1f to Color.Transparent
+                                0f to Color.Transparent, 0.035f to Color.Black, 0.955f to Color.Black, 1f to Color.Transparent
                             ),
                             blendMode = BlendMode.DstIn
                         )
                     }
             )
-            // Data lines between the devices, and the two drive lights.
+            // Data lines between the devices, and the drive lights.
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val s = size.width / DESK_W
                 scale(s, Offset.Zero) {
@@ -1282,80 +1269,30 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                             drawPath(wire, Color(0xFF7FD1C7), style = Stroke(width = 5f, cap = StrokeCap.Round, pathEffect = dash))
                         }
                     }
-                    for (c in listOf(Offset(452f, 928f), Offset(676f, 955f))) {
-                        drawCircle(Color(0x6643D17A), radius = 14f, center = c)
-                        drawCircle(Color(0xFF05100A), radius = 8f, center = c)
+                    // The drive lights of the two servers (main on top, backup below).
+                    for (c in listOf(Offset(427f, 484f), Offset(427f, 504f), Offset(427f, 623f), Offset(427f, 643f))) {
+                        drawCircle(Color(0x5543D17A), radius = 9f, center = c)
                     }
                 }
             }
-            // The laptop screen: the last lines of the server console.
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val s = size.width / DESK_W
-                val lines = StorageRoomLog.lines
-                val shown = lines.takeLast(11)
-                drawIntoCanvas { canvas ->
-                    val nc = canvas.nativeCanvas
-                    nc.save()
-                    nc.concat(laptopMatrix(s))
-                    nc.clipRect(0f, 0f, 300f, 200f)
-                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-                    paint.typeface = android.graphics.Typeface.MONOSPACE
-                    paint.textSize = 10f
-                    paint.color = 0xFF04080C.toInt()
-                    nc.drawRect(0f, 0f, 300f, 200f, paint)
-                    paint.color = 0xFF0B3B6A.toInt()
-                    paint.alpha = 70
-                    nc.drawRect(0f, 0f, 300f, 6f, paint)
-                    paint.alpha = 255
-                    paint.isFakeBoldText = true
-                    paint.color = Accent.toArgb()
-                    nc.drawText("neribo-server ~ tail -f", 8f, 17f, paint)
-                    paint.color = 0xFF5FD38A.toInt()
-                    paint.textAlign = android.graphics.Paint.Align.RIGHT
-                    nc.drawText("● online", 292f, 17f, paint)
-                    paint.textAlign = android.graphics.Paint.Align.LEFT
-                    var y = 33f
-                    for (line in shown) {
-                        var x = 8f
-                        paint.isFakeBoldText = false
-                        paint.color = 0xFF5F7775.toInt()
-                        val time = StorageRoomLog.timeText(line.millis) + " "
-                        nc.drawText(time, x, y, paint)
-                        x += paint.measureText(time)
-                        paint.isFakeBoldText = true
-                        paint.color = laptopLevelColor(line.level)
-                        val level = line.level.name + " "
-                        nc.drawText(level, x, y, paint)
-                        x += paint.measureText(level)
-                        paint.isFakeBoldText = false
-                        paint.color = 0xFFB7C9C7.toInt()
-                        nc.drawText(line.source + " · " + line.message, x, y, paint)
-                        y += 13.5f
-                    }
-                    paint.color = Accent.toArgb()
-                    nc.drawText("$", 8f, y + 2f, paint)
-                    nc.drawRect(18f, y - 7f, 24f, y + 3f, paint)
-                    nc.restore()
-                }
-            }
-            // Tap areas: the laptop opens the Log, either drive opens Copies.
+            // Tap areas: the rack opens the Log, either server opens Copies.
             val tapSource = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
-                    .offset(x = w * 0f, y = h * 0.02f)
-                    .size(width = w * 0.44f, height = h * 0.60f)
+                    .offset(x = w * 0.207f, y = h * 0.170f)
+                    .size(width = w * 0.432f, height = h * 0.686f)
                     .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(5) }
             )
             Box(
                 modifier = Modifier
-                    .offset(x = w * 0.29f, y = h * 0.72f)
-                    .size(width = w * 0.15f, height = h * 0.15f)
+                    .offset(x = w * 0.262f, y = h * 0.405f)
+                    .size(width = w * 0.266f, height = h * 0.097f)
                     .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
             )
             Box(
                 modifier = Modifier
-                    .offset(x = w * 0.445f, y = h * 0.745f)
-                    .size(width = w * 0.15f, height = h * 0.16f)
+                    .offset(x = w * 0.262f, y = h * 0.540f)
+                    .size(width = w * 0.266f, height = h * 0.090f)
                     .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
             )
         }
