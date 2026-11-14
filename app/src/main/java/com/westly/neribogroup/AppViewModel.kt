@@ -1443,7 +1443,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 false
             }
             mainHandler.post {
-                if (photosChanged) mediaTick += 1
+                if (photosChanged) {
+                    mediaTick += 1
+                    // Equipment photos that arrived from the cloud: redraw the equipment screens too.
+                    assetPhotoTick += 1
+                }
                 finishSync(result)
             }
         }

@@ -214,7 +214,7 @@ fun EquipmentScreen(
             item {
                 Text(
                     "Everything the company owns: laptops, computers, phones, network gear and other gadgets. " +
-                        "Tap one to see everything about it. Photos stay on this phone for now.",
+                        "Tap one to see everything about it. Photos are backed up to the cloud when the cloud is on.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

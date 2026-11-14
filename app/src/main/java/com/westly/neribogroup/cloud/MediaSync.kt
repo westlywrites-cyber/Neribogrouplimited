@@ -2,10 +2,12 @@ package com.westly.neribogroup.cloud
 
 import android.content.Context
 import android.util.Log
+import com.westly.neribogroup.data.CompanyPhotos
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.MAX_STAFF_IMAGES
 import com.westly.neribogroup.data.SocialMedia
 import com.westly.neribogroup.data.StaffMedia
+import com.westly.neribogroup.data.ToolItem
 import com.westly.neribogroup.data.isValidMediaId
 import org.json.JSONArray
 import org.json.JSONObject
@@ -363,9 +365,166 @@ class MediaSync(
             }
         }
 
+        // 4) Equipment photos: send new or changed ones, fetch the ones this phone is missing (for example after a
+        // reset), and remove the cloud copy of photos removed here.
+        if (!offline) {
+            if (syncToolPhotos(uid, ledgerNow())) changedFiles = true
+        }
+
         cleanLeftovers(ledgerNow())
         cleanSocialLeftovers(ledgerNow())
         return changedFiles
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Equipment photos
+    // ---------------------------------------------------------------------------------------------
+
+    private fun toolStateFile(): File = File(app.filesDir, TOOL_STATE_FILE)
+
+    /**
+     * For each piece of equipment: the SHA-256 of the photo this phone last sent to the cloud, for photo 0 to 4
+     * ("" = nothing sent for that place). Saved in tool_photo_sync.json.
+     */
+    private fun loadToolState(): MutableMap<String, MutableList<String>> {
+        val result = HashMap<String, MutableList<String>>()
+        val file = toolStateFile()
+        if (!file.exists()) return result
+        try {
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                if (!isValidMediaId(id)) continue
+                val array = root.optJSONArray(id) ?: continue
+                val list = ArrayList<String>()
+                for (i in 0 until ToolItem.MAX_PHOTOS) list.add(array.optString(i, ""))
+                result[id] = list
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "The equipment photo record could not be read; starting with an empty one.")
+            result.clear()
+        }
+        return result
+    }
+
+    private fun saveToolState(state: Map<String, List<String>>) {
+        try {
+            val root = JSONObject()
+            for ((id, list) in state) {
+                if (list.all { it.isEmpty() }) continue
+                val array = JSONArray()
+                for (sha in list) array.put(sha)
+                root.put(id, array)
+            }
+            val file = toolStateFile()
+            val tmp = File(app.filesDir, "$TOOL_STATE_FILE.tmp")
+            tmp.writeText(root.toString(), Charsets.UTF_8)
+            if (file.exists()) file.delete()
+            tmp.renameTo(file)
+        } catch (e: Exception) {
+            // The next sync simply sends the photos again.
+        }
+    }
+
+    /**
+     * Keeps the equipment photos in step with the cloud. Cloud path: <owner_uid>/tool/<equipment_id>/<n>.jpg where
+     * n is 0 to 4, the same place the photo has on this phone. Returns true when a photo file on this phone changed
+     * (a download arrived). Stops quietly when the cloud cannot be reached.
+     */
+    private fun syncToolPhotos(uid: String, ledger: Ledger): Boolean {
+        var changed = false
+        var dirty = false
+        var offline = false
+        val state = loadToolState()
+        val places = ToolItem.MAX_PHOTOS
+
+        for (tool in ledger.assets.tools) {
+            if (offline) break
+            if (!isValidMediaId(tool.id)) continue
+            val sent = state.getOrPut(tool.id) { MutableList(places) { "" } }
+            val count = tool.photoCount
+            for (index in 0 until places) {
+                if (offline) break
+                val file = CompanyPhotos.fileAt(app, "tool", tool.id, index)
+                val path = "$uid/tool/${tool.id}/$index.jpg"
+                if (index < count) {
+                    if (file.exists()) {
+                        // On this phone: send it when it is new or different from what was sent before.
+                        val bytes = try {
+                            file.readBytes()
+                        } catch (e: Exception) {
+                            continue
+                        }
+                        val sha = sha256Hex(bytes)
+                        if (sent[index] == sha) continue
+                        when (api.uploadMedia(path, bytes, upsert = true)) {
+                            is MediaResult.Ok, MediaResult.Duplicate -> {
+                                sent[index] = sha
+                                dirty = true
+                            }
+                            MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                            MediaResult.NotFound -> {}
+                            is MediaResult.Http -> {}
+                        }
+                    } else if (sent[index].isEmpty()) {
+                        // Missing here and never sent from this phone (for example after a reset): fetch it.
+                        // A place this phone did send before is never fetched back: it was removed here.
+                        when (val r = api.downloadMedia(path)) {
+                            is MediaResult.Ok -> {
+                                if (CompanyPhotos.writeAt(app, "tool", tool.id, index, r.bytes)) {
+                                    sent[index] = sha256Hex(r.bytes)
+                                    dirty = true
+                                    changed = true
+                                }
+                            }
+                            MediaResult.NotFound, MediaResult.Duplicate -> {}
+                            MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                            is MediaResult.Http -> {}
+                        }
+                    }
+                } else if (sent[index].isNotEmpty() && !file.exists()) {
+                    // The photo was removed on this phone: remove its cloud copy.
+                    when (api.deleteMedia(path)) {
+                        is MediaResult.Ok, MediaResult.NotFound, MediaResult.Duplicate -> {
+                            sent[index] = ""
+                            dirty = true
+                        }
+                        MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                        is MediaResult.Http -> {}
+                    }
+                }
+            }
+        }
+
+        // Equipment that was deleted on this phone: its cloud photos go too, but only once no photo file of it is
+        // left on this phone, so a ledger that is briefly out of date never removes photos that are still here.
+        val liveIds = ledger.assets.tools.map { it.id }.toSet()
+        for (id in state.keys.toList()) {
+            if (offline) break
+            if (id in liveIds) continue
+            val sent = state[id] ?: continue
+            for (index in 0 until places) {
+                if (offline) break
+                if (sent[index].isEmpty()) continue
+                if (CompanyPhotos.fileAt(app, "tool", id, index).exists()) continue
+                when (api.deleteMedia("$uid/tool/$id/$index.jpg")) {
+                    is MediaResult.Ok, MediaResult.NotFound, MediaResult.Duplicate -> {
+                        sent[index] = ""
+                        dirty = true
+                    }
+                    MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                    is MediaResult.Http -> {}
+                }
+            }
+            if (sent.all { it.isEmpty() }) {
+                state.remove(id)
+                dirty = true
+            }
+        }
+
+        if (dirty) saveToolState(state)
+        return changed
     }
 
     /**
@@ -479,6 +638,7 @@ class MediaSync(
     companion object {
         private const val TAG = "MediaSync"
         private const val FILE_NAME = "media_queue.json"
+        private const val TOOL_STATE_FILE = "tool_photo_sync.json"
         const val UPLOAD = "UPLOAD"
         const val DELETE = "DELETE"
         const val KIND_STAFF = "staff"
