@@ -90,6 +90,15 @@ fun StaffListScreen(
             }
         }
     ) {
+        if (editing) {
+            item {
+                Button(
+                    onClick = { showAddStaff = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Add staff") }
+            }
+        }
+
         item {
             SearchField(
                 query = query,
@@ -135,14 +144,7 @@ fun StaffListScreen(
             )
         }
 
-        if (editing) {
-            item {
-                Button(
-                    onClick = { showAddStaff = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Add staff") }
-            }
-        } else if (shown.unpaidStaff(now).isNotEmpty()) {
+        if (!editing && shown.unpaidStaff(now).isNotEmpty()) {
             item {
                 OutlinedButton(
                     onClick = { confirmPayAll = true },

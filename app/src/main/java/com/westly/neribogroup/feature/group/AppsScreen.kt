@@ -93,6 +93,15 @@ fun AppsScreen(
             }
         }
     ) {
+        if (editing) {
+            item {
+                Button(
+                    onClick = { showAddApp = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Add app") }
+            }
+        }
+
         item {
             SearchField(
                 query = query,
@@ -152,6 +161,24 @@ fun AppsScreen(
                 )
             }
 
+            item {
+                StatTile(
+                    label = "Apple earnings today (after Apple's cut)",
+                    value = formatNaira(shown.appleEarningsToday(now)),
+                    modifier = Modifier.fillMaxWidth(),
+                    valueColor = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            item {
+                StatTile(
+                    label = "Paystack earnings today (after Paystack's fees)",
+                    value = formatNaira(shown.paystackEarningsToday(now)),
+                    modifier = Modifier.fillMaxWidth(),
+                    valueColor = MaterialTheme.colorScheme.primary
+                )
+            }
+
             item { SectionTitle("Your apps") }
         }
 
@@ -180,15 +207,6 @@ fun AppsScreen(
                 onClick = { onOpenApp(app.id) },
                 onDelete = { if (!app.isSoftware && !app.isHosting) appToDelete = app }
             )
-        }
-
-        if (editing) {
-            item {
-                Button(
-                    onClick = { showAddApp = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Add app") }
-            }
         }
 
         item { Spacer(modifier = Modifier.height(8.dp)) }

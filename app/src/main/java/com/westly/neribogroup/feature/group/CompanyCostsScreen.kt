@@ -66,6 +66,15 @@ fun CompanyCostsScreen(
             editing = false
         }
     ) {
+        if (editing) {
+            item {
+                Button(
+                    onClick = { showAddCost = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Add company cost") }
+            }
+        }
+
         item {
             SearchField(
                 query = query,
@@ -126,15 +135,6 @@ fun CompanyCostsScreen(
                     )
                 }
             )
-        }
-
-        if (editing) {
-            item {
-                Button(
-                    onClick = { showAddCost = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Add company cost") }
-            }
         }
 
         item { Spacer(modifier = Modifier.height(8.dp)) }

@@ -300,6 +300,20 @@ data class AppData(
         return playTx.filter { it.dateMillis >= start && it.dateMillis < end }.sumOf { it.net }
     }
 
+    /** What reached the Apple Store Balance today (subscriptions and renewals), after Apple's cut. */
+    fun appleEarningsToday(now: Long): Long {
+        val start = dayStartMillis(now)
+        val end = start + DAY_MILLIS
+        return appleTx.filter { it.dateMillis >= start && it.dateMillis < end }.sumOf { it.net }
+    }
+
+    /** What reached the Paystack Balance today (subscriptions and renewals), after Paystack's fees. */
+    fun paystackEarningsToday(now: Long): Long {
+        val start = dayStartMillis(now)
+        val end = start + DAY_MILLIS
+        return paystackTx.filter { it.dateMillis >= start && it.dateMillis < end }.sumOf { it.net }
+    }
+
     /** Active users of today. Goes back to 0 on a new day. */
     fun activeUsersAt(now: Long): Long =
         if (activeUsersDayKey == dayKey(now)) activeUsers else 0L
@@ -873,6 +887,8 @@ data class Ledger(
     val paystackBalanceTotal: Long get() = apps.sumOf { it.paystackBalance }
 
     fun playEarningsToday(now: Long): Long = apps.sumOf { it.playEarningsToday(now) }
+    fun appleEarningsToday(now: Long): Long = apps.sumOf { it.appleEarningsToday(now) }
+    fun paystackEarningsToday(now: Long): Long = apps.sumOf { it.paystackEarningsToday(now) }
 
     fun activeUsersToday(now: Long): Long = apps.sumOf { it.activeUsersAt(now) }
 

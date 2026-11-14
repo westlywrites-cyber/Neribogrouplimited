@@ -87,6 +87,15 @@ fun RenewalsScreen(
             editing = false
         }
     ) {
+        if (editing) {
+            item {
+                Button(
+                    onClick = { showAddRenewal = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Add renewal") }
+            }
+        }
+
         item {
             SearchField(
                 query = query,
@@ -134,15 +143,6 @@ fun RenewalsScreen(
                 onEdit = { renewalToEdit = renewal },
                 onDelete = { renewalToDelete = renewal }
             )
-        }
-
-        if (editing) {
-            item {
-                Button(
-                    onClick = { showAddRenewal = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Add renewal") }
-            }
         }
 
         item { Spacer(modifier = Modifier.height(8.dp)) }

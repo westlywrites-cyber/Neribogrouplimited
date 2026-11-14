@@ -128,6 +128,17 @@ fun SocialsScreen(
             editing = false
         }
     ) {
+        if (editing) {
+            item(key = "soc-add") {
+                TintedButton(
+                    text = "Add account",
+                    onClick = { showAdd = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = socials.accounts.size < com.westly.neribogroup.data.MAX_SOCIAL_ACCOUNTS
+                )
+            }
+        }
+
         if (!editing) {
             item(key = "soc-roll") {
                 RollCard(
@@ -209,16 +220,7 @@ fun SocialsScreen(
             }
         }
 
-        if (editing) {
-            item(key = "soc-add") {
-                TintedButton(
-                    text = "Add account",
-                    onClick = { showAdd = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = socials.accounts.size < com.westly.neribogroup.data.MAX_SOCIAL_ACCOUNTS
-                )
-            }
-        } else {
+        if (!editing) {
             item(key = "soc-adv-title") { SectionTitle("Running adverts") }
             item(key = "soc-adv") { RunningAdverts(ledger, today) }
         }
