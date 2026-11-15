@@ -2,6 +2,8 @@ package com.westly.neribogroup.feature.dell
 
 import android.os.SystemClock
 import android.view.KeyCharacterMap
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.View
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
@@ -58,7 +60,11 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
@@ -68,6 +74,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.westly.neribogroup.R
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 private val Desk = Color(0xFF1B1E20)
@@ -80,9 +87,12 @@ private const val BEZEL_W = 462f
 private const val BEZEL_EDGE = 9f
 private const val BEZEL_FOOT = 127f
 
-private const val ZOOM_MIN = 0.5f
+private const val ZOOM_MIN = 0.35f
 private const val ZOOM_MAX = 1f
-private const val ZOOM_START = 1f
+private const val ZOOM_START = 0.6f
+
+// The Dell screen is shaped like a real company monitor (never taller than this many times its width).
+private const val SCREEN_MAX_ASPECT = 0.85f
 
 /** Sends one key press (down and up) into the app that is on the Dell screen, as a real keyboard would. */
 private fun sendKey(view: View, code: Int, shift: Boolean) {
@@ -95,6 +105,28 @@ private fun sendKey(view: View, code: Int, shift: Boolean) {
     view.dispatchKeyEvent(
         AndroidKeyEvent(now, now, AndroidKeyEvent.ACTION_UP, code, 0, meta, KeyCharacterMap.VIRTUAL_KEYBOARD, 0)
     )
+}
+
+/**
+ * Scrolls the page on the Dell screen like a mouse wheel would, at ([x], [y]) in the window. The Up and Down keys use this,
+ * because a plain Down key only moves between buttons and cannot scroll a page that has none under it.
+ */
+private fun sendScroll(view: View, x: Float, y: Float, down: Boolean) {
+    val props = arrayOf(MotionEvent.PointerProperties().apply {
+        id = 0
+        toolType = MotionEvent.TOOL_TYPE_MOUSE
+    })
+    val coords = arrayOf(MotionEvent.PointerCoords().apply {
+        this.x = x
+        this.y = y
+        setAxisValue(MotionEvent.AXIS_VSCROLL, if (down) -3f else 3f)
+    })
+    val now = SystemClock.uptimeMillis()
+    val event = MotionEvent.obtain(
+        now, now, MotionEvent.ACTION_SCROLL, 1, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0
+    )
+    view.dispatchGenericMotionEvent(event)
+    event.recycle()
 }
 
 /**
@@ -115,6 +147,7 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
     var full by rememberSaveable { mutableStateOf(false) }
     var appOpen by rememberSaveable { mutableStateOf(false) }
     var shift by remember { mutableStateOf(false) }
+    var screenCenter by remember { mutableStateOf(Offset.Zero) }
     val progress = remember { Animatable(0f) }
     val fullNow = full && phase == DellPhase.ON
 
@@ -169,6 +202,8 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
                 shift = !shift
             } else if (key.code == AndroidKeyEvent.KEYCODE_ESCAPE) {
                 backOwner?.onBackPressedDispatcher?.onBackPressed()
+            } else if (key.code == AndroidKeyEvent.KEYCODE_DPAD_DOWN || key.code == AndroidKeyEvent.KEYCODE_DPAD_UP) {
+                sendScroll(view, screenCenter.x, screenCenter.y, key.code == AndroidKeyEvent.KEYCODE_DPAD_DOWN)
             } else {
                 sendKey(view, key.code, shift)
                 shift = false
@@ -206,30 +241,28 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
                     textAlign = TextAlign.Center,
                     modifier = Modifier.weight(1f)
                 )
-                if (!fullNow) {
-                    Text(
-                        text = "−",
-                        color = Color.White,
-                        fontSize = 22.sp,
-                        modifier = Modifier
-                            .clickable { zoom = ((Math.round(zoom * 20f) - 1) / 20f).coerceAtLeast(ZOOM_MIN) }
-                            .padding(horizontal = 9.dp)
-                    )
-                    Text(
-                        text = Math.round(zoom * 100f).toString() + "%",
-                        color = Color(0xFFD0D6D8),
-                        fontSize = 12.sp,
-                        modifier = Modifier.clickable { zoom = ZOOM_START }.padding(vertical = 8.dp)
-                    )
-                    Text(
-                        text = "+",
-                        color = Color.White,
-                        fontSize = 22.sp,
-                        modifier = Modifier
-                            .clickable { zoom = ((Math.round(zoom * 20f) + 1) / 20f).coerceAtMost(ZOOM_MAX) }
-                            .padding(horizontal = 9.dp)
-                    )
-                }
+                Text(
+                    text = "−",
+                    color = Color.White,
+                    fontSize = 22.sp,
+                    modifier = Modifier
+                        .clickable { zoom = ((Math.round(zoom * 20f) - 1) / 20f).coerceAtLeast(ZOOM_MIN) }
+                        .padding(horizontal = 9.dp)
+                )
+                Text(
+                    text = Math.round(zoom * 100f).toString() + "%",
+                    color = Color(0xFFD0D6D8),
+                    fontSize = 12.sp,
+                    modifier = Modifier.clickable { zoom = ZOOM_START }.padding(vertical = 8.dp)
+                )
+                Text(
+                    text = "+",
+                    color = Color.White,
+                    fontSize = 22.sp,
+                    modifier = Modifier
+                        .clickable { zoom = ((Math.round(zoom * 20f) + 1) / 20f).coerceAtMost(ZOOM_MAX) }
+                        .padding(horizontal = 9.dp)
+                )
                 Text(
                     text = if (fullNow) "Exit full" else "Full",
                     color = Accent,
@@ -253,7 +286,8 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
                 phase = phase,
                 bootProgress = progress.value,
                 zoom = zoom,
-                full = fullNow
+                full = fullNow,
+                onScreenPlaced = { screenCenter = it }
             ) {
                 DellDesktop(
                     appOpen = appOpen,
@@ -303,27 +337,38 @@ private fun DellMonitor(
     bootProgress: Float,
     zoom: Float,
     full: Boolean,
+    onScreenPlaced: (Offset) -> Unit,
     desktop: @Composable () -> Unit
 ) {
     val bezel = ImageBitmap.imageResource(R.drawable.room_bezel)
+    // The middle of the screen in the window: the Up and Down keys scroll the page there.
+    val placed = Modifier.onGloballyPositioned {
+        onScreenPlaced(it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f))
+    }
     BoxWithConstraints(modifier = modifier) {
         if (full) {
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                DellScreenContent(phase, bootProgress, 1f, desktop)
+            Box(modifier = Modifier.fillMaxSize().then(placed).background(Color.Black)) {
+                DellScreenContent(phase, bootProgress, zoom, desktop)
             }
         } else {
+            // The frame spans the phone width. The screen is shaped like a real company Dell: as tall as the room allows,
+            // but never taller than SCREEN_MAX_ASPECT times its width. Anything left over is empty space around the monitor.
             val k = maxWidth.value / BEZEL_W
             val edge = (BEZEL_EDGE * k).dp
             val foot = (BEZEL_FOOT * k).dp
+            val screenW = maxWidth - edge * 2
+            val screenH = minOf(maxHeight - edge - foot, screenW * SCREEN_MAX_ASPECT).coerceAtLeast(60.dp)
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .size(maxWidth, edge + screenH + foot)
+                    .align(Alignment.Center)
                     .drawBehind { drawBezel(bezel, BEZEL_EDGE * k * density, BEZEL_FOOT * k * density) }
                     .padding(start = edge, end = edge, top = edge, bottom = foot)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .then(placed)
                         .clip(RoundedCornerShape(4.dp))
                         .background(Color.Black)
                 ) {
@@ -398,17 +443,23 @@ private fun DrawScope.drawBezel(image: ImageBitmap, edgePx: Float, footPx: Float
  */
 @Composable
 private fun ScaledDesktop(zoom: Float, desktop: @Composable () -> Unit) {
-    BoxWithConstraints(modifier = Modifier.fillMaxSize().clipToBounds()) {
-        Box(
-            modifier = Modifier
-                .requiredSize(maxWidth / zoom, maxHeight / zoom)
-                .graphicsLayer {
+    // The desktop is measured at a bigger size (screen size / zoom) and drawn shrunk from the top left corner, so it
+    // always starts exactly at the top left of the screen and covers all of it.
+    Layout(
+        content = { desktop() },
+        modifier = Modifier.fillMaxSize().clipToBounds()
+    ) { measurables, constraints ->
+        val w = (constraints.maxWidth / zoom).roundToInt()
+        val h = (constraints.maxHeight / zoom).roundToInt()
+        val placeables = measurables.map { it.measure(Constraints.fixed(w, h)) }
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            placeables.forEach {
+                it.placeWithLayer(0, 0) {
                     scaleX = zoom
                     scaleY = zoom
                     transformOrigin = TransformOrigin(0f, 0f)
                 }
-        ) {
-            desktop()
+            }
         }
     }
 }

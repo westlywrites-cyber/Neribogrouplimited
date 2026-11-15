@@ -78,7 +78,7 @@ private val KeyPowerRing = Color(0xFFFF6B6B)
 
 /**
  * The keyboard on the CEO desk. Every key except Power types or moves in the app that is on the Dell screen:
- * letters and digits type, arrows and Tab move between things, Enter presses the picked one and Esc goes back.
+ * letters and digits type, Up and Down scroll the page, Left, Right and Tab move between things, Enter presses the picked one and Esc goes back.
  * While the Dell is off ([enabled] is false) only the Power key works.
  */
 @Composable
