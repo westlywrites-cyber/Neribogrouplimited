@@ -39,6 +39,17 @@ object StorageRoomLog {
         while (lines.size > MAX_LINES) lines.removeAt(0)
     }
 
+    /** Adds a line that happened earlier (for example the 2:00 AM backup), at its own time among the others. */
+    fun addAt(millis: Long, level: RoomLevel, source: String, message: String) {
+        val text = message.trim()
+        if (text.isEmpty()) return
+        var index = lines.size
+        while (index > 0 && lines[index - 1].millis > millis) index -= 1
+        lines.add(index, RoomLine(nextId, millis, level, source, text))
+        nextId += 1L
+        while (lines.size > MAX_LINES) lines.removeAt(0)
+    }
+
     /**
      * Adds the line unless the same text was added in the last two minutes. The same change can reach this phone
      * twice (once from the live feed, once from the sync), and it must show once.

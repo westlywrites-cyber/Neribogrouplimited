@@ -129,6 +129,7 @@ private val Accent = Color(0xFF7FD1C7)
 private val ScreenText = Color(0xFFD9EEFF)
 private val ScreenDim = Color(0xFF8FB3D6)
 private val ScreenBad = Color(0xFFFF9D94)
+private val ScreenWarn = Color(0xFFFFC857)
 private val BarWarn = Color(0xFFFFC27A)
 private val BarBad = Color(0xFFFF8A80)
 private val BarBack = Color(0x22FFFFFF)
@@ -412,6 +413,11 @@ private fun RoomContent(
     val liveKbNow = StorageRules.usedKb(StorageRoomRules.roomApps(ledger.apps))
     val liveKbState = rememberUpdatedState(liveKbNow)
     val drive = rememberRoomDrive(power, liveKbState)
+    // The pretend nightly backup, router and server faults: a story worked out from the date, only on this phone.
+    val backup = rememberRoomBackup(liveKbState, drive)
+    val backupActions = remember {
+        BackupActions { RoomBackup.retry(powerContext, power.value.phase == PowerPhase.ON) }
+    }
     val driveActions = remember {
         DriveActions(
             bring = { k -> RoomDrive.bring(powerContext, k) },
@@ -428,6 +434,8 @@ private fun RoomContent(
             onPower = { on -> if (on) RoomPower.startBoot(powerContext) else RoomPower.startShutdown(powerContext) },
             drive = { drive.value },
             driveActions = driveActions,
+            backup = { backup.value },
+            backupActions = backupActions,
             verifyOwner = { title, subtitle, logText, onOk ->
                 gate.verify(title = title, subtitle = subtitle, logText = logText, always = true, onSuccess = onOk)
             }
@@ -731,7 +739,7 @@ private fun Monitor(controller: RoomController, ledger: Ledger, cloud: RoomCloud
                             else -> Unit
                         }
                         if (power.phase == PowerPhase.ON && !controller.warn) when (controller.page) {
-                            RoomController.OVERVIEW -> OverviewPage(ledger, cloud)
+                            RoomController.OVERVIEW -> OverviewPage(ledger, cloud, controller.backupView())
                             RoomController.APPS -> AppsPage(controller, ledger)
                             RoomController.PLANS -> PlansPage(controller, ledger)
                             RoomController.COPIES -> CopiesPage(controller, ledger, cloud)
@@ -950,7 +958,7 @@ private fun EditCell(edit: RoomEdit, withUnit: Boolean) {
 // ---- the five pages ----
 
 @Composable
-private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
+private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo, backup: BackupView) {
     val assets = ledger.assets
     val apps = StorageRoomRules.roomApps(ledger.apps)
     val totalMb = assets.storageTotalMb
@@ -960,6 +968,7 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
     // Each server holds two 24 TB drives: about 43 TB of room for the live data (and the same again for the backup).
     val ssdKb = 43L * 1024L * 1024L * 1024L
     val syncing = cloud.syncing
+    val failover = backup.failover
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Column {
             Text(
@@ -972,16 +981,20 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
             Text("Company Storage", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 26.sp)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(Color(0xFF43D17A)))
+            Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(if (failover) ScreenWarn else Color(0xFF43D17A)))
             Spacer(modifier = Modifier.width(5.dp))
-            Text("Online", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text(if (failover) "Failover" else "Online", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
     Spacer(modifier = Modifier.height(8.dp))
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         SsdCard(
             "Main Storage",
-            StorageRules.text(liveKb) + " used · " + StorageRules.text(maxOf(0L, ssdKb - liveKb)) + " free",
+            if (failover) {
+                "Fault: the backup server took over"
+            } else {
+                StorageRules.text(liveKb) + " used · " + StorageRules.text(maxOf(0L, ssdKb - liveKb)) + " free"
+            },
             liveKb,
             ssdKb,
             Modifier.weight(1f)
@@ -990,6 +1003,7 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
             "Backup Storage",
             when {
                 overKb > 0L -> "Stopped: over the total"
+                failover -> "Serving as the main server"
                 syncing -> "Syncing…"
                 else -> "Copy of main drive"
             },
@@ -1002,9 +1016,15 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo) {
         modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp).horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        SyncPill("Router online", false)
-        SyncPill("Nightly backup", false)
-        SyncPill(if (syncing) "Syncing" else "Server on", syncing)
+        if (backup.routerWeak) SyncPill("Starlink weak", false, ScreenWarn) else SyncPill("Router online", false)
+        when {
+            overKb > 0L -> SyncPill("Backup stopped", false, ScreenBad)
+            backup.retryRunning -> SyncPill("Backup running", true)
+            backup.lastFailed -> SyncPill("Backup failed", false, ScreenWarn)
+            else -> SyncPill("Nightly backup", false)
+        }
+        if (failover) SyncPill("Failover", false, ScreenWarn) else SyncPill(if (syncing) "Syncing" else "Server on", syncing)
+        if (backup.driveDueDays > 0) SyncPill("Drive backup due", false, ScreenWarn)
     }
     MonLine("Company storage", if (totalMb > 0L) StorageRules.textMb(totalMb) else "Not set")
     MonBar(copiesKb, totalMb * 1024L)
@@ -1058,7 +1078,7 @@ private fun OrangeBar(valueKb: Long, ofKb: Long) {
 
 /** A status pill. While syncing its light pulses amber, like the preview. */
 @Composable
-private fun SyncPill(text: String, syncing: Boolean) {
+private fun SyncPill(text: String, syncing: Boolean, tone: Color? = null) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -1067,7 +1087,7 @@ private fun SyncPill(text: String, syncing: Boolean) {
             .padding(horizontal = 8.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (syncing) SyncDot() else Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF43D17A)))
+        if (syncing) SyncDot() else Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(tone ?: Color(0xFF43D17A)))
         Spacer(modifier = Modifier.width(5.dp))
         Text(text, color = Color.White, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
@@ -1219,6 +1239,7 @@ private fun CopiesPage(controller: RoomController, ledger: Ledger, cloud: RoomCl
     val totalKb = assets.storageTotalMb * 1024L
     val overKb = StorageRules.companyOverKb(assets, apps)
     val ofText = if (totalKb > 0L) "of " + StorageRules.text(totalKb) else "no company total set"
+    val bv = controller.backupView()
 
     MonRow(selected = controller.sel == 0, onTap = { controller.tapRow(0, 0) }) {
         MonLine("Main server · live copy", StorageRules.text(liveKb))
@@ -1230,18 +1251,71 @@ private fun CopiesPage(controller: RoomController, ledger: Ledger, cloud: RoomCl
         MonBar(liveKb, totalKb)
         val status = when {
             overKb > 0L -> "backup stopped: company storage is over its total"
+            bv.failover -> "main server fault: serving as the main server"
             cloud.syncing -> "Syncing…"
             else -> "In sync, follows live in real time"
         }
-        MonText(status, if (overKb > 0L) ScreenBad else ScreenDim, 11.5f)
+        MonText(status, if (overKb > 0L) ScreenBad else if (bv.failover) ScreenWarn else ScreenDim, 11.5f)
     }
     val dv = controller.driveView()
     DriveRow(controller, 2, 'A', dv)
     DriveRow(controller, 3, 'B', dv)
+    NightlyBackup(controller, bv, dv)
     Spacer(modifier = Modifier.height(6.dp))
     MonLine("All copies together", StorageRules.text(StorageRules.copiesKb(assets, apps)))
     if (overKb > 0L) MonLine("Over the total by", StorageRules.text(overKb), ScreenBad)
     DriveHistory(dv)
+    NightHistory(bv)
+}
+
+/** The pretend nightly backup: its state, the "Run backup now" line while the last night is failed, and the drive warning. */
+@Composable
+private fun NightlyBackup(controller: RoomController, bv: BackupView, dv: DriveView) {
+    Spacer(modifier = Modifier.height(6.dp))
+    val status: Pair<String, Color> = when {
+        bv.retryRunning -> "running now" to ScreenDim
+        bv.lastFailed -> "last night failed" to ScreenWarn
+        bv.nights.isNotEmpty() -> "last night OK" to Accent
+        else -> "waiting for the first night" to ScreenDim
+    }
+    MonLine("Nightly backup · 2:00 AM", status.first, status.second)
+    if (bv.lastFailed) MonText(bv.lastReason + ". It tries again tonight by itself.", ScreenWarn, 11.5f)
+    if (bv.showRetryRow) {
+        MonRow(selected = controller.sel == 4, onTap = { controller.tapRow(4, 0) }) {
+            if (bv.retryRunning) {
+                MonLine("Run backup now", (bv.retryProgress * 100f).toInt().toString() + "%")
+                MonBar((bv.retryProgress * 100f).toLong(), 100L)
+                MonText("running · " + leftText(bv.retryLeftSeconds) + " left", ScreenDim, 11.5f)
+            } else {
+                MonLine("Run backup now", "ready")
+                MonText("Press Enter to run the failed backup again.", ScreenDim, 11.5f)
+            }
+        }
+    }
+    if (bv.driveDueDays > 0) {
+        MonText(
+            "Drive " + dv.next + " not backed up for " + bv.driveDueDays + " days. Plug in a drive and finish the copy.",
+            ScreenWarn,
+            11.5f
+        )
+    }
+}
+
+/** The result of the nightly backup for the last 7 nights. */
+@Composable
+private fun NightHistory(bv: BackupView) {
+    if (bv.nights.isEmpty()) return
+    Spacer(modifier = Modifier.height(8.dp))
+    MonText("Nightly backup, last 7 nights", ScreenDim, 11.5f)
+    val format = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
+    for (night in bv.nights) {
+        val text = if (night.ok) {
+            "✓ OK"
+        } else {
+            "✗ " + night.reason + (if (night.fixedAtMillis > 0L) " · fixed " + RoomBackup.fixedText(night.fixedAtMillis) else "")
+        }
+        MonText(format.format(night.day).padEnd(7) + text, if (night.ok) ScreenText else ScreenBad, 11.5f)
+    }
 }
 
 private fun leftText(seconds: Long): String = when {

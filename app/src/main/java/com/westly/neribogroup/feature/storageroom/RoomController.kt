@@ -88,6 +88,9 @@ class RoomController(
      * passed. The default does nothing, so a room built without it can never plug a drive in unchecked.
      */
     private val verifyOwner: (String, String, String, () -> Unit) -> Unit = { _, _, _, _ -> },
+    /** The pretend nightly backup (local to this phone only). */
+    private val backup: () -> BackupView = { BackupView.NONE },
+    val backupActions: BackupActions = BackupActions.NONE,
     private val actions: () -> RoomActions
 ) {
 
@@ -171,7 +174,7 @@ class RoomController(
             OVERVIEW -> "This is the whole company. Press A for apps, P for plans, C for copies."
             APPS -> "Press ↓ or ↑ to pick a line, then press Enter to change it."
             PLANS -> "↓ ↑ pick Free, Pro, Premium or Custom. ← → pick size or users. Tab for the next app. Enter to change."
-            COPIES -> "↓ ↑ pick a copy. On a drive, Enter brings it, plugs it in or removes it."
+            COPIES -> "↓ ↑ pick a copy. On a drive, Enter brings it, plugs it in or removes it. After a failed backup, pick Run backup now."
             else -> "Every change is listed here, newest first."
         }
     }
@@ -237,7 +240,7 @@ class RoomController(
     private fun maxSel(): Int = when (page) {
         APPS -> apps().size
         PLANS -> 3
-        COPIES -> 3
+        COPIES -> if (backup().showRetryRow) 4 else 3
         else -> 0
     }
 
@@ -283,6 +286,7 @@ class RoomController(
             COPIES -> when (sel) {
                 2 -> driveEnter('A')
                 3 -> driveEnter('B')
+                4 -> requestRetry()
             }
         }
     }
@@ -427,6 +431,30 @@ class RoomController(
     }
 
     fun driveView(): DriveView = drive()
+
+    fun backupView(): BackupView = backup()
+
+    /** Enter on "Run backup now": runs the failed night again, after the owner's fingerprint (or face or phone lock). */
+    fun requestRetry() {
+        val v = backup()
+        if (v.retryRunning) {
+            note("The backup is already running.")
+            return
+        }
+        if (!v.lastFailed) return
+        if (power().phase != PowerPhase.ON) {
+            err("The server is off. Switch it on first.")
+            return
+        }
+        verifyOwner(
+            "Run backup now",
+            "Confirm it is you before the failed backup is run again.",
+            "backup run again approved"
+        ) {
+            val result = backupActions.retry()
+            if (result != null) err(result) else note("Backup started.")
+        }
+    }
 
     /** Shows a line under the monitor for the drives. */
     fun note(text: String, bad: Boolean = false) {
