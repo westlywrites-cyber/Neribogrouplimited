@@ -11,6 +11,7 @@ import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -53,6 +54,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.unit.IntOffset
@@ -107,26 +111,64 @@ private fun sendKey(view: View, code: Int, shift: Boolean) {
     )
 }
 
-/**
- * Scrolls the page on the Dell screen like a mouse wheel would, at ([x], [y]) in the window. The Up and Down keys use this,
- * because a plain Down key only moves between buttons and cannot scroll a page that has none under it.
- */
-private fun sendScroll(view: View, x: Float, y: Float, down: Boolean) {
+/** One finger event, sent straight into the app on the Dell screen at ([x], [y]) in the window, exactly like a real touch. */
+private fun sendTouch(view: View, action: Int, downTime: Long, eventTime: Long, x: Float, y: Float) {
     val props = arrayOf(MotionEvent.PointerProperties().apply {
         id = 0
-        toolType = MotionEvent.TOOL_TYPE_MOUSE
+        toolType = MotionEvent.TOOL_TYPE_FINGER
     })
     val coords = arrayOf(MotionEvent.PointerCoords().apply {
         this.x = x
         this.y = y
-        setAxisValue(MotionEvent.AXIS_VSCROLL, if (down) -3f else 3f)
+        pressure = 1f
+        size = 1f
     })
-    val now = SystemClock.uptimeMillis()
     val event = MotionEvent.obtain(
-        now, now, MotionEvent.ACTION_SCROLL, 1, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0
+        downTime, eventTime, action, 1, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0
     )
-    view.dispatchGenericMotionEvent(event)
+    view.dispatchTouchEvent(event)
     event.recycle()
+}
+
+/** A tap at ([x], [y]): what the Enter key does at the pointer. */
+private fun sendTap(view: View, x: Float, y: Float) {
+    val t = SystemClock.uptimeMillis()
+    sendTouch(view, MotionEvent.ACTION_DOWN, t, t, x, y)
+    sendTouch(view, MotionEvent.ACTION_UP, t, t + 40L, x, y)
+}
+
+/**
+ * A slow swipe from ([x], [y]) that moves [distance] pixels up (negative) or down (positive), ending with a short rest
+ * so the page stops where the swipe ends instead of flinging on.
+ */
+private fun sendSwipe(view: View, x: Float, y: Float, distance: Float) {
+    val t = SystemClock.uptimeMillis()
+    val steps = 8
+    sendTouch(view, MotionEvent.ACTION_DOWN, t, t, x, y)
+    for (i in 1..steps) {
+        sendTouch(view, MotionEvent.ACTION_MOVE, t, t + 16L * i, x, y + distance * i / steps)
+    }
+    sendTouch(view, MotionEvent.ACTION_UP, t, t + 16L * steps + 120L, x, y + distance)
+}
+
+/** The mouse pointer on the Dell screen, drawn at [at] (in pixels, from the top left of the screen). */
+@Composable
+private fun DellPointer(at: Offset) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val u = density
+        val path = Path().apply {
+            moveTo(at.x, at.y)
+            lineTo(at.x, at.y + 17f * u)
+            lineTo(at.x + 4f * u, at.y + 13.2f * u)
+            lineTo(at.x + 7f * u, at.y + 20f * u)
+            lineTo(at.x + 9.6f * u, at.y + 18.8f * u)
+            lineTo(at.x + 6.6f * u, at.y + 12.4f * u)
+            lineTo(at.x + 12f * u, at.y + 12.4f * u)
+            close()
+        }
+        drawPath(path, Color.White)
+        drawPath(path, Color.Black, style = Stroke(width = 1.3f * u))
+    }
 }
 
 /**
@@ -147,7 +189,11 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
     var full by rememberSaveable { mutableStateOf(false) }
     var appOpen by rememberSaveable { mutableStateOf(false) }
     var shift by remember { mutableStateOf(false) }
-    var screenCenter by remember { mutableStateOf(Offset.Zero) }
+    var screenOrigin by remember { mutableStateOf(Offset.Zero) }
+    var screenSize by remember { mutableStateOf(IntSize.Zero) }
+    // The pointer, in pixels from the top left of the Dell screen. Negative means it has not been placed yet.
+    var pointer by remember { mutableStateOf(Offset(-1f, -1f)) }
+    val px = LocalDensity.current.density
     val progress = remember { Animatable(0f) }
     val fullNow = full && phase == DellPhase.ON
 
@@ -194,18 +240,55 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
         }
     }
 
+    // Scrolls the page on the screen by about [amount] dp, down or up, with a slow swipe in the middle of the screen.
+    fun scrollPage(down: Boolean) {
+        if (screenSize.width == 0) return
+        val x = screenOrigin.x + screenSize.width / 2f
+        val y = screenOrigin.y + screenSize.height * 0.45f
+        sendSwipe(view, x, y, (if (down) -110f else 110f) * px)
+    }
+
+    // The arrow keys move the pointer. At the top or bottom edge of the screen they scroll the page instead.
+    fun movePointer(dx: Int, dy: Int) {
+        if (screenSize.width == 0) return
+        val w = screenSize.width.toFloat()
+        val h = screenSize.height.toFloat()
+        val step = 26f * px
+        val edge = 10f * px
+        val x = (pointer.x + dx * step).coerceIn(0f, w - 1f)
+        var y = pointer.y + dy * step
+        if (dy > 0 && y > h - edge) {
+            scrollPage(true)
+            y = h - edge
+        } else if (dy < 0 && y < edge) {
+            scrollPage(false)
+            y = edge
+        }
+        pointer = Offset(x, y.coerceIn(0f, h - 1f))
+    }
+
     val onKey: (DellKey) -> Unit = { key ->
         if (key.kind == DellKey.POWER) {
             powerPressed()
         } else if (phase == DellPhase.ON) {
+            val code = key.code
             if (key.kind == DellKey.SHIFT) {
                 shift = !shift
-            } else if (key.code == AndroidKeyEvent.KEYCODE_ESCAPE) {
+            } else if (code == AndroidKeyEvent.KEYCODE_ESCAPE) {
                 backOwner?.onBackPressedDispatcher?.onBackPressed()
-            } else if (key.code == AndroidKeyEvent.KEYCODE_DPAD_DOWN || key.code == AndroidKeyEvent.KEYCODE_DPAD_UP) {
-                sendScroll(view, screenCenter.x, screenCenter.y, key.code == AndroidKeyEvent.KEYCODE_DPAD_DOWN)
+            } else if (code == AndroidKeyEvent.KEYCODE_DPAD_UP || code == AndroidKeyEvent.KEYCODE_DPAD_DOWN) {
+                // Shift + Up or Down scrolls the page. Up or Down alone moves the pointer.
+                if (shift) scrollPage(code == AndroidKeyEvent.KEYCODE_DPAD_DOWN)
+                else movePointer(0, if (code == AndroidKeyEvent.KEYCODE_DPAD_DOWN) 1 else -1)
+                shift = false
+            } else if (code == AndroidKeyEvent.KEYCODE_DPAD_LEFT || code == AndroidKeyEvent.KEYCODE_DPAD_RIGHT) {
+                movePointer(if (code == AndroidKeyEvent.KEYCODE_DPAD_RIGHT) 1 else -1, 0)
+                shift = false
+            } else if (code == AndroidKeyEvent.KEYCODE_ENTER && !shift) {
+                // Enter clicks where the pointer is. Shift + Enter sends a real Enter key to the app instead.
+                if (pointer.x >= 0f) sendTap(view, screenOrigin.x + pointer.x, screenOrigin.y + pointer.y)
             } else {
-                sendKey(view, key.code, shift)
+                sendKey(view, code, shift)
                 shift = false
             }
         }
@@ -287,8 +370,12 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
                 bootProgress = progress.value,
                 zoom = zoom,
                 full = fullNow,
-                onScreenPlaced = { screenCenter = it }
-            ) {
+                pointer = if (phase == DellPhase.ON && pointer.x >= 0f) pointer else null,
+                onScreenPlaced = { origin, size ->
+                    screenOrigin = origin
+                    screenSize = size
+                    if (pointer.x < 0f) pointer = Offset(size.width * 0.5f, size.height * 0.4f)
+                }            ) {
                 DellDesktop(
                     appOpen = appOpen,
                     onAppOpen = { appOpen = it },
@@ -337,18 +424,18 @@ private fun DellMonitor(
     bootProgress: Float,
     zoom: Float,
     full: Boolean,
-    onScreenPlaced: (Offset) -> Unit,
+    pointer: Offset?,
+    onScreenPlaced: (Offset, IntSize) -> Unit,
     desktop: @Composable () -> Unit
 ) {
     val bezel = ImageBitmap.imageResource(R.drawable.room_bezel)
-    // The middle of the screen in the window: the Up and Down keys scroll the page there.
-    val placed = Modifier.onGloballyPositioned {
-        onScreenPlaced(it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f))
-    }
+    // Where the screen is in the window, so the pointer and the swipes land on the right place.
+    val placed = Modifier.onGloballyPositioned { onScreenPlaced(it.positionInRoot(), it.size) }
     BoxWithConstraints(modifier = modifier) {
         if (full) {
             Box(modifier = Modifier.fillMaxSize().then(placed).background(Color.Black)) {
                 DellScreenContent(phase, bootProgress, zoom, desktop)
+                if (pointer != null) DellPointer(pointer)
             }
         } else {
             // The frame spans the phone width. The screen is shaped like a real company Dell: as tall as the room allows,
@@ -373,6 +460,7 @@ private fun DellMonitor(
                         .background(Color.Black)
                 ) {
                     DellScreenContent(phase, bootProgress, zoom, desktop)
+                    if (pointer != null) DellPointer(pointer)
                 }
             }
         }
