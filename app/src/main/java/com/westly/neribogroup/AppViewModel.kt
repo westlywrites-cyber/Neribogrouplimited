@@ -119,6 +119,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** The page opened from a home tile (Apps, Renewals, Staff or Company costs), or null on the home screen. */
     var openSection by mutableStateOf<Section?>(null)
 
+    /** True while the CEO office (the Dell screen with the whole app inside it) is open. */
+    var dellOpen by mutableStateOf(false)
+
     /** The id of the app dashboard that is open, or null when it is not showing. */
     var openAppId by mutableStateOf<String?>(null)
 

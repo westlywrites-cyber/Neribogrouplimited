@@ -147,7 +147,9 @@ fun StorageRoomScreen(
     actions: RoomActions,
     onCreatePin: (String) -> Boolean,
     onPullFromCloud: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    /** True when the room is opened from the Dell office: the server hum stays off there. */
+    quiet: Boolean = false
 ) {
     BackHandler { onBack() }
     var unlocked by rememberSaveable { mutableStateOf(false) }
@@ -195,7 +197,7 @@ fun StorageRoomScreen(
                     }
                 )
                 !unlocked -> PinEnter(ledger = ledger, onOpened = { unlocked = true })
-                else -> RoomContent(ledger, cloud, cloudFeed, actions, onPullFromCloud, zoom) {
+                else -> RoomContent(ledger, cloud, cloudFeed, actions, onPullFromCloud, zoom, quiet) {
                     zoom = (zoom * it).coerceIn(ZOOM_MIN, 1f)
                 }
             }
@@ -393,6 +395,7 @@ private fun RoomContent(
     actions: RoomActions,
     onPullFromCloud: () -> Unit,
     zoom: Float,
+    quiet: Boolean,
     onPinch: (Float) -> Unit
 ) {
     val actionsState = rememberUpdatedState(actions)
@@ -425,7 +428,8 @@ private fun RoomContent(
 
     // The server hum plays while the room is open and the servers run; it stops when the room is left, the app goes
     // to the background, or the server is switched off.
-    RoomHum(playing = RoomPower.humPlaying(power.value))
+    // From the Dell office the room stays quiet: no hum at all.
+    RoomHum(playing = !quiet && RoomPower.humPlaying(power.value))
 
     val apps = StorageRoomRules.roomApps(ledger.apps)
     val now = rememberNowMillis()

@@ -85,7 +85,9 @@ fun GroupDashboardScreen(
     cloudDot: CloudDot = CloudDot.GREY,
     onSave: (Ledger) -> Unit,
     onExport: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    /** Opens the CEO office (the Dell). Null inside the Dell itself, so the tile is not shown there. */
+    onOpenDell: (() -> Unit)? = null
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(ledger) }
@@ -497,6 +499,16 @@ fun GroupDashboardScreen(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenSection(Section.STORAGE_ROOM) }
                         )
+                    }
+                    if (onOpenDell != null) {
+                        item {
+                            SectionTile(
+                                title = "Dell office",
+                                subtitle = "CEO desk: the whole app on a Dell screen with its own keyboard",
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = onOpenDell
+                            )
+                        }
                     }
                 }
             }

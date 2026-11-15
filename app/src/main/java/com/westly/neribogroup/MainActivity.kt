@@ -42,6 +42,7 @@ import com.westly.neribogroup.feature.group.CompanyStorageScreen
 import com.westly.neribogroup.feature.group.EquipmentScreen
 import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
+import com.westly.neribogroup.feature.dell.DellOfficeScreen
 import com.westly.neribogroup.feature.hosting.HostingScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
 import com.westly.neribogroup.feature.group.SocialsScreen
@@ -175,6 +176,34 @@ private fun NeriboRoot(vm: AppViewModel) {
         )
     }
 
+    val onExport: () -> Unit = { exportLauncher.launch("neribo-group-backup.json") }
+    val onImport: () -> Unit = { importLauncher.launch(arrayOf("*/*")) }
+
+    if (vm.dellOpen) {
+        // The CEO office: the same app, with the same screens and the same data, inside a Dell screen.
+        DellOfficeScreen(
+            onExit = {
+                vm.dellOpen = false
+                vm.openSection = null
+                vm.openAppId = null
+                vm.openStaffId = null
+                vm.openCaseId = null
+                vm.openOfferId = null
+                vm.openProjectId = null
+                vm.showSettings = false
+            }
+        ) {
+            NeriboScreens(vm, onExport, onImport, inDell = true)
+        }
+    } else {
+        NeriboScreens(vm, onExport, onImport, inDell = false)
+    }
+}
+
+/** Every screen of the app. It is shown on the phone itself and, the same way, inside the Dell screen. */
+@Composable
+private fun NeriboScreens(vm: AppViewModel, onExport: () -> Unit, onImport: () -> Unit, inDell: Boolean) {
+    val openDell: (() -> Unit)? = if (inDell) null else ({ vm.dellOpen = true })
     val openApp = vm.openAppId?.let { id -> vm.ledger.apps.firstOrNull { it.id == id } }
     val openStaff = vm.openStaffId?.let { id -> vm.ledger.staff.firstOrNull { it.id == id } }
     val openCase = vm.openCaseId?.let { id -> vm.ledger.cases.firstOrNull { it.id == id } }
@@ -485,6 +514,7 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onClearMessage = { vm.clearStorageMessage() }
             )
             Section.STORAGE_ROOM -> StorageRoomScreen(
+                quiet = inDell,
                 ledger = vm.ledger,
                 cloud = RoomCloudInfo(
                     on = vm.cloudMode == CloudMode.ON && vm.cloudSignedIn,
@@ -549,8 +579,9 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onOpenApp = { vm.openAppId = it },
                 onOpenStaff = { vm.openStaffId = it },
                 onSave = { vm.saveLedger(it) },
-                onExport = { exportLauncher.launch("neribo-group-backup.json") },
-                onImport = { importLauncher.launch(arrayOf("*/*")) }
+                onExport = onExport,
+                onImport = onImport,
+                onOpenDell = openDell
             )
         }
     }
