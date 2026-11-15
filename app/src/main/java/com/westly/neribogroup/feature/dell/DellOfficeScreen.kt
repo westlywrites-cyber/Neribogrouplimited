@@ -49,6 +49,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.res.imageResource
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -68,18 +74,15 @@ private val Desk = Color(0xFF1B1E20)
 private val Accent = Color(0xFF7FD1C7)
 private val ScreenDimText = Color(0xFF8A9498)
 
-// Where things are on the monitor picture (dell_bezel.webp), as fractions of its width and height.
-private const val BEZEL_ASPECT = 572f / 470f
-private const val SCREEN_L = 0.0175f
-private const val SCREEN_T = 0.0213f
-private const val SCREEN_R = 0.9808f
-private const val SCREEN_B = 0.6915f
-private const val CHIN_Y = 0.717f
-private const val POWER_X = 0.945f
+// The monitor is the same Dell picture the Storage room uses (room_bezel.webp, 462 x 388): 9 wide on the top and sides,
+// 127 at the bottom (the chin and stand), all scaled by width / 462, so it fits the phone exactly like the Storage room.
+private const val BEZEL_W = 462f
+private const val BEZEL_EDGE = 9f
+private const val BEZEL_FOOT = 127f
 
-private const val ZOOM_MIN = 0.4f
+private const val ZOOM_MIN = 0.5f
 private const val ZOOM_MAX = 1f
-private const val ZOOM_START = 0.6f
+private const val ZOOM_START = 1f
 
 /** Sends one key press (down and up) into the app that is on the Dell screen, as a real keyboard would. */
 private fun sendKey(view: View, code: Int, shift: Boolean) {
@@ -173,15 +176,9 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
         }
     }
 
+    // Only the Dell monitor and its keyboard: no office picture, no desk. The monitor takes all the room that is left
+    // above the keyboard, and the keyboard is docked at the bottom, as in the Storage room.
     Box(modifier = Modifier.fillMaxSize().background(Desk)) {
-        Image(
-            painter = painterResource(R.drawable.dell_office),
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop
-        )
-        Box(modifier = Modifier.fillMaxSize().background(Color(0x55000000)))
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -192,7 +189,7 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0x99000000)),
+                    .background(Color(0xFF15181A)),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
@@ -252,12 +249,11 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
             }
 
             DellMonitor(
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 6.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 6.dp),
                 phase = phase,
                 bootProgress = progress.value,
                 zoom = zoom,
-                full = fullNow,
-                onPower = { powerPressed() }
+                full = fullNow
             ) {
                 DellDesktop(
                     appOpen = appOpen,
@@ -268,11 +264,13 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
             }
 
             if (showKeys && !fullNow) {
-                DellKeyboard(
-                    enabled = phase == DellPhase.ON,
-                    shiftOn = shift,
-                    onKey = onKey
-                )
+                Box(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    DellKeyboard(
+                        enabled = phase == DellPhase.ON,
+                        shiftOn = shift,
+                        onKey = onKey
+                    )
+                }
             }
         }
     }
@@ -305,105 +303,93 @@ private fun DellMonitor(
     bootProgress: Float,
     zoom: Float,
     full: Boolean,
-    onPower: () -> Unit,
     desktop: @Composable () -> Unit
 ) {
-    val ledColor = when (phase) {
-        DellPhase.ON -> Color(0xFF7CFF9B)
-        DellPhase.OFF -> Color(0xFF444A4D)
-        else -> Color(0xFFFFC27A)
-    }
-    val powerColor = if (phase == DellPhase.OFF) Color(0xFFFF8A80) else Color(0xFFB8BEC2)
-
+    val bezel = ImageBitmap.imageResource(R.drawable.room_bezel)
     BoxWithConstraints(modifier = modifier) {
-        val frameW = minOf(maxWidth, maxHeight * BEZEL_ASPECT)
-        val frameH = frameW / BEZEL_ASPECT
-        val boxW = if (full) maxWidth else frameW
-        val boxH = if (full) maxHeight else frameH
-        val screenX = if (full) 0.dp else boxW * SCREEN_L
-        val screenY = if (full) 0.dp else boxH * SCREEN_T
-        val screenW = if (full) boxW else boxW * (SCREEN_R - SCREEN_L)
-        val screenH = if (full) boxH else boxH * (SCREEN_B - SCREEN_T)
-
-        Box(
-            modifier = Modifier
-                .size(boxW, boxH)
-                .align(if (full) Alignment.Center else Alignment.BottomCenter)
-        ) {
+        if (full) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                DellScreenContent(phase, bootProgress, 1f, desktop)
+            }
+        } else {
+            val k = maxWidth.value / BEZEL_W
+            val edge = (BEZEL_EDGE * k).dp
+            val foot = (BEZEL_FOOT * k).dp
             Box(
                 modifier = Modifier
-                    .offset(screenX, screenY)
-                    .size(screenW, screenH)
-                    .clip(RoundedCornerShape(if (full) 0.dp else 3.dp))
-                    .background(Color.Black)
+                    .fillMaxSize()
+                    .drawBehind { drawBezel(bezel, BEZEL_EDGE * k * density, BEZEL_FOOT * k * density) }
+                    .padding(start = edge, end = edge, top = edge, bottom = foot)
             ) {
-                when (phase) {
-                    DellPhase.ON -> ScaledDesktop(if (full) 1f else zoom, desktop)
-                    DellPhase.SHUTTING -> Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text("Shutting down…", color = Color.White, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("The Storage room keeps running", color = ScreenDimText, fontSize = 11.sp)
-                    }
-                    DellPhase.BOOTING -> Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Image(
-                            painter = painterResource(R.drawable.dell_logo),
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp)
-                        )
-                        Spacer(modifier = Modifier.height(14.dp))
-                        LinearProgressIndicator(
-                            progress = { bootProgress },
-                            modifier = Modifier.width(120.dp),
-                            color = Color.White,
-                            trackColor = Color(0xFF333A3D)
-                        )
-                    }
-                    DellPhase.OFF -> Box(modifier = Modifier.fillMaxSize())
-                }
-            }
-
-            if (!full) {
-                Image(
-                    painter = painterResource(R.drawable.dell_bezel),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillBounds
-                )
                 Box(
                     modifier = Modifier
-                        .offset(boxW * (POWER_X - 0.03f) - 2.dp, boxH * CHIN_Y - 2.dp)
-                        .size(4.dp)
-                        .clip(CircleShape)
-                        .background(ledColor)
-                )
-                Box(
-                    modifier = Modifier
-                        .offset(boxW * POWER_X - 17.dp, boxH * CHIN_Y - 17.dp)
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .clickable { onPower() },
-                    contentAlignment = Alignment.Center
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color.Black)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(11.dp)
-                            .clip(CircleShape)
-                            .border(1.5.dp, powerColor, CircleShape)
-                    )
+                    DellScreenContent(phase, bootProgress, zoom, desktop)
                 }
             }
         }
     }
+}
+
+/** What the monitor shows for each power phase: the desktop, the shutting down message, the boot logo, or black. */
+@Composable
+private fun DellScreenContent(phase: DellPhase, bootProgress: Float, zoom: Float, desktop: @Composable () -> Unit) {
+    when (phase) {
+        DellPhase.ON -> ScaledDesktop(zoom, desktop)
+        DellPhase.SHUTTING -> Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Shutting down…", color = Color.White, fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text("The Storage room keeps running", color = ScreenDimText, fontSize = 11.sp)
+        }
+        DellPhase.BOOTING -> Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Image(
+                painter = painterResource(R.drawable.dell_logo),
+                contentDescription = null,
+                modifier = Modifier.size(64.dp)
+            )
+            Spacer(modifier = Modifier.height(14.dp))
+            LinearProgressIndicator(
+                progress = { bootProgress },
+                modifier = Modifier.width(120.dp),
+                color = Color.White,
+                trackColor = Color(0xFF333A3D)
+            )
+        }
+        DellPhase.OFF -> Box(modifier = Modifier.fillMaxSize())
+    }
+}
+
+/** Draws the 8 border pieces of the monitor picture (5 left, 3 top, 3 right, 127 bottom); the middle is left empty for the screen. Same as the Storage room. */
+private fun DrawScope.drawBezel(image: ImageBitmap, edgePx: Float, footPx: Float) {
+    val w = size.width.toInt()
+    val h = size.height.toInt()
+    val e = edgePx.toInt()
+    val f = footPx.toInt()
+    fun piece(sx: Int, sy: Int, sw: Int, sh: Int, dx: Int, dy: Int, dw: Int, dh: Int) {
+        if (dw <= 0 || dh <= 0) return
+        drawImage(image, IntOffset(sx, sy), IntSize(sw, sh), IntOffset(dx, dy), IntSize(dw, dh))
+    }
+    piece(0, 0, 5, 3, 0, 0, e, e)
+    piece(5, 0, 454, 3, e, 0, w - 2 * e, e)
+    piece(459, 0, 3, 3, w - e, 0, e, e)
+    piece(0, 3, 5, 258, 0, e, e, h - e - f)
+    piece(459, 3, 3, 258, w - e, e, e, h - e - f)
+    piece(0, 261, 5, 127, 0, h - f, e, f)
+    piece(5, 261, 454, 127, e, h - f, w - 2 * e, f)
+    piece(459, 261, 3, 127, w - e, h - f, e, f)
 }
 
 /**

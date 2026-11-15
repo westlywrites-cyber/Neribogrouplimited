@@ -62,15 +62,19 @@ private val DELL_ROWS: List<List<DellKey>> = listOf(
     )
 )
 
-// A black Dell business keyboard: dark flat keys with light legends.
-private val BoardColor = Color(0xFF0E0F11)
-private val BoardEdge = Color(0xFF2A2C30)
-private val KeyBody = Color(0xFF1F2124)
-private val KeyEdge = Color(0xFF34373C)
-private val KeySpecial = Color(0xFF17181B)
-private val KeyLegend = Color(0xFFE9EAEC)
+// The same look as the Storage room keyboard: dark keys, a teal outline on the keys that work right now,
+// a teal Enter, a red Power key, and the other keys dimmed when the Dell is off.
+private val BoardColor = Color(0xFF15181A)
+private val KeyBody = Color(0xFF262D30)
+private val KeySpecial = Color(0xFF1F3A3A)
+private val KeyLegend = Color(0xFFDFE8E7)
+private val KeySpecialLegend = Color(0xFFBFF3EC)
+private val KeyAccent = Color(0xFF7FD1C7)
+private val KeyAccentText = Color(0xFF04202A)
 private val KeyShiftOn = Color(0xFF2F5D8C)
-private val KeyPowerLegend = Color(0xFFFF8A80)
+private val KeyPowerBody = Color(0xFF4A1F1F)
+private val KeyPowerLegend = Color(0xFFFFB4AB)
+private val KeyPowerRing = Color(0xFFFF6B6B)
 
 /**
  * The keyboard on the CEO desk. Every key except Power types or moves in the app that is on the Dell screen:
@@ -87,14 +91,13 @@ fun DellKeyboard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(BoardColor)
-            .border(1.dp, BoardEdge, RoundedCornerShape(8.dp))
-            .padding(horizontal = 5.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+            .padding(horizontal = 7.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         for (row in DELL_ROWS) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 for (key in row) {
                     DellKeyButton(key, enabled || key.kind == DellKey.POWER, shiftOn, onKey)
                 }
@@ -105,30 +108,37 @@ fun DellKeyboard(
 
 @Composable
 private fun RowScope.DellKeyButton(key: DellKey, lit: Boolean, shiftOn: Boolean, onKey: (DellKey) -> Unit) {
-    val shape = RoundedCornerShape(5.dp)
+    val shape = RoundedCornerShape(6.dp)
     val shifted = key.kind == DellKey.SHIFT && shiftOn
     val background = when {
         shifted -> KeyShiftOn
-        key.kind == DellKey.SPECIAL || key.kind == DellKey.SHIFT || key.kind == DellKey.ENTER || key.kind == DellKey.POWER -> KeySpecial
+        key.kind == DellKey.ENTER -> KeyAccent
+        key.kind == DellKey.POWER -> KeyPowerBody
+        key.kind == DellKey.SPECIAL || key.kind == DellKey.SHIFT -> KeySpecial
         else -> KeyBody
     }
-    val textColor = if (key.kind == DellKey.POWER) KeyPowerLegend else KeyLegend
+    val textColor = when (key.kind) {
+        DellKey.ENTER -> KeyAccentText
+        DellKey.POWER -> KeyPowerLegend
+        DellKey.SPECIAL, DellKey.SHIFT -> KeySpecialLegend
+        else -> KeyLegend
+    }
+    var modifier = Modifier
+        .weight(key.weight)
+        .height(38.dp)
+        .alpha(if (lit) 1f else 0.32f)
+        .clip(shape)
+        .background(background)
+    if (lit) modifier = modifier.border(2.dp, if (key.kind == DellKey.POWER) KeyPowerRing else KeyAccent, shape)
     Box(
-        modifier = Modifier
-            .weight(key.weight)
-            .height(34.dp)
-            .alpha(if (lit) 1f else 0.4f)
-            .clip(shape)
-            .background(background)
-            .border(0.5.dp, KeyEdge, shape)
-            .clickable(enabled = lit) { onKey(key) },
+        modifier = modifier.clickable(enabled = lit) { onKey(key) },
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = key.label,
             color = textColor,
-            fontSize = if (key.label.length > 2) 10.sp else 13.sp,
-            fontWeight = FontWeight.Medium,
+            fontSize = if (key.label.length > 2) 11.sp else 13.sp,
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1
         )
     }
