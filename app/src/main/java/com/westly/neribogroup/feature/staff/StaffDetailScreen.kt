@@ -2,6 +2,7 @@ package com.westly.neribogroup.feature.staff
 
 import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,6 +53,10 @@ import android.widget.Toast
 import java.io.File
 import com.westly.neribogroup.data.StaffImage
 import com.westly.neribogroup.data.Allowance
+import com.westly.neribogroup.data.DayChange
+import com.westly.neribogroup.data.dayStartMillis
+import com.westly.neribogroup.data.workModeText
+import com.westly.neribogroup.feature.common.LabeledField
 import com.westly.neribogroup.data.PayItem
 import com.westly.neribogroup.data.SALARY_KEY
 import com.westly.neribogroup.data.allowanceKey
@@ -94,6 +99,8 @@ fun StaffDetailScreen(
     var draft by remember { mutableStateOf(staff) }
     var menuOpen by remember { mutableStateOf(false) }
     var addAllowance by remember { mutableStateOf(false) }
+    var editAllowance by remember { mutableStateOf<Allowance?>(null) }
+    var addDayChange by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmPay by remember { mutableStateOf(false) }
     var itemToPay by remember { mutableStateOf<PayItem?>(null) }
@@ -208,6 +215,22 @@ fun StaffDetailScreen(
                     }
                 }
                 item {
+                    LabeledField(
+                        label = "Job description",
+                        value = draft.jobDescription,
+                        onValueChange = { draft = draft.copy(jobDescription = it.take(600)) },
+                        singleLine = false,
+                        minLines = 3
+                    )
+                }
+                item {
+                    DateField(
+                        label = "Start date",
+                        millis = draft.startDateMillis,
+                        onChange = { draft = draft.copy(startDateMillis = it) }
+                    )
+                }
+                item {
                     TextInput("Email", draft.email, KeyboardType.Email) {
                         draft = draft.copy(email = it.take(80))
                     }
@@ -240,6 +263,13 @@ fun StaffDetailScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             InfoRow("Role", shown.role)
+                            if (shown.jobDescription.isNotBlank()) {
+                                InfoRow("Job description", shown.jobDescription)
+                            }
+                            InfoRow(
+                                "Started",
+                                if (shown.startDateMillis > 0L) formatDate(shown.startDateMillis) else ""
+                            )
                             InfoRow(
                                 "Email", shown.email,
                                 onCopy = if (shown.email.isNotBlank()) {
@@ -297,6 +327,41 @@ fun StaffDetailScreen(
                 }
             }
 
+            item { SectionTitle("Work schedule") }
+
+            if (editing) {
+                item {
+                    WeekPlanEditor(
+                        plan = draft.weekPlan,
+                        onChange = { draft = draft.copy(weekPlan = it) }
+                    )
+                }
+                items(draft.dayChanges.sortedBy { it.dayMillis }, key = { it.dayMillis }) { change ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = shortDayText(change.dayMillis) + ": " + workModeText(change.mode),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        TextButton(
+                            onClick = {
+                                draft = draft.copy(
+                                    dayChanges = draft.dayChanges.filter { it.dayMillis != change.dayMillis }
+                                )
+                            }
+                        ) { Text("Remove") }
+                    }
+                }
+                item {
+                    OutlinedButton(
+                        onClick = { addDayChange = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Change one day") }
+                }
+            } else {
+                item { WorkScheduleCard(person = shown, now = now) }
+            }
+
             item { SectionTitle("Monthly pay") }
 
             if (editing) {
@@ -304,6 +369,13 @@ fun StaffDetailScreen(
                     NumberField("Monthly salary", draft.monthlySalary, {
                         draft = draft.copy(monthlySalary = it)
                     })
+                }
+                item {
+                    DateField(
+                        label = "Next salary date",
+                        millis = draft.payDateMillis,
+                        onChange = { draft = draft.copy(payDateMillis = it) }
+                    )
                 }
             } else {
                 item {
@@ -333,6 +405,14 @@ fun StaffDetailScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        val salaryDue = shown.dueMillis(SALARY_KEY)
+                        if (salaryItem != null && salaryDue > 0L) {
+                            Text(
+                                text = dueText("Next pay", salaryDue, now),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -350,32 +430,42 @@ fun StaffDetailScreen(
             }
 
             items(shown.allowances, key = { it.id }) { allowance ->
-                if (editing) {
-                    MoneyRow(
-                        title = allowance.name,
-                        subtitle = null,
-                        amountText = formatNaira(allowance.amount),
-                        editing = true,
-                        onDelete = {
-                            draft = draft.copy(
-                                allowances = draft.allowances.filter { it.id != allowance.id }
-                            )
-                        }
-                    )
+                val key = allowanceKey(allowance.id)
+                val payment = shown.itemPayment(key, now)
+                val finished = shown.oneTimePayment(allowance)
+                val due = shown.dueMillis(key)
+                // "Renews every month · Next payment: 25 Dec 2026 · in 3 days", "One time · Paid on 12 Nov 2026" ...
+                val info = ArrayList<String>()
+                info.add(if (allowance.renewing) "Renews every month" else "One time")
+                if (finished != null) {
+                    info.add("Paid on " + formatDate(finished.dateMillis))
                 } else {
-                    val key = allowanceKey(allowance.id)
-                    val payment = shown.itemPayment(key, now)
+                    if (payment != null && allowance.amount > 0L) info.add("Paid on " + formatDate(payment.dateMillis))
+                    if (due > 0L) info.add(dueText(if (allowance.renewing) "Next payment" else "Payment date", due, now))
+                }
+                val infoText = info.joinToString(" · ")
+                if (editing) {
+                    Box(modifier = Modifier.clickable { editAllowance = allowance }) {
+                        MoneyRow(
+                            title = allowance.name,
+                            subtitle = infoText + " (tap to edit)",
+                            amountText = formatNaira(allowance.amount),
+                            editing = true,
+                            onDelete = {
+                                draft = draft.copy(
+                                    allowances = draft.allowances.filter { it.id != allowance.id }
+                                )
+                            }
+                        )
+                    }
+                } else {
                     val payable = allowance.amount > 0L
                     PayableRow(
                         title = allowance.name,
-                        subtitle = if (payable && payment != null) {
-                            "Paid on " + formatDate(payment.dateMillis)
-                        } else {
-                            null
-                        },
+                        subtitle = infoText,
                         amountText = formatNaira(allowance.amount),
                         showPay = payable,
-                        paid = payment != null,
+                        paid = payment != null || finished != null,
                         onPay = {
                             itemToPay = PayItem(key, allowance.name, allowance.amount)
                         }
@@ -471,14 +561,38 @@ fun StaffDetailScreen(
     }
 
     if (addAllowance) {
-        AddEntryDialog(
-            heading = "Add allowance",
+        AllowanceDialog(
+            initial = null,
             onDismiss = { addAllowance = false },
-            onAdd = { title, amount ->
-                draft = draft.copy(
-                    allowances = draft.allowances + Allowance(name = title, amount = amount)
-                )
+            onSave = { created ->
+                draft = draft.copy(allowances = draft.allowances + created)
                 addAllowance = false
+            }
+        )
+    }
+
+    editAllowance?.let { current ->
+        AllowanceDialog(
+            initial = current,
+            onDismiss = { editAllowance = null },
+            onSave = { changed ->
+                draft = draft.copy(
+                    allowances = draft.allowances.map { if (it.id == changed.id) changed else it }
+                )
+                editAllowance = null
+            }
+        )
+    }
+
+    if (addDayChange) {
+        DayChangeDialog(
+            onDismiss = { addDayChange = false },
+            onAdd = { change ->
+                val day = dayStartMillis(change.dayMillis)
+                // One change per day: a new one for the same day replaces the old one.
+                val kept = draft.dayChanges.filter { dayStartMillis(it.dayMillis) != day }
+                draft = draft.copy(dayChanges = kept + DayChange(dayMillis = day, mode = change.mode))
+                addDayChange = false
             }
         )
     }

@@ -1,6 +1,9 @@
 package com.westly.neribogroup
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -56,6 +59,8 @@ import com.westly.neribogroup.feature.software.SoftwareClientsScreen
 import com.westly.neribogroup.feature.software.SoftwareOfferScreen
 import com.westly.neribogroup.feature.software.SoftwareProjectScreen
 import com.westly.neribogroup.feature.staff.StaffDetailScreen
+import com.westly.neribogroup.notify.ReminderNotifier
+import com.westly.neribogroup.notify.ReminderScheduler
 import com.westly.neribogroup.ui.theme.NeriboTheme
 
 // FragmentActivity (a ComponentActivity underneath) is what Android's BiometricPrompt needs.
@@ -66,9 +71,16 @@ class MainActivity : FragmentActivity() {
     // The one gate for sensitive actions: fingerprint or screen lock, open for 5 minutes after a success.
     private val gate: BiometricGate by lazy { BiometricGate(this) { cloudVm.logVerified(it) } }
 
+    // Android 13 and newer ask the owner before an app may show notifications.
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onResume() {
         super.onResume()
         cloudVm.onAppResumed()
+        // Check the reminders (payments, renewals, storage, servers) every time the app is opened.
+        val app = applicationContext
+        Thread { ReminderNotifier.run(app) }.start()
     }
 
     override fun onPause() {
@@ -84,6 +96,16 @@ class MainActivity : FragmentActivity() {
         window.setBackgroundDrawable(
             android.graphics.drawable.ColorDrawable(if (dark) 0xFF101414.toInt() else 0xFFF6F8F7.toInt())
         )
+        // Ask once for permission to show reminders, and set the hourly check.
+        val settings = getSharedPreferences("neribo_settings", MODE_PRIVATE)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            !settings.getBoolean("asked_notifications", false) &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            settings.edit().putBoolean("asked_notifications", true).apply()
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        ReminderScheduler.schedule(this)
         setContent {
             val vm: AppViewModel = viewModel()
             NeriboTheme(darkTheme = vm.darkTheme, fontStep = vm.fontStep) {

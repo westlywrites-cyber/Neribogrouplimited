@@ -1,6 +1,7 @@
 package com.westly.neribogroup.feature.group
 
 import com.westly.neribogroup.feature.common.rememberKept
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,6 +31,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.Staff
+import com.westly.neribogroup.data.WORK_OFF
+import com.westly.neribogroup.data.WORK_ONSITE
+import com.westly.neribogroup.data.WORK_REMOTE
+import com.westly.neribogroup.data.workModeText
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.NameDialog
@@ -117,6 +122,47 @@ fun StaffListScreen(
             )
         }
 
+        // Who works where today (only people who have a work plan or a one-off change for today).
+        val onSiteToday = shown.staff.filter { it.workModeOn(now) == WORK_ONSITE }
+        val remoteToday = shown.staff.filter { it.workModeOn(now) == WORK_REMOTE }
+        val offToday = shown.staff.filter { it.workModeOn(now) == WORK_OFF }
+        if (onSiteToday.isNotEmpty() || remoteToday.isNotEmpty() || offToday.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Today",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "On-site: " + (if (onSiteToday.isEmpty()) "nobody" else onSiteToday.joinToString(", ") { it.name }),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "Remote: " + (if (remoteToday.isEmpty()) "nobody" else remoteToday.joinToString(", ") { it.name }),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (offToday.isNotEmpty()) {
+                            Text(
+                                text = "Off: " + offToday.joinToString(", ") { it.name },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         if (shown.staff.isEmpty()) {
             item {
                 Text(
@@ -138,6 +184,7 @@ fun StaffListScreen(
         items(visible, key = { it.id }) { person ->
             StaffCard(
                 person = person,
+                todayMode = person.workModeOn(now),
                 paidThisMonth = person.isPaidIn(now),
                 editing = editing,
                 onClick = { onOpenStaff(person.id) },
@@ -207,6 +254,7 @@ fun StaffListScreen(
 @Composable
 private fun StaffCard(
     person: Staff,
+    todayMode: Int?,
     paidThisMonth: Boolean,
     editing: Boolean,
     onClick: () -> Unit,
@@ -234,6 +282,13 @@ private fun StaffCard(
                 if (person.role.isNotBlank()) {
                     Text(
                         text = person.role,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (todayMode != null) {
+                    Text(
+                        text = "Today: " + workModeText(todayMode),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

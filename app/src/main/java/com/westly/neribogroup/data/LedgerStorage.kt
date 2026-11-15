@@ -24,6 +24,20 @@ object LedgerStorage {
         }
     }
 
+    /**
+     * Reads the saved ledger without touching the file (used by the reminders in the background).
+     * Returns null when there is no saved ledger yet or it cannot be read.
+     */
+    fun peek(context: Context): Ledger? {
+        val file = File(context.filesDir, FILE_NAME)
+        if (!file.exists()) return null
+        return try {
+            fromJson(file.readText())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun save(context: Context, ledger: Ledger) {
         runCatching { writeAtomic(context, toJson(ledger)) }
     }
@@ -141,9 +155,32 @@ object LedgerStorage {
                 ao.put("id", a.id)
                 ao.put("name", a.name)
                 ao.put("amount", a.amount)
+                // Only written when different from the old behaviour (monthly, no date), so old data stays the same.
+                if (!a.renewing) ao.put("renewing", false)
+                if (a.nextDateMillis > 0L) ao.put("nextDate", a.nextDateMillis)
                 allowances.put(ao)
             }
             o.put("allowances", allowances)
+
+            // Job description, dates and the work plan: only written when they are set.
+            if (s.jobDescription.isNotBlank()) o.put("jobDescription", s.jobDescription)
+            if (s.startDateMillis > 0L) o.put("startDate", s.startDateMillis)
+            if (s.payDateMillis > 0L) o.put("payDate", s.payDateMillis)
+            if (s.weekPlan.size == 7) {
+                val plan = JSONArray()
+                for (m in s.weekPlan) plan.put(m)
+                o.put("weekPlan", plan)
+            }
+            if (s.dayChanges.isNotEmpty()) {
+                val changes = JSONArray()
+                for (c in s.dayChanges) {
+                    val co = JSONObject()
+                    co.put("day", c.dayMillis)
+                    co.put("mode", c.mode)
+                    changes.put(co)
+                }
+                o.put("dayChanges", changes)
+            }
 
             val payments = JSONArray()
             for (p in s.payments) {
@@ -249,9 +286,28 @@ object LedgerStorage {
                     Allowance(
                         id = ao.optString("id").ifBlank { UUID.randomUUID().toString() },
                         name = ao.optString("name"),
-                        amount = ao.optLong("amount")
+                        amount = ao.optLong("amount"),
+                        renewing = ao.optBoolean("renewing", true),
+                        nextDateMillis = ao.optLong("nextDate")
                     )
                 )
+            }
+
+            // The work plan: 7 numbers, each 0 (off), 1 (on-site) or 2 (remote). Anything else counts as not set.
+            val weekPlan = ArrayList<Int>()
+            val planArray = o.optJSONArray("weekPlan")
+            if (planArray != null && planArray.length() == 7) {
+                for (j in 0 until 7) weekPlan.add(planArray.optInt(j).coerceIn(WORK_OFF, WORK_REMOTE))
+            }
+            val dayChanges = ArrayList<DayChange>()
+            val changesArray = o.optJSONArray("dayChanges")
+            if (changesArray != null) {
+                for (j in 0 until changesArray.length()) {
+                    val co = changesArray.optJSONObject(j) ?: continue
+                    val day = co.optLong("day")
+                    if (day <= 0L) continue
+                    dayChanges.add(DayChange(dayMillis = day, mode = co.optInt("mode").coerceIn(WORK_OFF, WORK_REMOTE)))
+                }
             }
 
             val payments = ArrayList<Payment>()
@@ -305,7 +361,12 @@ object LedgerStorage {
                     monthlySalary = o.optLong("monthlySalary"),
                     allowances = allowances,
                     payments = payments,
-                    images = images
+                    images = images,
+                    jobDescription = o.optString("jobDescription"),
+                    startDateMillis = o.optLong("startDate"),
+                    payDateMillis = o.optLong("payDate"),
+                    weekPlan = weekPlan,
+                    dayChanges = dayChanges
                 )
             )
         }

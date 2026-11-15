@@ -120,6 +120,13 @@ object RoomPower {
 
     private fun total(p: PowerPhase) = if (p == PowerPhase.SHUTTING) SHUTDOWN_SECONDS else BOOT_SECONDS
 
+    /** When the server finished shutting down (it is off now), or 0 when it is not off. Used by the reminders. */
+    @Synchronized
+    fun offSinceMillis(context: Context, now: Long = System.currentTimeMillis()): Long {
+        val current = view(context, now)
+        return if (current.phase == PowerPhase.OFF) startedAt else 0L
+    }
+
     @Synchronized
     fun startShutdown(context: Context) {
         load(context)

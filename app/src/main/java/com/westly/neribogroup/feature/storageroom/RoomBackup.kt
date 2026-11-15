@@ -219,6 +219,24 @@ object RoomBackup {
         return start to start + length
     }
 
+    /**
+     * The main server faults that start between [pastHours] before [now] and [futureHours] after it, as
+     * (start, end) in millis, earliest first. The same date always gives the same answer, so the reminders can
+     * call this without opening the room.
+     */
+    fun faultsAround(now: Long, pastHours: Long, futureHours: Long): List<Pair<Long, Long>> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDateTime.ofInstant(Instant.ofEpochMilli(now), zone).toLocalDate()
+        val from = now - pastHours * 3_600_000L
+        val to = now + futureHours * 3_600_000L
+        val found = ArrayList<Pair<Long, Long>>()
+        for (offset in -2L..2L) {
+            val fault = faultEvent(today.plusDays(offset), zone) ?: continue
+            if (fault.first in from..to) found.add(fault)
+        }
+        return found.sortedBy { it.first }
+    }
+
     private fun timeText(millis: Long, zone: ZoneId): String =
         DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH).format(Instant.ofEpochMilli(millis).atZone(zone))
 

@@ -650,11 +650,50 @@ fun dayStartMillis(millis: Long): Long {
         .atStartOfDay(zone).toInstant().toEpochMilli()
 }
 
-/** Extra monthly money for a staff member, for example Transport or Housing. */
+/**
+ * The same day of the month, [months] months later, at the start of that day. A day that does not exist in the
+ * shorter month (the 31st) moves to that month's last day.
+ */
+fun addMonthsMillis(millis: Long, months: Long): Long {
+    val zone = ZoneId.systemDefault()
+    return Instant.ofEpochMilli(millis).atZone(zone).toLocalDate().plusMonths(months)
+        .atStartOfDay(zone).toInstant().toEpochMilli()
+}
+
+/** Whole calendar days from the day of [fromMillis] to the day of [toMillis]. Negative means [toMillis] is earlier. */
+fun daysBetweenMillis(fromMillis: Long, toMillis: Long): Long {
+    val zone = ZoneId.systemDefault()
+    val from = Instant.ofEpochMilli(fromMillis).atZone(zone).toLocalDate()
+    val to = Instant.ofEpochMilli(toMillis).atZone(zone).toLocalDate()
+    return ChronoUnit.DAYS.between(from, to)
+}
+
+/** What a staff member does on a day: not working, working at the office, or working from home. */
+const val WORK_OFF = 0
+const val WORK_ONSITE = 1
+const val WORK_REMOTE = 2
+
+fun workModeText(mode: Int): String = when (mode) {
+    WORK_ONSITE -> "On-site"
+    WORK_REMOTE -> "Remote"
+    else -> "Off"
+}
+
+/** One-off change to the weekly plan: on the day starting at [dayMillis] the staff member works in [mode]. */
+data class DayChange(
+    val dayMillis: Long,
+    val mode: Int
+)
+
+/** Extra money for a staff member, for example Transport or Housing. It repeats every month or is paid one time. */
 data class Allowance(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
-    val amount: Long
+    val amount: Long,
+    /** True: paid every month. False: paid one time only (finished once it is paid). */
+    val renewing: Boolean = true,
+    /** The day it is next paid (start of that day). 0 means no date is set. */
+    val nextDateMillis: Long = 0L
 )
 
 /** Key used for the salary part of a staff member's monthly pay. */
@@ -709,11 +748,82 @@ data class Staff(
     val allowances: List<Allowance> = emptyList(),
     val payments: List<Payment> = emptyList(),
     /** Up to [MAX_STAFF_IMAGES] photos of this person. */
-    val images: List<StaffImage> = emptyList()
+    val images: List<StaffImage> = emptyList(),
+    /** What this person does for the company, in the owner's own words. */
+    val jobDescription: String = "",
+    /** The day this person started working (start of that day). 0 means not set. */
+    val startDateMillis: Long = 0L,
+    /** The day the salary is next paid (start of that day). 0 means not set. It moves one month on when the salary is paid. */
+    val payDateMillis: Long = 0L,
+    /** The weekly plan: 7 numbers, Monday first, each [WORK_OFF], [WORK_ONSITE] or [WORK_REMOTE]. Empty means not set. */
+    val weekPlan: List<Int> = emptyList(),
+    /** One-off changes to the weekly plan for single days. */
+    val dayChanges: List<DayChange> = emptyList()
 ) {
-    val allowancesTotal: Long get() = allowances.sumOf { it.amount }
+    private fun allowanceForKey(key: String): Allowance? =
+        allowances.firstOrNull { allowanceKey(it.id) == key }
+
+    /** The payment that finished a one-time allowance, or null when it is not one-time or not paid yet. */
+    fun oneTimePayment(allowance: Allowance): Payment? {
+        if (allowance.renewing) return null
+        val key = allowanceKey(allowance.id)
+        return payments.filter { it.itemKey == key }.maxByOrNull { it.dateMillis }
+    }
+
+    private fun isFinishedOneTime(key: String): Boolean {
+        val a = allowanceForKey(key) ?: return false
+        return oneTimePayment(a) != null
+    }
+
+    /** What is paid every month: the repeating allowances, and a one-time allowance until it has been paid. */
+    val allowancesTotal: Long
+        get() = allowances.filter { it.renewing || oneTimePayment(it) == null }.sumOf { it.amount }
     val monthlyTotal: Long get() = monthlySalary + allowancesTotal
     val totalPaid: Long get() = payments.sumOf { it.amount }
+
+    /**
+     * The day the item is next due (start of that day), or 0 when no date is set or nothing is left to pay.
+     * A repeating item that is already paid for the month of its date counts as done, so the date moves on a month.
+     */
+    fun dueMillis(key: String): Long {
+        val allowance = allowanceForKey(key)
+        val base = if (key == SALARY_KEY) payDateMillis else (allowance?.nextDateMillis ?: 0L)
+        if (base <= 0L) return 0L
+        if (allowance != null && !allowance.renewing) {
+            return if (oneTimePayment(allowance) != null) 0L else base
+        }
+        var date = base
+        var guard = 0
+        while (isItemPaid(key, date) && guard < 36) {
+            date = addMonthsMillis(date, 1L)
+            guard++
+        }
+        return date
+    }
+
+    /** What this person does on the day of [millis]: a one-off change if there is one, else the weekly plan, else null. */
+    fun workModeOn(millis: Long): Int? {
+        val day = dayStartMillis(millis)
+        val change = dayChanges.firstOrNull { dayStartMillis(it.dayMillis) == day }
+        if (change != null) return change.mode
+        if (weekPlan.size != 7) return null
+        val weekday = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).dayOfWeek.value
+        return weekPlan[weekday - 1]
+    }
+
+    /** The salary or allowance moves to its next month after it is paid. */
+    private fun withNextDate(key: String): Staff {
+        if (key == SALARY_KEY) {
+            return if (payDateMillis > 0L) copy(payDateMillis = addMonthsMillis(payDateMillis, 1L)) else this
+        }
+        val a = allowanceForKey(key) ?: return this
+        if (!a.renewing || a.nextDateMillis <= 0L) return this
+        return copy(
+            allowances = allowances.map {
+                if (it.id == a.id) it.copy(nextDateMillis = addMonthsMillis(it.nextDateMillis, 1L)) else it
+            }
+        )
+    }
 
     private fun paymentsIn(millis: Long): List<Payment> {
         val key = monthKey(millis)
@@ -740,7 +850,7 @@ data class Staff(
 
     /** Parts of this month's pay that are still unpaid. */
     fun outstandingItems(millis: Long): List<PayItem> =
-        payItems().filter { !isItemPaid(it.key, millis) }
+        payItems().filter { !isItemPaid(it.key, millis) && !isFinishedOneTime(it.key) }
 
     /** The amount still to be paid this month. */
     fun outstandingTotal(millis: Long): Long = outstandingItems(millis).sumOf { it.amount }
@@ -754,7 +864,7 @@ data class Staff(
     /** Records one part of this month's pay (the salary or one allowance). Does nothing if it is already paid. */
     fun paidItem(key: String, millis: Long): Staff {
         val item = outstandingItems(millis).firstOrNull { it.key == key } ?: return this
-        return copy(
+        val paid = copy(
             payments = payments + Payment(
                 dateMillis = millis,
                 amount = item.amount,
@@ -762,6 +872,8 @@ data class Staff(
                 itemName = item.name
             )
         )
+        // The next date (if one is set) moves one month on; a one-time allowance is finished by its payment.
+        return paid.withNextDate(item.key)
     }
 
     /** Records every part of this month's pay that is still unpaid. Does nothing if nothing is left to pay. */
