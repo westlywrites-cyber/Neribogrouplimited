@@ -51,11 +51,13 @@ class BiometricGate(
      * Verifies the owner, then runs [onSuccess]. Nothing runs when the owner cancels, fails, or the phone cannot
      * verify. [title] and [subtitle] are shown on the Android prompt. [logText], when not empty, is written to
      * the storage log after [onSuccess] ran, as "[logText] (verified)".
+     * When [always] is true the 5-minute open time is ignored and the owner is asked every time (used for plugging
+     * a drive into the backup server).
      */
-    fun verify(title: String, subtitle: String, logText: String = "", onSuccess: () -> Unit) {
+    fun verify(title: String, subtitle: String, logText: String = "", always: Boolean = false, onSuccess: () -> Unit) {
         // A prompt that never answered (for example the app was killed under it) must not block the gate for ever.
         if (prompting && SystemClock.elapsedRealtime() - promptStartedAt < STALE_PROMPT_MILLIS) return
-        if (isUnlocked()) {
+        if (!always && isUnlocked()) {
             complete(logText, onSuccess)
             return
         }

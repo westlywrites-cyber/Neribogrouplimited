@@ -109,6 +109,7 @@ import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.StorageRoomRules
 import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import kotlinx.coroutines.delay
@@ -415,13 +416,17 @@ private fun RoomContent(
             takeHome = { k -> RoomDrive.takeHome(powerContext, k) }
         )
     }
+    val gate = LocalBiometricGate.current
     val controller = remember {
         RoomController(
             ledger,
             power = { power.value },
             onPower = { on -> if (on) RoomPower.startBoot(powerContext) else RoomPower.startShutdown(powerContext) },
             drive = { drive.value },
-            driveActions = driveActions
+            driveActions = driveActions,
+            verifyOwner = { title, subtitle, logText, onOk ->
+                gate.verify(title = title, subtitle = subtitle, logText = logText, always = true, onSuccess = onOk)
+            }
         ) { actionsState.value }
     }
     controller.update(ledger)
@@ -826,6 +831,7 @@ private fun PinOverlay(pin: RoomPin) {
             MonText(pin.title, Color.White, 15f, bold = true)
             MonText(
                 if (pin.title.startsWith("Turn off")) "This takes all your apps offline, so type your PIN on the keyboard."
+                else if (pin.title.startsWith("Plug in")) "Fingerprint accepted. Now type your PIN on the keyboard to connect the drive."
                 else "This lowers a limit, so type your PIN on the keyboard.",
                 ScreenDim,
                 12f
@@ -1514,7 +1520,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                             } else if (plugged) {
                                 acts.unplug()
                             } else {
-                                acts.plugIn(key)?.let { controller.note(it, true) }
+                                controller.requestPlug(key)
                             }
                         }) { Text(if (safe) "Take it home" else if (plugged) "Remove anyway" else "Plug in") }
                     },

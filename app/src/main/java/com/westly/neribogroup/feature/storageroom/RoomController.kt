@@ -83,6 +83,11 @@ class RoomController(
     /** The two off-site drives (local to this phone only). */
     private val drive: () -> DriveView = { DriveView.NONE },
     val driveActions: DriveActions = DriveActions.NONE,
+    /**
+     * Asks the owner for the fingerprint, face or phone lock (every time) and runs the last function only when it
+     * passed. The default does nothing, so a room built without it can never plug a drive in unchecked.
+     */
+    private val verifyOwner: (String, String, String, () -> Unit) -> Unit = { _, _, _, _ -> },
     private val actions: () -> RoomActions
 ) {
 
@@ -442,10 +447,44 @@ class RoomController(
                 note("Copy still running. Tap the drive on the table to remove it anyway.", true)
                 return
             }
-            v.info(key).onDesk -> driveActions.plugIn(key)
+            v.info(key).onDesk -> {
+                requestPlug(key)
+                return
+            }
             else -> driveActions.bring(key)
         }
         if (result != null) err(result)
+    }
+
+    /**
+     * Plugging a drive into the backup server is guarded twice: first the owner's fingerprint (or face or phone
+     * lock), asked every time, then the access PIN on the monitor. Only after both does the drive go in.
+     */
+    fun requestPlug(key: Char) {
+        val v = drive()
+        val already = v.plugged
+        if (already != null) {
+            err("Drive $already is already plugged in.")
+            return
+        }
+        if (!v.info(key).onDesk) {
+            err("Drive $key is with you. Bring it to the table first.")
+            return
+        }
+        if (power().phase != PowerPhase.ON) {
+            err("The server is off. Switch it on first.")
+            return
+        }
+        verifyOwner(
+            "Plug in drive $key",
+            "Confirm it is you before a drive is connected to the backup server.",
+            "drive $key plug-in approved"
+        ) {
+            askPin("Plug in drive $key") { _ ->
+                val result = driveActions.plugIn(key)
+                if (result != null) err(result)
+            }
+        }
     }
 
     // ---- The PIN question ----
