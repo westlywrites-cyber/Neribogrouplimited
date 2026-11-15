@@ -132,9 +132,13 @@ private fun sendTouch(view: View, action: Int, downTime: Long, eventTime: Long, 
 
 /** A tap at ([x], [y]): what the Enter key does at the pointer. */
 private fun sendTap(view: View, x: Float, y: Float) {
-    val t = SystemClock.uptimeMillis()
-    sendTouch(view, MotionEvent.ACTION_DOWN, t, t, x, y)
-    sendTouch(view, MotionEvent.ACTION_UP, t, t + 40L, x, y)
+    // Posted, so it runs after the key press that asked for it is finished. A touch sent while another touch (the tap on
+    // the Dell key) is still being handled is dropped by Compose.
+    view.post {
+        val t = SystemClock.uptimeMillis()
+        sendTouch(view, MotionEvent.ACTION_DOWN, t, t, x, y)
+        sendTouch(view, MotionEvent.ACTION_UP, t, t + 40L, x, y)
+    }
 }
 
 /**
@@ -142,13 +146,16 @@ private fun sendTap(view: View, x: Float, y: Float) {
  * so the page stops where the swipe ends instead of flinging on.
  */
 private fun sendSwipe(view: View, x: Float, y: Float, distance: Float) {
-    val t = SystemClock.uptimeMillis()
-    val steps = 8
-    sendTouch(view, MotionEvent.ACTION_DOWN, t, t, x, y)
-    for (i in 1..steps) {
-        sendTouch(view, MotionEvent.ACTION_MOVE, t, t + 16L * i, x, y + distance * i / steps)
+    // Posted for the same reason as sendTap.
+    view.post {
+        val t = SystemClock.uptimeMillis()
+        val steps = 8
+        sendTouch(view, MotionEvent.ACTION_DOWN, t, t, x, y)
+        for (i in 1..steps) {
+            sendTouch(view, MotionEvent.ACTION_MOVE, t, t + 16L * i, x, y + distance * i / steps)
+        }
+        sendTouch(view, MotionEvent.ACTION_UP, t, t + 16L * steps + 120L, x, y + distance)
     }
-    sendTouch(view, MotionEvent.ACTION_UP, t, t + 16L * steps + 120L, x, y + distance)
 }
 
 /** The mouse pointer on the Dell screen, drawn at [at] (in pixels, from the top left of the screen). */
