@@ -158,15 +158,13 @@ fun CompanyStorageScreen(
     onBack: () -> Unit,
     onSetTotal: (totalMb: Long, confirmed: Boolean) -> Unit,
     onSetShare: (appId: String, shareMb: Long, confirmed: Boolean) -> Unit,
-    onBackUpOffsite: () -> Unit,
     onClearMessage: () -> Unit
 ) {
     val assets = ledger.assets
     val now = rememberNowMillis()
     val liveApps = ledger.apps.filter { it.googlePlayEnabled || it.id != SOFTWARE_APP_ID }
     val liveKb = StorageRules.usedKb(ledger.apps)
-    val offsiteKb = if (assets.offsiteMillis > 0L) assets.offsiteKb else 0L
-    val copiesKb = liveKb + liveKb + offsiteKb
+    val copiesKb = liveKb + liveKb
     val totalMb = assets.storageTotalMb
     val totalKb = totalMb * 1024L
     val sharesMb = StorageRules.sharesMb(ledger.apps)
@@ -188,7 +186,7 @@ fun CompanyStorageScreen(
                 guard = GuardRequest(
                     title = "Lower company storage?",
                     warning = "Company storage would go from " + StorageRules.textMb(totalMb) + " to " +
-                        StorageRules.textMb(newMb) + ", but the live, standby and off-site copies already use " +
+                        StorageRules.textMb(newMb) + ", but the live and standby copies already use " +
                         StorageRules.text(copiesKb) + ". " + StorageRules.text(copiesKb - newMb * 1024L) +
                         " would no longer fit, and users' data could be lost.",
                     summary = "Company storage: " + StorageRules.textMb(totalMb) + " to " + StorageRules.textMb(newMb),
@@ -285,8 +283,8 @@ fun CompanyStorageScreen(
                 }
                 if (sharesMb > 0L) {
                     Text(
-                        "With the standby and off-site copies, the apps' shares could need up to " +
-                            StorageRules.textMb(sharesMb * 3L) + ".",
+                        "With the standby copy, the apps' shares could need up to " +
+                            StorageRules.textMb(sharesMb * 2L) + ".",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -426,17 +424,6 @@ fun CompanyStorageScreen(
                 CopyRow("Live copy", "What the users have now", StorageRules.text(liveKb))
                 Spacer(modifier = Modifier.height(10.dp))
                 CopyRow("Standby copy", "A second copy that follows the live one in real time. In sync.", StorageRules.text(liveKb))
-                Spacer(modifier = Modifier.height(10.dp))
-                val gap = StorageRules.offsiteGapKb(assets, liveKb)
-                CopyRow(
-                    "Off-site copy",
-                    if (assets.offsiteMillis <= 0L) "Never made"
-                    else "Made " + whenText(assets.offsiteMillis) + (if (gap == 0L) ". Up to date." else ". " +
-                        StorageRules.text(gap) + " different from live."),
-                    StorageRules.text(offsiteKb)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedButton(onClick = onBackUpOffsite) { Text("Back up off-site now") }
                 if (message.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(message, style = MaterialTheme.typography.bodySmall)

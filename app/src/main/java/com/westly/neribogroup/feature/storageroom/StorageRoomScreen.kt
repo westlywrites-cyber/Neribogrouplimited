@@ -431,12 +431,12 @@ private fun RoomContent(
     val now = rememberNowMillis()
     var linked by remember { mutableStateOf(false) }
 
-    // Like the preview, every change to the numbers (an edit, a new user, an off-site copy) makes the sync lights run
+    // Like the preview, every change to the numbers (an edit, a new user) makes the sync lights run
     // for a moment, on top of the real cloud sync.
     var pulse by remember { mutableStateOf(false) }
     var firstKey by remember { mutableStateOf(true) }
     val changeKey = listOf(
-        StorageRules.usedKb(apps), ledger.assets.offsiteKb, ledger.assets.storageTotalMb, StorageRules.sharesMb(apps)
+        StorageRules.usedKb(apps), ledger.assets.storageTotalMb, StorageRules.sharesMb(apps)
     )
     LaunchedEffect(changeKey) {
         if (firstKey) {
@@ -1210,21 +1210,9 @@ private fun CopiesPage(controller: RoomController, ledger: Ledger, cloud: RoomCl
         }
         MonText(status, if (overKb > 0L) ScreenBad else ScreenDim, 11.5f)
     }
-    MonRow(selected = controller.sel == 2, onTap = { controller.tapRow(2, 0) }) {
-        val made = assets.offsiteMillis > 0L
-        MonLine("Off-site copy", if (made) StorageRules.text(assets.offsiteKb) else "never made")
-        MonBar(if (made) assets.offsiteKb else 0L, totalKb)
-        val gap = StorageRules.offsiteGapKb(assets, liveKb)
-        val note = when {
-            !made -> "Press Enter to make the first off-site copy."
-            gap == 0L -> "Up to date. Press Enter to make a new copy."
-            else -> StorageRules.text(gap) + " different from live. Press Enter to refresh it."
-        }
-        MonText(note, ScreenDim, 11.5f)
-    }
     val dv = controller.driveView()
-    DriveRow(controller, 3, 'A', dv)
-    DriveRow(controller, 4, 'B', dv)
+    DriveRow(controller, 2, 'A', dv)
+    DriveRow(controller, 3, 'B', dv)
     Spacer(modifier = Modifier.height(6.dp))
     MonLine("All copies together", StorageRules.text(StorageRules.copiesKb(assets, apps)))
     if (overKb > 0L) MonLine("Over the total by", StorageRules.text(overKb), ScreenBad)

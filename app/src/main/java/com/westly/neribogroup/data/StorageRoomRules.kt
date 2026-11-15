@@ -170,10 +170,4 @@ object StorageRoomRules {
         if (problem != null) return refuse(problem)
         return RoomVerdict(null, false)
     }
-
-    /** The message when a new off-site copy would not fit, or null when it can be made. */
-    fun offsiteRefusal(assets: CompanyAssets, apps: List<AppData>): String? {
-        val over = StorageRules.offsiteWouldOverKb(assets, apps)
-        return if (over > 0L) StorageRules.offsiteStoppedText(over) else null
-    }
 }

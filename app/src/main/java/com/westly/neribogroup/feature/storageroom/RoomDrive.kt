@@ -72,8 +72,8 @@ object RoomDrive {
     /** The size of each drive: 25 TB, counted in KB like the rest of the app (1 TB = 1024 x 1024 x 1024 KB). */
     const val CAPACITY_KB = 25L * 1024L * 1024L * 1024L
 
-    /** 1 real second on the screen counts as this many seconds of a real copy (60 = 1 second is 1 minute). */
-    const val COPY_SCALE = 60
+    /** 1 real second on the screen counts as this many seconds of a real copy (1 = real time: 27 h really takes 27 h). */
+    const val COPY_SCALE = 1
 
     const val PLUG_SECONDS = 2
     const val MOUNT_SECONDS = 3
@@ -203,7 +203,7 @@ object RoomDrive {
                     } else if (phase == DrivePhase.MOUNT && el >= MOUNT_SECONDS * 1000L) {
                         phase = DrivePhase.COPY
                         t0 += MOUNT_SECONDS * 1000L
-                        StorageRoomLog.add(RoomLevel.INFO, "mount", "/mnt/offsite-$k ready")
+                        StorageRoomLog.add(RoomLevel.INFO, "mount", "/mnt/drive-$k ready")
                         val what = if (last[cur] == 0L || copied[cur] == 0L) "first full copy: " else "only the changes: "
                         StorageRoomLog.add(RoomLevel.SYNC, "rsync", what + StorageRules.text(toCopy))
                         changed = true

@@ -1746,10 +1746,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Company storage: the total, each app's share, the log and the off-site copy
+    // Company storage: the total, each app's share and the log
     // ---------------------------------------------------------------------------------------------
 
-    /** A short message about the last storage action (for example the off-site backup). Empty when none. */
+    /** A short message about the last storage action. Empty when none. */
     var storageMessage by mutableStateOf("")
         private set
 
@@ -1849,46 +1849,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 assets = ledger.assets.withStorageLog(text)
             )
         )
-    }
-
-    /**
-     * "Back up off-site now": the off-site copy is made equal to the live data right now. When the cloud is on, a
-     * real cloud backup of all records is kept too.
-     */
-    fun backUpOffsiteNow() {
-        // The off-site copy is one more full copy: when it would not fit in the company total, it is not made.
-        val wouldOver = StorageRules.offsiteWouldOverKb(ledger.assets, ledger.apps)
-        if (wouldOver > 0L) {
-            storageMessage = StorageRules.offsiteStoppedText(wouldOver)
-            return
-        }
-        val liveKb = StorageRules.usedKb(ledger.apps)
-        saveAssets(
-            ledger.assets.copy(offsiteKb = liveKb, offsiteMillis = System.currentTimeMillis())
-                .withStorageLog("Off-site copy made: " + StorageRules.text(liveKb))
-        )
-        if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) {
-            storageMessage = "Off-site copy made. Connect to the cloud to also keep a cloud backup of all records."
-            return
-        }
-        if (cloudBackupBusy || cloudWorking || cloudSyncing || cloudHistory.restoring) {
-            storageMessage = "Off-site copy made. The cloud is busy right now, so no cloud backup was kept this time."
-            return
-        }
-        cloudBackupBusy = true
-        storageMessage = "Off-site copy made. Saving a cloud backup…"
-        Thread {
-            val outcome = try {
-                cloudEngine.createBackup("Off-site copy")
-            } catch (e: Throwable) {
-                BackupOutcome(false, "The backup did not finish. Your data on the phone is safe.")
-            }
-            mainHandler.post {
-                cloudBackupBusy = false
-                storageMessage = "Off-site copy made. " + outcome.message
-                refreshCloudState()
-            }
-        }.start()
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -3,7 +3,6 @@ package com.westly.neribogroup.data
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Locale
-import kotlin.math.abs
 
 /** The units the owner can type storage in. */
 enum class StorageUnit(val label: String, val mb: Long) {
@@ -56,16 +55,12 @@ object StorageRules {
     fun overShareKb(app: AppData): Long =
         if (app.storageShareMb <= 0L) 0L else maxOf(0L, app.storageAllocatedKb - app.storageShareMb * 1024L)
 
-    /** How different the off-site copy is from the live data, in KB. 0 = the same. */
-    fun offsiteGapKb(assets: CompanyAssets, liveKb: Long): Long =
-        if (assets.offsiteMillis <= 0L) liveKb else abs(liveKb - assets.offsiteKb)
-
     // ---- Limits: when users hold more storage than the company or an app has ----
 
-    /** Live copy + standby copy + the off-site copy, in KB. The same sum the Storage page shows. */
+    /** Live copy + standby copy, in KB. The same sum the Storage page shows. */
     fun copiesKb(assets: CompanyAssets, apps: List<AppData>): Long {
         val live = usedKb(apps)
-        return live + live + (if (assets.offsiteMillis > 0L) assets.offsiteKb else 0L)
+        return live + live
     }
 
     /** How far all the copies are over the company total, in KB. 0 when they fit or no total is set. */
@@ -75,23 +70,12 @@ object StorageRules {
         return maxOf(0L, copiesKb(assets, apps) - totalKb)
     }
 
-    /** How far the copies would be over the company total once a new off-site copy is made, in KB. */
-    fun offsiteWouldOverKb(assets: CompanyAssets, apps: List<AppData>): Long {
-        val totalKb = assets.storageTotalMb * 1024L
-        if (totalKb <= 0L) return 0L
-        return maxOf(0L, usedKb(apps) * 3L - totalKb)
-    }
-
     fun syncStoppedText(overKb: Long): String =
         "Sync stopped: company storage is over its total by " + text(overKb) +
             ". Raise the company storage on the Storage page. Your data on the phone is safe."
 
     fun backupStoppedText(overKb: Long): String =
         "Backup stopped: company storage is over its total by " + text(overKb) +
-            ". Raise the company storage on the Storage page. Your data on the phone is safe."
-
-    fun offsiteStoppedText(overKb: Long): String =
-        "Off-site copy not made: it would put company storage over its total by " + text(overKb) +
             ". Raise the company storage on the Storage page. Your data on the phone is safe."
 
     /** Show a warning for an app that would fill its share within this many hours at today's pace. */

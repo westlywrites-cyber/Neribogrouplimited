@@ -482,7 +482,6 @@ private fun NeriboRoot(vm: AppViewModel) {
                 onBack = { vm.openSection = null },
                 onSetTotal = { mb, confirmed -> vm.setCompanyStorageTotal(mb, confirmed) },
                 onSetShare = { id, mb, confirmed -> vm.setAppStorageShare(id, mb, confirmed) },
-                onBackUpOffsite = { vm.backUpOffsiteNow() },
                 onClearMessage = { vm.clearStorageMessage() }
             )
             Section.STORAGE_ROOM -> StorageRoomScreen(
@@ -500,8 +499,7 @@ private fun NeriboRoot(vm: AppViewModel) {
                         val site = vm.ledger.apps.firstOrNull { it.id == id }?.storageSiteMb ?: 0L
                         vm.setStorageOffer(id, free, pro, premium, site, verified)
                     },
-                    setUsers = { id, free, pro, premium -> vm.setManualPlanUsers(id, free, pro, premium) },
-                    backUpOffsite = { vm.backUpOffsiteNow() }
+                    setUsers = { id, free, pro, premium -> vm.setManualPlanUsers(id, free, pro, premium) }
                 ),
                 onCreatePin = { vm.setStoragePin(it) },
                 onPullFromCloud = { vm.syncNowAction() },

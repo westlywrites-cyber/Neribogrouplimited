@@ -37,8 +37,7 @@ class RoomActions(
     val setTotal: (Long, Boolean) -> Unit,
     val setShare: (String, Long, Boolean) -> Unit,
     val setOffer: (String, Long, Long, Long, Boolean) -> Unit,
-    val setUsers: (String, Long, Long, Long) -> Unit,
-    val backUpOffsite: () -> Unit
+    val setUsers: (String, Long, Long, Long) -> Unit
 )
 
 /** Counts wrong PINs for the whole run of the app, so leaving and coming back does not give new tries. */
@@ -167,7 +166,7 @@ class RoomController(
             OVERVIEW -> "This is the whole company. Press A for apps, P for plans, C for copies."
             APPS -> "Press ↓ or ↑ to pick a line, then press Enter to change it."
             PLANS -> "↓ ↑ pick Free, Pro, Premium or Custom. ← → pick size or users. Tab for the next app. Enter to change."
-            COPIES -> "↓ ↑ pick a copy. Enter on Off-site makes a copy now. On a drive, Enter brings it, plugs it in or removes it."
+            COPIES -> "↓ ↑ pick a copy. On a drive, Enter brings it, plugs it in or removes it."
             else -> "Every change is listed here, newest first."
         }
     }
@@ -233,7 +232,7 @@ class RoomController(
     private fun maxSel(): Int = when (page) {
         APPS -> apps().size
         PLANS -> 3
-        COPIES -> 4
+        COPIES -> 3
         else -> 0
     }
 
@@ -277,9 +276,8 @@ class RoomController(
                 if (app != null) enterPlan(app)
             }
             COPIES -> when (sel) {
-                2 -> makeOffsite()
-                3 -> driveEnter('A')
-                4 -> driveEnter('B')
+                2 -> driveEnter('A')
+                3 -> driveEnter('B')
             }
         }
     }
@@ -448,16 +446,6 @@ class RoomController(
             else -> driveActions.bring(key)
         }
         if (result != null) err(result)
-    }
-
-    private fun makeOffsite() {
-        val problem = StorageRoomRules.offsiteRefusal(current.assets, current.apps)
-        if (problem != null) {
-            err(problem)
-            return
-        }
-        actions().backUpOffsite()
-        ok("Off-site copy made")
     }
 
     // ---- The PIN question ----

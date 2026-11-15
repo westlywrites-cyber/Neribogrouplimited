@@ -26,8 +26,16 @@ SoftwareClientsScreen.kt, AppViewModel.kt, MainActivity.kt.
 - Not compiled here (no Kotlin compiler in this environment): the GitHub Actions build is the first compile.
 
 ## Storage room: off-site rotating drives (local to this phone)
-- New feature: two 25 TB off-site drives, A (blue) and B (orange). Plug one into the backup server, it copies (time follows the live data size, 1 real second = 1 minute), then take it home. A table of the last backup of each day is on the Copies page.
+- New feature: two 25 TB off-site drives, A (blue) and B (orange). Plug one into the backup server, it copies (time follows the live data size and runs in real time: 27 h really takes 27 h, even while the app is closed), then take it home. A table of the last backup of each day is on the Copies page.
 - Frontend only. State is a private file (storage_room_drives.txt, not backed up). Console lines stay in memory. Nothing is written to the ledger, the cloud sync or Supabase.
 - New: feature/storageroom/RoomDrive.kt, res/drawable-nodpi/room_dock.png, room_drive_a.png, room_drive_b.png.
 - Changed: RoomController.kt (drive lines on Copies, Enter), StorageRoomScreen.kt (drive and cable on the room photo, tap dialog, Copies rows and history).
 - Copies page labels now say "Main server" and "Backup server".
+
+## Off-site copy removed (drives A and B replace it)
+- The "Off-site copy" row is gone from the Storage room Copies page and from the Company Storage screen, with the "Back up off-site now" button. Copies now show Live, Standby, Drive A and Drive B only.
+- Copies total = live + standby (the old off-site figure is no longer counted). Warning texts no longer mention off-site; the shares hint now says "with the standby copy" (x2, not x3).
+- Drive copy time is real: COPY_SCALE = 1 in RoomDrive.kt (it was 60). The 8-second minimum for tiny copies stays.
+- Changed: StorageRoomScreen.kt, RoomController.kt (drive rows are now 2 and 3), RoomDrive.kt (console line now /mnt/drive-A ready), StorageScreens.kt, AppViewModel.kt (backUpOffsiteNow removed), MainActivity.kt, StorageRules.kt, StorageRoomRules.kt.
+- Kept on purpose: offsiteKb and offsiteMillis in Channels.kt and LedgerStorage.kt, so old backups still import. They are never shown or counted.
+- Not compiled here: the GitHub Actions build is the first compile.
