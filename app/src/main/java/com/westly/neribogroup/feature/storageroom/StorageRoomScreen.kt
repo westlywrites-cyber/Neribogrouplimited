@@ -2,6 +2,7 @@ package com.westly.neribogroup.feature.storageroom
 
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -45,6 +46,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -894,13 +898,24 @@ private fun MonBar(valueKb: Long, ofKb: Long) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MonRow(selected: Boolean, onTap: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     val barColor = if (selected) Accent else Color.Transparent
+    // The picked row always stays on screen: when the arrows (or a tap) pick it, the monitor and the page scroll by
+    // themselves just enough to show it, so nobody has to drag the screen to see it.
+    val requester = remember { BringIntoViewRequester() }
+    LaunchedEffect(selected) {
+        if (selected) {
+            withFrameNanos { }
+            requester.bringIntoView()
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
+            .bringIntoViewRequester(requester)
             .clip(RoundedCornerShape(4.dp))
             .background(if (selected) Color(0x2B7FD1C7) else Color.Transparent)
             .drawBehind { drawRect(color = barColor, size = Size(3.dp.toPx(), size.height)) }
