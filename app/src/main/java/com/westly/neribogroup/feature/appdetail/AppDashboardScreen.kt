@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.appdetail
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
@@ -313,6 +314,7 @@ fun AppDashboardScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("app"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

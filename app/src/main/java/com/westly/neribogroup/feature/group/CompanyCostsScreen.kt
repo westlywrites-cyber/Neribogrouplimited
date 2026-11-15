@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKept
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,7 +38,7 @@ fun CompanyCostsScreen(
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(ledger) }
-    var query by remember { mutableStateOf("") }
+    var query by rememberKept("query", "")
     var showAddCost by remember { mutableStateOf(false) }
 
     val now = rememberNowMillis()

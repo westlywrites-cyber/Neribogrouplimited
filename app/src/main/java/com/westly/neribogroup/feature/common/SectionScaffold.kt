@@ -102,6 +102,7 @@ fun SectionScaffold(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("section"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
@@ -125,6 +126,7 @@ fun CaseDetailScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("case"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

@@ -17,6 +17,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.westly.neribogroup.feature.common.BiometricGate
 import com.westly.neribogroup.feature.common.BiometricGateNotice
 import com.westly.neribogroup.feature.common.LocalBiometricGate
+import com.westly.neribogroup.feature.common.LocalNavMemory
+import com.westly.neribogroup.feature.common.LocalNavScope
 import com.westly.neribogroup.feature.appdetail.AppDashboardScreen
 import com.westly.neribogroup.cloud.CloudMode
 import com.westly.neribogroup.feature.cloud.AiCard
@@ -210,6 +212,35 @@ private fun NeriboScreens(vm: AppViewModel, onExport: () -> Unit, onImport: () -
     val openOffer = vm.openOfferId?.let { id -> vm.ledger.software.offers.firstOrNull { it.id == id } }
     val openProject = vm.openProjectId?.let { id -> vm.ledger.software.projects.firstOrNull { it.id == id } }
 
+    // Where the person is, as one name. Each screen files its scroll place, search text and tab under
+    // the name of the place it belongs to, so going into a deeper screen and coming back finds them again.
+    val scope = when {
+        openCase != null -> "case:${openCase.id}"
+        vm.showLogin -> "login"
+        vm.showSettings && vm.openSection == null && openApp == null && openStaff == null -> "settings"
+        openOffer != null -> "offer:${openOffer.id}"
+        openProject != null -> "project:${openProject.id}"
+        openApp != null -> "app:${openApp.id}"
+        openStaff != null -> "staff:${openStaff.id}"
+        else -> "sec:${vm.openSection?.name ?: "home"}"
+    }
+    // Every place still open behind the one on show. A place that is closed is forgotten, so opening
+    // it again later starts at the top; the ones behind keep their place for when the person returns.
+    val live = buildSet {
+        add("sec:home")
+        vm.openSection?.let { add("sec:${it.name}") }
+        openApp?.let { add("app:${it.id}") }
+        openStaff?.let { add("staff:${it.id}") }
+        openCase?.let { add("case:${it.id}") }
+        openOffer?.let { add("offer:${it.id}") }
+        openProject?.let { add("project:${it.id}") }
+        if (vm.showSettings) add("settings")
+        if (vm.showLogin) add("login")
+    }
+    val navMemory = vm.navMemory
+    LaunchedEffect(live) { navMemory.retainOnly(live) }
+
+    CompositionLocalProvider(LocalNavMemory provides navMemory, LocalNavScope provides scope) {
     if (openCase != null) {
         CaseDetailScreen(
             ledger = vm.ledger,
@@ -584,5 +615,6 @@ private fun NeriboScreens(vm: AppViewModel, onExport: () -> Unit, onImport: () -
                 onOpenDell = openDell
             )
         }
+    }
     }
 }

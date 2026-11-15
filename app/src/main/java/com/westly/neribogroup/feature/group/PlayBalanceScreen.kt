@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
@@ -87,6 +88,7 @@ fun PlayBalanceScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("play"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

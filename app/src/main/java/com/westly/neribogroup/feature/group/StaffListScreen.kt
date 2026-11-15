@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKept
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -53,7 +54,7 @@ fun StaffListScreen(
     val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(ledger) }
-    var query by remember { mutableStateOf("") }
+    var query by rememberKept("query", "")
     var showAddStaff by remember { mutableStateOf(false) }
     var staffToDelete by remember { mutableStateOf<Staff?>(null) }
     var confirmPayAll by remember { mutableStateOf(false) }

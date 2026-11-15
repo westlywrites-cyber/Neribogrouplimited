@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKept
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,7 +62,7 @@ fun RenewalsScreen(
 ) {
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf(ledger) }
-    var query by remember { mutableStateOf("") }
+    var query by rememberKept("query", "")
     var showAddRenewal by remember { mutableStateOf(false) }
     var renewalToDelete by remember { mutableStateOf<Renewal?>(null) }
     var renewalToRenew by remember { mutableStateOf<Renewal?>(null) }

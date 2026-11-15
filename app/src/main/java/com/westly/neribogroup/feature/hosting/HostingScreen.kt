@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.hosting
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
@@ -110,6 +111,7 @@ fun HostingScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("hosting"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

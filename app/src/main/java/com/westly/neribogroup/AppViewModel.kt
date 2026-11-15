@@ -119,6 +119,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** The page opened from a home tile (Apps, Renewals, Staff or Company costs), or null on the home screen. */
     var openSection by mutableStateOf<Section?>(null)
 
+    /** Where the person was on each screen (scroll, search, tab), kept while they go deeper and come back. */
+    val navMemory = com.westly.neribogroup.feature.common.NavMemory()
+
     /** True while the CEO office (the Dell screen with the whole app inside it) is open. */
     var dellOpen by mutableStateOf(false)
 

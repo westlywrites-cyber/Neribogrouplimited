@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.appdetail
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -137,6 +138,7 @@ fun AppUsersScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("users"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

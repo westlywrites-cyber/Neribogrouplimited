@@ -1,5 +1,7 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKept
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -115,8 +117,8 @@ fun CasesScreen(
     LaunchedEffect(now) { onClock(now) }
     val effectiveNow = maxOf(now, ledger.casesClockMillis)
 
-    var tab by remember { mutableStateOf(initialTab.coerceIn(0, 3)) }
-    var query by remember { mutableStateOf("") }
+    var tab by rememberKept("tab", initialTab.coerceIn(0, 3))
+    var query by rememberKept("query", "")
 
     BackHandler { onBack() }
 
@@ -160,6 +162,7 @@ fun CasesScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("cases"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

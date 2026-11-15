@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.software
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import com.westly.neribogroup.data.withoutMaintenanceLines
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
@@ -112,6 +113,7 @@ fun SoftwareOfferScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("offer"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

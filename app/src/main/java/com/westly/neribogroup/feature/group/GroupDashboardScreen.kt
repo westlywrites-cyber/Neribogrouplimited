@@ -1,5 +1,7 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKept
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -93,7 +95,7 @@ fun GroupDashboardScreen(
     var draft by remember { mutableStateOf(ledger) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmImport by remember { mutableStateOf(false) }
-    var query by remember { mutableStateOf("") }
+    var query by rememberKept("query", "")
 
     val now = rememberNowMillis()
     LaunchedEffect(now) { onClock(now) }
@@ -180,6 +182,7 @@ fun GroupDashboardScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("home"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

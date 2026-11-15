@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.software
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import com.westly.neribogroup.data.withoutMaintenanceLines
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
@@ -123,6 +124,7 @@ fun SoftwareProjectScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("project"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

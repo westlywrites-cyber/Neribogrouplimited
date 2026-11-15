@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.software
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import com.westly.neribogroup.cloud.AiRollKind
 import com.westly.neribogroup.cloud.AiRollState
@@ -228,6 +229,7 @@ fun SoftwareClientsScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("clients"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

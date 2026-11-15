@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.staff
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -186,6 +187,7 @@ fun StaffDetailScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("staff"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

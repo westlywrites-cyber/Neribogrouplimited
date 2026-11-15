@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKept
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
@@ -126,7 +127,7 @@ fun EquipmentScreen(
     val context = LocalContext.current
     val gate = LocalBiometricGate.current
     val assets = ledger.assets
-    var query by remember { mutableStateOf("") }
+    var query by rememberKept("query", "")
     var openId by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ToolItem?>(null) }
     var adding by remember { mutableStateOf(false) }

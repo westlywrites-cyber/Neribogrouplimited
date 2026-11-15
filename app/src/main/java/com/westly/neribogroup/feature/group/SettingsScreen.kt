@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -60,6 +61,7 @@ fun SettingsScreen(
         }
     ) { inner ->
         LazyColumn(
+            state = rememberKeptListState("settings"),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner),

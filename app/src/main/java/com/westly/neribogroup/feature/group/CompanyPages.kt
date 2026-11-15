@@ -1,5 +1,6 @@
 package com.westly.neribogroup.feature.group
 
+import com.westly.neribogroup.feature.common.rememberKeptListState
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
@@ -104,6 +105,7 @@ internal fun PageFrame(title: String, onBack: () -> Unit, content: androidx.comp
         }
     ) { padding ->
         LazyColumn(
+            state = rememberKeptListState("page"),
             modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
