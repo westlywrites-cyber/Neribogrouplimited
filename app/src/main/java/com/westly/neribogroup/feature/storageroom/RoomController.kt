@@ -81,6 +81,9 @@ class RoomController(
     private val power: () -> PowerView = { PowerView.ON },
     /** Called with true to switch the server on and false to turn it off. Local to this phone only. */
     private val onPower: (Boolean) -> Unit = {},
+    /** The two off-site drives (local to this phone only). */
+    private val drive: () -> DriveView = { DriveView.NONE },
+    val driveActions: DriveActions = DriveActions.NONE,
     private val actions: () -> RoomActions
 ) {
 
@@ -164,7 +167,7 @@ class RoomController(
             OVERVIEW -> "This is the whole company. Press A for apps, P for plans, C for copies."
             APPS -> "Press ↓ or ↑ to pick a line, then press Enter to change it."
             PLANS -> "↓ ↑ pick Free, Pro, Premium or Custom. ← → pick size or users. Tab for the next app. Enter to change."
-            COPIES -> "↓ ↑ pick a copy. On Off-site, press Enter to make a copy now."
+            COPIES -> "↓ ↑ pick a copy. Enter on Off-site makes a copy now. On a drive, Enter brings it, plugs it in or removes it."
             else -> "Every change is listed here, newest first."
         }
     }
@@ -230,7 +233,7 @@ class RoomController(
     private fun maxSel(): Int = when (page) {
         APPS -> apps().size
         PLANS -> 3
-        COPIES -> 2
+        COPIES -> 4
         else -> 0
     }
 
@@ -273,7 +276,11 @@ class RoomController(
                 val app = list.getOrNull(shownAppIndex())
                 if (app != null) enterPlan(app)
             }
-            COPIES -> if (sel == 2) makeOffsite()
+            COPIES -> when (sel) {
+                2 -> makeOffsite()
+                3 -> driveEnter('A')
+                4 -> driveEnter('B')
+            }
         }
     }
 
@@ -414,6 +421,33 @@ class RoomController(
         val updated = StorageRoomRules.withUsers(app, row, count)
         actions().setUsers(app.id, updated.freeUsers, updated.proUsers, updated.premiumUsers)
         ok(app.name + " " + StorageRoomRules.PLAN_NAMES[row] + " users: " + count)
+    }
+
+    fun driveView(): DriveView = drive()
+
+    /** Shows a line under the monitor for the drives. */
+    fun note(text: String, bad: Boolean = false) {
+        if (bad) err(text) else message = RoomMessage(text, false)
+    }
+
+    /** Enter on a drive line of the Copies page: bring it, plug it in, or take it out when it is safe. */
+    private fun driveEnter(key: Char) {
+        val v = drive()
+        val result: String? = when {
+            v.plugged == key && v.phase == DrivePhase.SAFE -> {
+                driveActions.unplug()
+                driveActions.takeHome(key)
+                note("Drive $key removed safely and taken home.")
+                return
+            }
+            v.plugged == key -> {
+                note("Copy still running. Tap the drive on the table to remove it anyway.", true)
+                return
+            }
+            v.info(key).onDesk -> driveActions.plugIn(key)
+            else -> driveActions.bring(key)
+        }
+        if (result != null) err(result)
     }
 
     private fun makeOffsite() {

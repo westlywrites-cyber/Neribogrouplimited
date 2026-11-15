@@ -24,3 +24,10 @@ SoftwareClientsScreen.kt, AppViewModel.kt, MainActivity.kt.
 - Claims go through agent_claim_next_app (priority, sort_order, created_at; no day filter), not agent_claim_next_job.
   SOFTWARE_ROLL priority 50 is always first. No SQL or Edge Function change is needed except rulebook v5.
 - Not compiled here (no Kotlin compiler in this environment): the GitHub Actions build is the first compile.
+
+## Storage room: off-site rotating drives (local to this phone)
+- New feature: two 25 TB off-site drives, A (blue) and B (orange). Plug one into the backup server, it copies (time follows the live data size, 1 real second = 1 minute), then take it home. A table of the last backup of each day is on the Copies page.
+- Frontend only. State is a private file (storage_room_drives.txt, not backed up). Console lines stay in memory. Nothing is written to the ledger, the cloud sync or Supabase.
+- New: feature/storageroom/RoomDrive.kt, res/drawable-nodpi/room_dock.png, room_drive_a.png, room_drive_b.png.
+- Changed: RoomController.kt (drive lines on Copies, Enter), StorageRoomScreen.kt (drive and cable on the room photo, tap dialog, Copies rows and history).
+- Copies page labels now say "Main server" and "Backup server".

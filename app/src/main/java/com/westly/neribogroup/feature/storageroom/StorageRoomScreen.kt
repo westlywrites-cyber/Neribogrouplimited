@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -33,6 +34,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -61,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -76,7 +79,9 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -107,6 +112,9 @@ import com.westly.neribogroup.feature.common.FlatCard
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
 import kotlinx.coroutines.delay
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /** What the room needs to know about the cloud: is it on, is a sync running and what went wrong last. */
@@ -392,11 +400,25 @@ private fun RoomContent(
     // The power of the pretend server lives only on this phone (a private file). It never touches the ledger or the cloud.
     val power = rememberRoomPower()
     val powerContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    // The two off-site drives live only on this phone too (a private file). They never touch the ledger or the cloud.
+    val liveKbNow = StorageRules.usedKb(StorageRoomRules.roomApps(ledger.apps))
+    val liveKbState = rememberUpdatedState(liveKbNow)
+    val drive = rememberRoomDrive(power, liveKbState)
+    val driveActions = remember {
+        DriveActions(
+            bring = { k -> RoomDrive.bring(powerContext, k) },
+            plugIn = { k -> RoomDrive.plugIn(powerContext, k, power.value.phase == PowerPhase.ON, liveKbState.value) },
+            unplug = { RoomDrive.unplug(powerContext) },
+            takeHome = { k -> RoomDrive.takeHome(powerContext, k) }
+        )
+    }
     val controller = remember {
         RoomController(
             ledger,
             power = { power.value },
-            onPower = { on -> if (on) RoomPower.startBoot(powerContext) else RoomPower.startShutdown(powerContext) }
+            onPower = { on -> if (on) RoomPower.startBoot(powerContext) else RoomPower.startShutdown(powerContext) },
+            drive = { drive.value },
+            driveActions = driveActions
         ) { actionsState.value }
     }
     controller.update(ledger)
@@ -1174,12 +1196,12 @@ private fun CopiesPage(controller: RoomController, ledger: Ledger, cloud: RoomCl
     val ofText = if (totalKb > 0L) "of " + StorageRules.text(totalKb) else "no company total set"
 
     MonRow(selected = controller.sel == 0, onTap = { controller.tapRow(0, 0) }) {
-        MonLine("SSD main · live copy", StorageRules.text(liveKb))
+        MonLine("Main server · live copy", StorageRules.text(liveKb))
         MonBar(liveKb, totalKb)
         MonText(ofText, ScreenDim, 11.5f)
     }
     MonRow(selected = controller.sel == 1, onTap = { controller.tapRow(1, 0) }) {
-        MonLine("SSD backup · standby copy", StorageRules.text(liveKb))
+        MonLine("Backup server · standby copy", StorageRules.text(liveKb))
         MonBar(liveKb, totalKb)
         val status = when {
             overKb > 0L -> "backup stopped: company storage is over its total"
@@ -1200,9 +1222,78 @@ private fun CopiesPage(controller: RoomController, ledger: Ledger, cloud: RoomCl
         }
         MonText(note, ScreenDim, 11.5f)
     }
+    val dv = controller.driveView()
+    DriveRow(controller, 3, 'A', dv)
+    DriveRow(controller, 4, 'B', dv)
     Spacer(modifier = Modifier.height(6.dp))
     MonLine("All copies together", StorageRules.text(StorageRules.copiesKb(assets, apps)))
     if (overKb > 0L) MonLine("Over the total by", StorageRules.text(overKb), ScreenBad)
+    DriveHistory(dv)
+}
+
+private fun leftText(seconds: Long): String = when {
+    seconds >= 3600L -> (seconds / 3600L).toString() + " h " + (seconds % 3600L / 60L) + " min"
+    seconds >= 60L -> (seconds / 60L).toString() + " min"
+    else -> seconds.toString() + " s"
+}
+
+/** One off-site drive on the Copies page (local to this phone, never in the ledger). */
+@Composable
+private fun DriveRow(controller: RoomController, row: Int, key: Char, v: DriveView) {
+    val info = v.info(key)
+    val on = v.plugged == key
+    MonRow(selected = controller.sel == row, onTap = { controller.tapRow(row, 0) }) {
+        val shownKb = if (on && v.phase == DrivePhase.COPY) info.copiedKb + v.doneKb else info.copiedKb
+        MonLine("Drive $key · 25 TB", if (shownKb > 0L) StorageRules.text(shownKb) else "empty")
+        MonBar(shownKb, RoomDrive.CAPACITY_KB)
+        val failedText = if (info.failed) " · last copy failed" else ""
+        val line: Pair<String, Color> = when {
+            on -> when (v.phase) {
+                DrivePhase.PLUG -> "plugging in…" to ScreenDim
+                DrivePhase.MOUNT -> "connecting…" to ScreenDim
+                DrivePhase.COPY -> (
+                    "copying " + (v.progress * 100f).toInt() + "% · " + StorageRules.text(v.doneKb) + " of " +
+                        StorageRules.text(v.toCopyKb) + " · " + v.mbPerSecond + " MB/s · " + leftText(v.realSecondsLeft) + " left"
+                    ) to ScreenDim
+                DrivePhase.VERIFY -> "checking the files…" to ScreenDim
+                else -> "safe to remove. Press Enter or tap the drive." to Accent
+            }
+            info.onDesk -> ("on the table, not plugged in" + failedText + ". Press Enter to plug it in.") to
+                (if (info.failed) ScreenBad else ScreenDim)
+            else -> {
+                val last = if (info.lastMillis > 0L) {
+                    "last copy " + java.time.Instant.ofEpochMilli(info.lastMillis).atZone(ZoneId.systemDefault())
+                        .format(DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH))
+                } else {
+                    "never copied"
+                }
+                ("with you · " + last + failedText + ". Press Enter to bring it to the table.") to
+                    (if (info.failed) ScreenBad else ScreenDim)
+            }
+        }
+        MonText(line.first, line.second, 11.5f)
+    }
+}
+
+/** The result of each drive for the last 7 days. */
+@Composable
+private fun DriveHistory(v: DriveView) {
+    Spacer(modifier = Modifier.height(8.dp))
+    MonText("Last backup of each day", ScreenDim, 11.5f)
+    val format = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
+    var day = LocalDate.now()
+    repeat(7) {
+        val key = day.toString()
+        val a = driveDayText(v, key, 'A')
+        val b = driveDayText(v, key, 'B')
+        MonText(format.format(day).padEnd(7) + "A " + a.padEnd(11) + "B " + b, ScreenText, 11.5f)
+        day = day.minusDays(1)
+    }
+}
+
+private fun driveDayText(v: DriveView, day: String, key: Char): String {
+    val e = v.days.lastOrNull { it.day == day && it.key == key } ?: return "–"
+    return if (e.ok) "✓ " + StorageRules.text(e.kb) else "✗ failed"
 }
 
 @Composable
@@ -1258,6 +1349,35 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
         }
     )
     val wires = remember { wirePaths() }
+    // The off-site drive: the dock on the table, drive A or B in it, and the USB cable to the backup server.
+    val dock = ImageBitmap.imageResource(R.drawable.room_dock)
+    val driveA = ImageBitmap.imageResource(R.drawable.room_drive_a)
+    val driveB = ImageBitmap.imageResource(R.drawable.room_drive_b)
+    val drive = controller.driveView()
+    val cablePath = remember { drivePath() }
+    val cableMeasure = remember { PathMeasure() }
+    val badgePaint = remember {
+        android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = 16f
+            isFakeBoldText = true
+            isAntiAlias = true
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+    }
+    val cableShown by animateFloatAsState(if (drive.plugged != null) 1f else 0f, tween(1200), label = "cable")
+    val blinkTransition = rememberInfiniteTransition(label = "led")
+    val blink: State<Float> = if (drive.busy) {
+        blinkTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(450, easing = LinearEasing), RepeatMode.Reverse),
+            label = "ledBlink"
+        )
+    } else {
+        remember { mutableStateOf(1f) }
+    }
+    var choose by remember { mutableStateOf(false) }
     // The sync lines only move while the cloud is syncing; otherwise nothing animates and nothing redraws.
     val transition = rememberInfiniteTransition(label = "wires")
     val phase: State<Float> = if (cloud.syncing) {
@@ -1298,6 +1418,39 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val s = size.width / DESK_W
                 scale(s, Offset.Zero) {
+                    // The drive table: the dock is always there, a drive stands in it while it is on the table.
+                    drawImage(dock, dstOffset = IntOffset(14, 402), dstSize = IntSize(dock.width, dock.height), filterQuality = FilterQuality.Medium)
+                    val onDesk = drive.onDesk
+                    if (cableShown > 0.01f) {
+                        val seg = Path()
+                        cableMeasure.setPath(cablePath, false)
+                        cableMeasure.getSegment(0f, cableMeasure.length * cableShown, seg, true)
+                        drawPath(seg, Color(0xFF111111), style = Stroke(width = 7f, cap = StrokeCap.Round))
+                        if (cableShown >= 0.99f && drive.phase != DrivePhase.PLUG) {
+                            val lamp = if (drive.phase == DrivePhase.COPY && blink.value < 0.5f) Color(0xFF1F6A3A) else Color(0xFF43D17A)
+                            drawCircle(lamp, radius = 4f, center = Offset(405f, 648f))
+                        }
+                    }
+                    if (onDesk != null) {
+                        drawImage(
+                            if (onDesk == 'A') driveA else driveB,
+                            dstOffset = IntOffset(104, 408),
+                            dstSize = IntSize(driveA.width, driveA.height),
+                            filterQuality = FilterQuality.Medium
+                        )
+                        drawCircle(if (onDesk == 'A') Color(0xFF1F5FD0) else Color(0xFFE8631A), radius = 12f, center = Offset(153f, 549f))
+                        drawContext.canvas.nativeCanvas.drawText(onDesk.toString(), 153f, 555f, badgePaint)
+                        val on = blink.value > 0.5f
+                        val led = when {
+                            drive.plugged == null -> if (drive.info(onDesk).failed) Color(0xFFFF5A4A) else Color(0xFF2A8A50)
+                            drive.phase == DrivePhase.PLUG || drive.phase == DrivePhase.MOUNT || drive.phase == DrivePhase.VERIFY ->
+                                if (on) Color(0xFFFFB34A) else Color(0xFF4A3A1A)
+                            drive.phase == DrivePhase.COPY -> if (on) Color(0xFF43D17A) else Color(0xFF1F6A3A)
+                            else -> Color(0xFF43D17A)
+                        }
+                        drawCircle(led.copy(alpha = 0.35f), radius = 10f, center = Offset(153f, 528f))
+                        drawCircle(led, radius = 4.5f, center = Offset(153f, 528f))
+                    }
                     if (syncing) {
                         val dash = PathEffect.dashPathEffect(floatArrayOf(10f, 30f), 40f - phase.value)
                         for (wire in wires) {
@@ -1333,8 +1486,67 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                     .size(width = w * 0.266f, height = h * 0.090f)
                     .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
             )
+            // The drive on the table: a tap asks what to do with it.
+            val key = drive.onDesk
+            if (key != null) {
+                Box(
+                    modifier = Modifier
+                        .offset(x = w * 0.065f, y = h * 0.37f)
+                        .size(width = w * 0.115f, height = h * 0.17f)
+                        .clickable(interactionSource = tapSource, indication = null) { choose = true }
+                )
+            }
+            if (choose && key != null) {
+                val acts = controller.driveActions
+                val plugged = drive.plugged == key
+                val safe = plugged && drive.phase == DrivePhase.SAFE
+                val close = { choose = false }
+                AlertDialog(
+                    onDismissRequest = close,
+                    title = {
+                        Text(if (safe) "Drive $key is safe to remove" else if (plugged) "Copy still running" else "Drive $key")
+                    },
+                    text = {
+                        Text(
+                            if (safe) "The copy is checked. Take the drive home, or only unplug it."
+                            else if (plugged) "Remove drive $key anyway? The copy will be marked incomplete."
+                            else "Plug it into the backup server, or take it home."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            close()
+                            if (safe) {
+                                acts.unplug()
+                                acts.takeHome(key)?.let { controller.note(it, true) }
+                            } else if (plugged) {
+                                acts.unplug()
+                            } else {
+                                acts.plugIn(key)?.let { controller.note(it, true) }
+                            }
+                        }) { Text(if (safe) "Take it home" else if (plugged) "Remove anyway" else "Plug in") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = {
+                            close()
+                            if (safe) {
+                                acts.unplug()
+                            } else if (!plugged) {
+                                acts.takeHome(key)?.let { controller.note(it, true) }
+                            }
+                        }) { Text(if (safe) "Just unplug" else if (plugged) "Keep copying" else "Take home") }
+                    }
+                )
+            }
         }
     }
+}
+
+/** The USB cable from the dock on the table to the front of the backup server (picture coordinates). */
+private fun drivePath(): Path = Path().apply {
+    moveTo(153f, 563f)
+    cubicTo(148f, 650f, 120f, 745f, 235f, 752f)
+    cubicTo(350f, 759f, 360f, 725f, 405f, 650f)
 }
 
 // ---------------------------------------------------------------------------------------------
