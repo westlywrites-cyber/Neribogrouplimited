@@ -47,7 +47,9 @@ object DellWallpaper {
         return try {
             val resolver = context.applicationContext.contentResolver
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return false
+            // Size-only read: decodeStream returns null here by design, so do not treat null as a failure.
+            val opened = resolver.openInputStream(uri) ?: return false
+            opened.use { BitmapFactory.decodeStream(it, null, bounds) }
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
 
             var sample = 1
