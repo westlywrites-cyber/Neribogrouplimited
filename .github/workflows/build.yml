@@ -39,11 +39,11 @@ jobs:
 
       - name: Check the OPay secrets
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          OPAY_SUPABASE_URL: ${{ secrets.OPAY_SUPABASE_URL }}
+          OPAY_SUPABASE_ANON_KEY: ${{ secrets.OPAY_SUPABASE_ANON_KEY }}
         run: |
           missing=""
-          for name in SUPABASE_URL SUPABASE_ANON_KEY; do
+          for name in OPAY_SUPABASE_URL OPAY_SUPABASE_ANON_KEY; do
             if [ -z "${!name}" ]; then
               missing="$missing $name"
             fi
@@ -58,8 +58,9 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          # OPay's own Supabase project (the build reads these two names).
+          SUPABASE_URL: ${{ secrets.OPAY_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.OPAY_SUPABASE_ANON_KEY }}
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Upload Neribo Group APK
