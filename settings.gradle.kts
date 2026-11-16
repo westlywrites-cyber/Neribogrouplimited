@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "NeriboGroup"
 include(":app")
+include(":opay")

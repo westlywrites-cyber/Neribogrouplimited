@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="@color/opay_green"
+        android:pathData="M32.45,45.79A24,24 0 1 1 32.45,62.21L40.43,59.3A15.5,15.5 0 1 0 40.43,48.7Z" />
+    <path
+        android:fillColor="@color/opay_navy"
+        android:pathData="M28.5,50.3L42.5,50.3L42.5,57.7L28.5,57.7Z" />
+</vector>

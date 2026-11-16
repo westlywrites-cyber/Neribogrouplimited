@@ -10,7 +10,7 @@ val keystorePath: String? = System.getenv("KEYSTORE_PATH")
 
 android {
     namespace = "com.westly.neribogroup"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.westly.neribogroup"
@@ -81,6 +81,12 @@ android {
         compose = true
         buildConfig = true
     }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
 }
 
 dependencies {
@@ -102,4 +108,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+
+    // The demo OPay app, shown inside the Dell desktop. Only NCO has it.
+    "ncoImplementation"(project(":opay"))
 }

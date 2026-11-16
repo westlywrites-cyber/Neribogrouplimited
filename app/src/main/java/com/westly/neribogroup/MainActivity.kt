@@ -14,6 +14,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.fragment.app.FragmentActivity
@@ -50,6 +51,7 @@ import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.dell.DellOfficeScreen
 import com.westly.neribogroup.feature.dell.DellShortcut
+import com.westly.neribogroup.feature.dell.OpayWindowContent
 import com.westly.neribogroup.feature.dell.dellShortcuts
 import com.westly.neribogroup.feature.hosting.HostingScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
@@ -65,6 +67,9 @@ import com.westly.neribogroup.feature.staff.StaffDetailScreen
 import com.westly.neribogroup.notify.ReminderNotifier
 import com.westly.neribogroup.notify.ReminderScheduler
 import com.westly.neribogroup.ui.theme.NeriboTheme
+
+/** The Dell icon that opens OPay (NCO only). */
+private const val OPAY_KEY = "opay"
 
 // FragmentActivity (a ComponentActivity underneath) is what Android's BiometricPrompt needs.
 class MainActivity : FragmentActivity() {
@@ -210,19 +215,34 @@ private fun NeriboRoot(vm: AppViewModel) {
         // The CEO office: the same app, with the same screens and the same data, inside a Dell screen.
         // One icon for every card, every social platform and every app. Apps come from the ledger, so a new app has its icon at once.
         // NCO (the CEO-only app) has no Storage room icon on its desktop.
+        // NCO also has an OPay icon (right after Neribo Group) that opens the demo OPay app inside the Dell.
         val shortcuts = remember(vm.ledger) {
-            dellShortcuts(vm.ledger) { id -> vm.appIconFile(id) }
+            val all = dellShortcuts(vm.ledger) { id -> vm.appIconFile(id) }
                 .filter { !(BuildConfig.CEO_ONLY && it.key == "sec:" + Section.STORAGE_ROOM.name) }
+            if (BuildConfig.CEO_ONLY) {
+                all.take(1) + DellShortcut(OPAY_KEY, "OPay", R.drawable.dell_ic_opay) + all.drop(1)
+            } else {
+                all
+            }
         }
-        val windowAtRoot = vm.openSection == null && vm.openAppId == null && vm.openStaffId == null &&
+        // True while the OPay window is the open one. OPay has its own screens, so the Dell must not treat it as
+        // "back at the start" (that would close it at once).
+        val opayOpen = remember { mutableStateOf(false) }
+        val windowAtRoot = !opayOpen.value && vm.openSection == null && vm.openAppId == null && vm.openStaffId == null &&
             vm.openCaseId == null && vm.openOfferId == null && vm.openProjectId == null &&
             !vm.showSettings && !vm.showLogin
         DellOfficeScreen(
             shortcuts = shortcuts,
             iconTick = vm.assetPhotoTick,
             windowAtRoot = windowAtRoot,
-            onLaunch = { item -> openDellShortcut(vm, item) },
-            onWindowClosed = { clearDellWindow(vm) },
+            onLaunch = { item ->
+                opayOpen.value = item.key == OPAY_KEY
+                openDellShortcut(vm, item)
+            },
+            onWindowClosed = {
+                opayOpen.value = false
+                clearDellWindow(vm)
+            },
             onExit = {
                 if (BuildConfig.CEO_ONLY) {
                     // NCO has no phone dashboard behind the Dell, so leaving the office closes the app.
@@ -233,7 +253,11 @@ private fun NeriboRoot(vm: AppViewModel) {
                 }
             }
         ) {
-            NeriboScreens(vm, onExport, onImport, inDell = true)
+            if (opayOpen.value) {
+                OpayWindowContent()
+            } else {
+                NeriboScreens(vm, onExport, onImport, inDell = true)
+            }
         }
     } else {
         NeriboScreens(vm, onExport, onImport, inDell = false)
