@@ -21,6 +21,22 @@ android {
         versionName = "1.0"
     }
 
+    // Two apps from this one project. "neribo" is the normal Neribo Group app (nothing changes for it).
+    // "nco" is NCO (Neribo CEO Office): its own app on the phone that opens straight on the Dell desktop and uses the
+    // same cloud (Supabase) as the normal app. Both are signed with the same key.
+    flavorDimensions += "app"
+    productFlavors {
+        create("neribo") {
+            dimension = "app"
+            buildConfigField("boolean", "CEO_ONLY", "false")
+        }
+        create("nco") {
+            dimension = "app"
+            applicationIdSuffix = ".ceo"
+            buildConfigField("boolean", "CEO_ONLY", "true")
+        }
+    }
+
     signingConfigs {
         if (keystorePath != null && File(keystorePath).exists()) {
             create("release") {
@@ -54,6 +70,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

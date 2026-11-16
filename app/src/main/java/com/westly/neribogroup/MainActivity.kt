@@ -209,7 +209,11 @@ private fun NeriboRoot(vm: AppViewModel) {
     if (vm.dellOpen) {
         // The CEO office: the same app, with the same screens and the same data, inside a Dell screen.
         // One icon for every card, every social platform and every app. Apps come from the ledger, so a new app has its icon at once.
-        val shortcuts = remember(vm.ledger) { dellShortcuts(vm.ledger) { id -> vm.appIconFile(id) } }
+        // NCO (the CEO-only app) has no Storage room icon on its desktop.
+        val shortcuts = remember(vm.ledger) {
+            dellShortcuts(vm.ledger) { id -> vm.appIconFile(id) }
+                .filter { !(BuildConfig.CEO_ONLY && it.key == "sec:" + Section.STORAGE_ROOM.name) }
+        }
         val windowAtRoot = vm.openSection == null && vm.openAppId == null && vm.openStaffId == null &&
             vm.openCaseId == null && vm.openOfferId == null && vm.openProjectId == null &&
             !vm.showSettings && !vm.showLogin
@@ -220,8 +224,13 @@ private fun NeriboRoot(vm: AppViewModel) {
             onLaunch = { item -> openDellShortcut(vm, item) },
             onWindowClosed = { clearDellWindow(vm) },
             onExit = {
-                vm.dellOpen = false
-                clearDellWindow(vm)
+                if (BuildConfig.CEO_ONLY) {
+                    // NCO has no phone dashboard behind the Dell, so leaving the office closes the app.
+                    (context as? android.app.Activity)?.finish()
+                } else {
+                    vm.dellOpen = false
+                    clearDellWindow(vm)
+                }
             }
         ) {
             NeriboScreens(vm, onExport, onImport, inDell = true)

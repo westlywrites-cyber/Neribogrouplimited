@@ -37,16 +37,23 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
-      - name: Build signed APK
+      - name: Build signed APKs
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Upload Neribo Group APK
         uses: actions/upload-artifact@v4
         with:
           name: NeriboGroup-signed-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/neribo/release/*.apk
+          retention-days: 1
+
+      - name: Upload NCO APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NCO-signed-apk
+          path: app/build/outputs/apk/nco/release/*.apk
           retention-days: 1

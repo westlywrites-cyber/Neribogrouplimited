@@ -122,8 +122,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Where the person was on each screen (scroll, search, tab), kept while they go deeper and come back. */
     val navMemory = com.westly.neribogroup.feature.common.NavMemory()
 
-    /** True while the CEO office (the Dell screen with the whole app inside it) is open. */
-    var dellOpen by mutableStateOf(false)
+    /** True while the CEO office (the Dell screen with the whole app inside it) is open. NCO starts with it open. */
+    var dellOpen by mutableStateOf(BuildConfig.CEO_ONLY)
 
     /** The id of the app dashboard that is open, or null when it is not showing. */
     var openAppId by mutableStateOf<String?>(null)
