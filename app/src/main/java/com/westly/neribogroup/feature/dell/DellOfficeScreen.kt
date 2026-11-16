@@ -196,10 +196,11 @@ private fun DellPointer(at: Offset) {
 }
 
 /**
- * The desk under the monitor, with the computer mouse on it. The whole desk works like a mouse pad: put a finger anywhere
- * on it and drag, and the mouse slides under your finger while the pointer moves on the screen. Tap the left button of
- * the mouse to click, the right button to go Back. Slide a finger up or down on the wheel and lift to scroll, or tap the
- * big arrows at the bottom left of the desk. The keyboard keeps working as before.
+ * The desk under the monitor, with the computer mouse on it. The mouse picture stays where it is. A finger dragged
+ * anywhere on the desk moves the pointer on the screen. Tap the left button of the mouse to click, the right button to
+ * go Back. Slide a finger up or down on the wheel and lift to scroll. At the bottom left of the desk there are two big
+ * arrows: up and down to scroll a window, or left and right to change the page of icons on the home screen.
+ * The keyboard keeps working as before.
  */
 @Composable
 private fun DellDesk(
@@ -210,7 +211,10 @@ private fun DellDesk(
     onRightClick: () -> Unit,
     onWheel: (Boolean, Int) -> Unit,
     onDragEnd: () -> Unit,
-    onScroll: (Boolean) -> Unit
+    /** True when no window is open (the home screen with the icons shows). */
+    onHomeScreen: Boolean,
+    onScroll: (Boolean) -> Unit,
+    onPage: (Int) -> Unit
 ) {
     val move by rememberUpdatedState(onMove)
     val leftClick by rememberUpdatedState(onLeftClick)
@@ -221,14 +225,11 @@ private fun DellDesk(
     val mouseW = mouseHeight.value * MOUSE_ASPECT * d
     val mouseH = mouseHeight.value * d
     var desk by remember { mutableStateOf(IntSize.Zero) }
-    // Where the top left of the mouse picture is on the desk. Null means it is still at its start place (bottom right).
-    var spot by remember { mutableStateOf<Offset?>(null) }
+    // The mouse picture stays at the bottom right of the desk (top left corner of the picture, in pixels).
     val maxX = (desk.width - mouseW).coerceAtLeast(0f)
     val maxY = (desk.height - mouseH).coerceAtLeast(0f)
-    val start = Offset(maxX - 10f * d, maxY - 4f * d)
-    val at = (spot ?: start).let { Offset(it.x.coerceIn(0f, maxX), it.y.coerceIn(0f, maxY)) }
+    val at = Offset((maxX - 10f * d).coerceIn(0f, maxX), (maxY - 4f * d).coerceIn(0f, maxY))
     val atNow by rememberUpdatedState(at)
-    val limits by rememberUpdatedState(Offset(maxX, maxY))
     val mouseSize by rememberUpdatedState(Offset(mouseW, mouseH))
 
     Box(
@@ -272,14 +273,7 @@ private fun DellDesk(
                         if (!moved && (change.position - down.position).getDistance() > 6f * d) moved = true
                         if (moved) {
                             lastY = change.position.y
-                            if (!onWheelPart) {
-                                // The mouse slides with the finger (it stops at the edge of the desk, the pointer does not).
-                                spot = Offset(
-                                    (atNow.x + delta.x).coerceIn(0f, limits.x),
-                                    (atNow.y + delta.y).coerceIn(0f, limits.y)
-                                )
-                                move(delta.x * MOUSE_GAIN, delta.y * MOUSE_GAIN)
-                            }
+                            if (!onWheelPart) move(delta.x * MOUSE_GAIN, delta.y * MOUSE_GAIN)
                         }
                         change.consume()
                     }
@@ -297,13 +291,18 @@ private fun DellDesk(
             modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            DellScrollKey("▲") { onScroll(false) }
-            DellScrollKey("▼") { onScroll(true) }
+            if (onHomeScreen) {
+                DellScrollKey("◀") { onPage(-1) }
+                DellScrollKey("▶") { onPage(1) }
+            } else {
+                DellScrollKey("▲") { onScroll(false) }
+                DellScrollKey("▼") { onScroll(true) }
+            }
         }
     }
 }
 
-/** A big, easy button for scrolling the page on the Dell screen. */
+/** A big, easy button for scrolling a window or changing the page of icons on the Dell screen. */
 @Composable
 private fun DellScrollKey(label: String, onClick: () -> Unit) {
     Box(
@@ -455,8 +454,19 @@ fun DellOfficeScreen(
     }
 
     // The on-screen mouse: it moves the same pointer the arrow keys move, and clicks where that pointer is.
-    // How far the mouse was pushed past the top (negative) or bottom (positive) edge of the screen in this drag.
+    // How far the mouse was pushed past the top (negative) or bottom (positive) edge of the screen in this drag,
+    // and past the left (negative) or right (positive) edge.
     val edgePush = remember { FloatArray(1) }
+    val edgePushX = remember { FloatArray(1) }
+
+    // Home screen: shows the previous (-1) or next (+1) page of icons, like swiping the screen.
+    fun desktopPage(step: Int) {
+        val pages = maxOf(1, (shortcuts.size + DELL_PER_PAGE - 1) / DELL_PER_PAGE)
+        val target = (nav.page + step).coerceIn(0, pages - 1)
+        nav.page = target
+        nav.selected = target * DELL_PER_PAGE
+        nav.keys = false
+    }
 
     fun mouseMove(dx: Float, dy: Float) {
         if (phase != DellPhase.ON || screenSize.width == 0 || pointer.x < 0f) return
@@ -470,14 +480,29 @@ fun DellOfficeScreen(
             if (edgePush[0] * over < 0f) edgePush[0] = 0f
             edgePush[0] += over
         }
-        pointer = Offset((pointer.x + dx).coerceIn(0f, screenSize.width - 1f), newY)
+        val wantX = pointer.x + dx
+        val newX = wantX.coerceIn(0f, screenSize.width - 1f)
+        val overX = wantX - newX
+        if (overX == 0f) {
+            edgePushX[0] = 0f
+        } else {
+            if (edgePushX[0] * overX < 0f) edgePushX[0] = 0f
+            edgePushX[0] += overX
+        }
+        pointer = Offset(newX, newY)
     }
 
     // The finger left the mouse: like the keyboard arrows, pushing the pointer against the top or bottom edge scrolls the page.
     fun mouseDragEnd() {
         val push = edgePush[0]
+        val pushX = edgePushX[0]
         edgePush[0] = 0f
-        if (phase == DellPhase.ON && kotlin.math.abs(push) > 24f * px) {
+        edgePushX[0] = 0f
+        if (phase != DellPhase.ON) return
+        if (!appOpen) {
+            // On the home screen, pushing the pointer past the left or right edge changes the page of icons.
+            if (kotlin.math.abs(pushX) > 24f * px) desktopPage(if (pushX > 0f) 1 else -1)
+        } else if (kotlin.math.abs(push) > 24f * px) {
             scrollPage(push > 0f, (kotlin.math.abs(push) / (70f * px)).toInt().coerceIn(1, 3))
         }
     }
@@ -646,7 +671,9 @@ fun DellOfficeScreen(
                         onRightClick = { mouseRightClick() },
                         onWheel = { down, units -> if (phase == DellPhase.ON) scrollPage(down, units) },
                         onDragEnd = { mouseDragEnd() },
-                        onScroll = { down -> if (phase == DellPhase.ON) scrollPage(down, 2) }
+                        onHomeScreen = !appOpen,
+                        onScroll = { down -> if (phase == DellPhase.ON) scrollPage(down, 2) },
+                        onPage = { step -> if (phase == DellPhase.ON) desktopPage(step) }
                     )
                 }
             }
