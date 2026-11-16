@@ -199,12 +199,14 @@ private fun DellMouse(
     onMove: (Float, Float) -> Unit,
     onLeftClick: () -> Unit,
     onRightClick: () -> Unit,
-    onWheel: (Boolean) -> Unit
+    onWheel: (Boolean, Int) -> Unit,
+    onDragEnd: () -> Unit
 ) {
     val move by rememberUpdatedState(onMove)
     val leftClick by rememberUpdatedState(onLeftClick)
     val rightClick by rememberUpdatedState(onRightClick)
     val wheel by rememberUpdatedState(onWheel)
+    val dragEnd by rememberUpdatedState(onDragEnd)
     val d = LocalDensity.current.density
     Image(
         painter = painterResource(R.drawable.dell_mouse),
@@ -217,36 +219,36 @@ private fun DellMouse(
                     val fx = down.position.x / size.width
                     val fy = down.position.y / size.height
                     // Where the finger landed on the picture: the wheel, one of the two buttons, or the body.
-                    val onWheelPart = fx in 0.38f..0.62f && fy in 0.22f..0.40f
-                    val onButtonPart = !onWheelPart && fy in 0.15f..0.62f
+                    val onWheelPart = fx in 0.30f..0.70f && fy in 0.17f..0.45f
+                    val onButtonPart = fy in 0.15f..0.62f
                     var moved = false
-                    var wheelSum = 0f
-                    var lastScroll = 0L
+                    var lastY = down.position.y
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         if (!change.pressed) {
-                            // Finger lifted without dragging: a click on a button.
-                            if (!moved && onButtonPart) {
-                                if (fx < 0.5f) leftClick() else rightClick()
+                            if (!moved) {
+                                // Finger lifted without dragging: a click on a button.
+                                if (onButtonPart) {
+                                    if (fx < 0.5f) leftClick() else rightClick()
+                                }
+                            } else if (onWheelPart) {
+                                // Same as a real wheel: rolling it toward you scrolls the page down. The scroll is sent when
+                                // the finger is lifted, because Android drops a scroll sent while this finger is still down.
+                                val dy = lastY - down.position.y
+                                val units = (kotlin.math.abs(dy) / (18f * d)).roundToInt().coerceIn(1, 3)
+                                wheel(dy > 0f, units)
+                            } else {
+                                // The same lift sends a page scroll when the pointer was pushed against the top or bottom edge.
+                                dragEnd()
                             }
                             break
                         }
                         val delta = change.positionChange()
                         if (!moved && (change.position - down.position).getDistance() > 8f * d) moved = true
                         if (moved) {
-                            if (onWheelPart) {
-                                // Same as a real wheel: rolling it toward you scrolls the page down.
-                                wheelSum += delta.y
-                                val now = SystemClock.uptimeMillis()
-                                if (kotlin.math.abs(wheelSum) > 14f * d && now - lastScroll > 300L) {
-                                    wheel(wheelSum > 0f)
-                                    wheelSum = 0f
-                                    lastScroll = now
-                                }
-                            } else {
-                                move(delta.x * MOUSE_GAIN, delta.y * MOUSE_GAIN)
-                            }
+                            lastY = change.position.y
+                            if (!onWheelPart) move(delta.x * MOUSE_GAIN, delta.y * MOUSE_GAIN)
                         }
                         change.consume()
                     }
@@ -361,11 +363,14 @@ fun DellOfficeScreen(
     }
 
     // Scrolls the page on the screen by about [amount] dp, down or up, with a slow swipe in the middle of the screen.
-    fun scrollPage(down: Boolean) {
+    // [units] is how many steps to scroll at once (the keyboard always uses 1; the mouse wheel can use more).
+    fun scrollPage(down: Boolean, units: Int = 1) {
         if (screenSize.width == 0) return
+        val h = screenSize.height.toFloat()
         val x = screenOrigin.x + screenSize.width / 2f
-        val y = screenOrigin.y + screenSize.height * 0.45f
-        sendSwipe(view, x, y, (if (down) -110f else 110f) * px)
+        val dist = minOf(110f * px * units, h * 0.7f)
+        val y = if (units <= 1) screenOrigin.y + h * 0.45f else screenOrigin.y + (if (down) h * 0.85f else h * 0.15f)
+        sendSwipe(view, x, y, if (down) -dist else dist)
     }
 
     // The arrow keys move the pointer. At the top or bottom edge of the screen they scroll the page instead.
@@ -388,13 +393,31 @@ fun DellOfficeScreen(
     }
 
     // The on-screen mouse: it moves the same pointer the arrow keys move, and clicks where that pointer is.
+    // How far the mouse was pushed past the top (negative) or bottom (positive) edge of the screen in this drag.
+    val edgePush = remember { FloatArray(1) }
+
     fun mouseMove(dx: Float, dy: Float) {
         if (phase != DellPhase.ON || screenSize.width == 0 || pointer.x < 0f) return
         mouseUsed = true
-        pointer = Offset(
-            (pointer.x + dx).coerceIn(0f, screenSize.width - 1f),
-            (pointer.y + dy).coerceIn(0f, screenSize.height - 1f)
-        )
+        val wantY = pointer.y + dy
+        val newY = wantY.coerceIn(0f, screenSize.height - 1f)
+        val over = wantY - newY
+        if (over == 0f) {
+            edgePush[0] = 0f
+        } else {
+            if (edgePush[0] * over < 0f) edgePush[0] = 0f
+            edgePush[0] += over
+        }
+        pointer = Offset((pointer.x + dx).coerceIn(0f, screenSize.width - 1f), newY)
+    }
+
+    // The finger left the mouse: like the keyboard arrows, pushing the pointer against the top or bottom edge scrolls the page.
+    fun mouseDragEnd() {
+        val push = edgePush[0]
+        edgePush[0] = 0f
+        if (phase == DellPhase.ON && kotlin.math.abs(push) > 24f * px) {
+            scrollPage(push > 0f, (kotlin.math.abs(push) / (70f * px)).toInt().coerceIn(1, 3))
+        }
     }
 
     fun mouseLeftClick() {
@@ -546,7 +569,8 @@ fun DellOfficeScreen(
                         onMove = { dx, dy -> mouseMove(dx, dy) },
                         onLeftClick = { mouseLeftClick() },
                         onRightClick = { mouseRightClick() },
-                        onWheel = { down -> if (phase == DellPhase.ON) scrollPage(down) }
+                        onWheel = { down, units -> if (phase == DellPhase.ON) scrollPage(down, units) },
+                        onDragEnd = { mouseDragEnd() }
                     )
                 }
             }
