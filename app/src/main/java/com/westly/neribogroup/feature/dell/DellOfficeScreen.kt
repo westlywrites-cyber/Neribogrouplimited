@@ -66,6 +66,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -103,10 +104,14 @@ private const val ZOOM_START = 0.6f
 // The Dell screen is shaped like a real company monitor (never taller than this many times its width).
 private const val SCREEN_MAX_ASPECT = 0.85f
 
-// The on-screen mouse (dell_mouse.png is 325 x 575). The pointer moves MOUSE_GAIN times as far as the finger, because the
-// mouse is small and the screen is big.
-private val MOUSE_W = 76.dp
+// The on-screen mouse (dell_mouse.png is 325 x 575). MOUSE_H is its biggest height; it is made smaller when the desk space
+// under the monitor is smaller, so it never covers the screen. The pointer moves MOUSE_GAIN times as far as the finger,
+// because the mouse is small and the screen is big.
 private val MOUSE_H = 134.dp
+private val MOUSE_MIN_H = 56.dp
+private const val MOUSE_ASPECT = 325f / 575f
+// The top part of the monitor's bottom piece that is the chin with the Dell name; the mouse stays below it.
+private const val CHIN_SHARE = 0.25f
 private const val MOUSE_GAIN = 2.2f
 
 /** Sends one key press (down and up) into the app that is on the Dell screen, as a real keyboard would. */
@@ -196,6 +201,7 @@ private fun DellPointer(at: Offset) {
 @Composable
 private fun DellMouse(
     modifier: Modifier,
+    height: Dp,
     onMove: (Float, Float) -> Unit,
     onLeftClick: () -> Unit,
     onRightClick: () -> Unit,
@@ -212,7 +218,7 @@ private fun DellMouse(
         painter = painterResource(R.drawable.dell_mouse),
         contentDescription = "Computer mouse",
         modifier = modifier
-            .size(MOUSE_W, MOUSE_H)
+            .size(height * MOUSE_ASPECT, height)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -534,7 +540,15 @@ fun DellOfficeScreen(
             }
 
             // The monitor fills this box. The mouse sits in its bottom right corner: the empty desk next to the stand.
-            Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 6.dp)) {
+            BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 6.dp)) {
+                // The same sizes DellMonitor works out, to know how much desk is free under the monitor's chin.
+                val k = maxWidth.value / BEZEL_W
+                val footDp = (BEZEL_FOOT * k).dp
+                val screenDp = minOf(maxHeight - (BEZEL_EDGE * k).dp - footDp, (maxWidth - (BEZEL_EDGE * k).dp * 2) * SCREEN_MAX_ASPECT)
+                    .coerceAtLeast(60.dp)
+                val monitorH = (BEZEL_EDGE * k).dp + screenDp + footDp
+                val freeBelowChin = (maxHeight - monitorH) / 2 + footDp * (1f - CHIN_SHARE)
+                val mouseH = minOf(MOUSE_H, freeBelowChin - 4.dp).coerceAtLeast(MOUSE_MIN_H)
                 DellMonitor(
                     modifier = Modifier.fillMaxSize(),
                     phase = phase,
@@ -566,6 +580,7 @@ fun DellOfficeScreen(
                 if (showKeys && !fullNow) {
                     DellMouse(
                         modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 4.dp),
+                        height = mouseH,
                         onMove = { dx, dy -> mouseMove(dx, dy) },
                         onLeftClick = { mouseLeftClick() },
                         onRightClick = { mouseRightClick() },
