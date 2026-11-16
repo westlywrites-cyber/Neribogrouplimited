@@ -1330,7 +1330,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 openCaseId = null
                 openOfferId = null
                 openProjectId = null
-                openSection = null
+                openSection = if (BuildConfig.ROOM_ONLY) Section.STORAGE_ROOM else null
                 ledger = outcome.ledger
                 linkOk = true
                 linkStep = SyncEngine.STEP_DONE
@@ -2485,7 +2485,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             openCaseId = null
             openOfferId = null
             openProjectId = null
-            openSection = null
+            openSection = if (BuildConfig.ROOM_ONLY) Section.STORAGE_ROOM else null
             showSettings = false
             saveLedger(imported)
             true
