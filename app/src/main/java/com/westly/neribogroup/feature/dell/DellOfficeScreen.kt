@@ -429,8 +429,10 @@ fun DellOfficeScreen(
         if (screenSize.width == 0) return
         val h = screenSize.height.toFloat()
         val x = screenOrigin.x + screenSize.width / 2f
-        val dist = minOf(110f * px * units, h * 0.7f)
-        val y = if (units <= 1) screenOrigin.y + h * 0.45f else screenOrigin.y + (if (down) h * 0.85f else h * 0.15f)
+        // Down starts low and swipes up. Up starts higher but still inside the list (not on the window title or the page
+        // header, which do not scroll) and swipes down, staying on the screen.
+        val dist = minOf(110f * px * units, h * 0.65f)
+        val y = if (units <= 1) screenOrigin.y + h * 0.45f else screenOrigin.y + (if (down) h * 0.85f else h * 0.3f)
         sendSwipe(view, x, y, if (down) -dist else dist)
     }
 
