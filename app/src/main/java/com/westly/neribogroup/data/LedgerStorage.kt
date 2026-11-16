@@ -124,6 +124,7 @@ object LedgerStorage {
             o.put("storageSiteMb", app.storageSiteMb)
             o.put("storageUsedKb", app.storageUsedKb)
             o.put("storageShareMb", app.storageShareMb)
+            if (app.hasIcon) o.put("icon", true)
             val campaign = app.campaign
             if (campaign != null) {
                 val co = JSONObject()
@@ -529,7 +530,8 @@ object LedgerStorage {
             storagePremiumMb = o.optLong("storagePremiumMb"),
             storageSiteMb = o.optLong("storageSiteMb"),
             storageUsedKb = o.optLong("storageUsedKb"),
-            storageShareMb = maxOf(0L, o.optLong("storageShareMb"))
+            storageShareMb = maxOf(0L, o.optLong("storageShareMb")),
+            hasIcon = o.optBoolean("icon")
         )
     }
 

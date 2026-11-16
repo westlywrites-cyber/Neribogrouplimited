@@ -1715,6 +1715,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         assetPhotoTick += 1
     }
 
+    /** The icon picture of an app (it may not exist). It is shown on the CEO office desktop. */
+    fun appIconFile(appId: String): java.io.File =
+        CompanyPhotos.file(getApplication<Application>(), com.westly.neribogroup.cloud.MediaSync.ICON_KIND, appId)
+
+    /** Makes a small JPEG (longest side 256) of the picked picture and saves it on this phone. [done] gets "" or a short problem text. */
+    fun saveAppIcon(appId: String, uri: android.net.Uri, done: (String) -> Unit) {
+        val context = getApplication<Application>()
+        Thread {
+            val processed = ImageProcessor.process(context, uri, 256)
+            val message = when (processed) {
+                is ProcessedImage.Ok ->
+                    if (CompanyPhotos.write(context, com.westly.neribogroup.cloud.MediaSync.ICON_KIND, appId, processed.bytes)) "" else "The icon could not be saved."
+                is ProcessedImage.Failed -> processed.message
+            }
+            mainHandler.post {
+                if (message.isEmpty()) assetPhotoTick += 1
+                done(message)
+            }
+        }.start()
+    }
+
+    fun deleteAppIcon(appId: String) {
+        CompanyPhotos.delete(getApplication<Application>(), com.westly.neribogroup.cloud.MediaSync.ICON_KIND, appId)
+        assetPhotoTick += 1
+    }
+
+    /** Set while a social platform has its own window on the CEO office desktop: only that account shows. */
+    var socialOnlyId by mutableStateOf<String?>(null)
+
     // ---------------------------------------------------------------------------------------------
     // Equipment photos: up to 5 for each piece of equipment
     // ---------------------------------------------------------------------------------------------

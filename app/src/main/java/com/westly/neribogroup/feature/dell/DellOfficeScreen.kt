@@ -185,7 +185,18 @@ private fun DellPointer(at: Offset) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
+fun DellOfficeScreen(
+    shortcuts: List<DellShortcut>,
+    iconTick: Int,
+    /** True when the open window is back at its first screen, so there is nothing left to go back to. */
+    windowAtRoot: Boolean,
+    /** Gets the app ready for an icon that was opened (which section, app or social account). */
+    onLaunch: (DellShortcut) -> Unit,
+    /** The window was closed: forget what it had open. */
+    onWindowClosed: () -> Unit,
+    onExit: () -> Unit,
+    content: @Composable () -> Unit
+) {
     val context = LocalContext.current
     DellPower.load(context)
 
@@ -195,6 +206,10 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
     var showKeys by rememberSaveable { mutableStateOf(true) }
     var full by rememberSaveable { mutableStateOf(false) }
     var appOpen by rememberSaveable { mutableStateOf(false) }
+    // The icon whose window is open (or minimised). Null means no window.
+    var openKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val nav = remember { DellDesktopNav() }
+    val openShortcut = shortcuts.firstOrNull { it.key == openKey }
     var shift by remember { mutableStateOf(false) }
     var screenOrigin by remember { mutableStateOf(Offset.Zero) }
     var screenSize by remember { mutableStateOf(IntSize.Zero) }
@@ -207,13 +222,32 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
     val view = LocalView.current
     val backOwner = LocalOnBackPressedDispatcherOwner.current
 
+    fun closeWindow() {
+        appOpen = false
+        openKey = null
+        onWindowClosed()
+    }
+
+    fun openWindow(item: DellShortcut) {
+        onLaunch(item)
+        openKey = item.key
+        appOpen = true
+        nav.startOpen = false
+    }
+
+    // A window opened from an icon other than Neribo Group closes by itself when Back has taken it to the start of
+    // that icon's own screens (for example after Back from the Staff list).
+    LaunchedEffect(windowAtRoot, appOpen, openKey) {
+        if (appOpen && openKey != null && openKey != DELL_HOME_KEY && windowAtRoot) closeWindow()
+    }
+
     // Back closes full screen, then the app window, then leaves the office. Inside the app, Back works as usual
     // because the screens of the app register their own handlers after this one.
     BackHandler {
         if (fullNow) {
             full = false
         } else if (appOpen) {
-            appOpen = false
+            closeWindow()
         } else {
             onExit()
         }
@@ -242,7 +276,7 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
             confirmOff = true
         } else if (phase == DellPhase.OFF) {
             DellPower.setOff(context, false)
-            appOpen = false
+            closeWindow()
             phase = DellPhase.BOOTING
         }
     }
@@ -281,6 +315,9 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
             val code = key.code
             if (key.kind == DellKey.SHIFT) {
                 shift = !shift
+            } else if (!appOpen && nav.handleKey(code, shortcuts.size) { index -> shortcuts.getOrNull(index)?.let { openWindow(it) } }) {
+                // On the desktop the keys work the icons and the Start menu, so the screen never has to be touched.
+                shift = false
             } else if (code == AndroidKeyEvent.KEYCODE_ESCAPE) {
                 backOwner?.onBackPressedDispatcher?.onBackPressed()
             } else if (code == AndroidKeyEvent.KEYCODE_DPAD_UP || code == AndroidKeyEvent.KEYCODE_DPAD_DOWN) {
@@ -377,15 +414,21 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
                 bootProgress = progress.value,
                 zoom = zoom,
                 full = fullNow,
-                pointer = if (phase == DellPhase.ON && pointer.x >= 0f) pointer else null,
+                pointer = if (phase == DellPhase.ON && appOpen && pointer.x >= 0f) pointer else null,
                 onScreenPlaced = { origin, size ->
                     screenOrigin = origin
                     screenSize = size
                     if (pointer.x < 0f) pointer = Offset(size.width * 0.5f, size.height * 0.4f)
                 }            ) {
                 DellDesktop(
+                    shortcuts = shortcuts,
+                    nav = nav,
+                    iconTick = iconTick,
                     appOpen = appOpen,
-                    onAppOpen = { appOpen = it },
+                    openShortcut = openShortcut,
+                    onLaunch = { openWindow(it) },
+                    onWindowShow = { appOpen = it },
+                    onWindowClose = { closeWindow() },
                     onShutDown = { confirmOff = true },
                     content = content
                 )
@@ -412,7 +455,7 @@ fun DellOfficeScreen(onExit: () -> Unit, content: @Composable () -> Unit) {
                 TextButton(onClick = {
                     confirmOff = false
                     DellPower.setOff(context, true)
-                    appOpen = false
+                    closeWindow()
                     full = false
                     phase = DellPhase.SHUTTING
                 }) { Text("Shut down") }

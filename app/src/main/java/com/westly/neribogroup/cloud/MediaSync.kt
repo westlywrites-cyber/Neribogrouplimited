@@ -376,6 +376,11 @@ class MediaSync(
             if (syncDocPhotos(uid, ledgerNow())) changedFiles = true
         }
 
+        // 6) App icons chosen when an app was added (one small picture per app), the same way.
+        if (!offline) {
+            if (syncAppIcons(uid, ledgerNow())) changedFiles = true
+        }
+
         cleanLeftovers(ledgerNow())
         cleanSocialLeftovers(ledgerNow())
         return changedFiles
@@ -650,6 +655,125 @@ class MediaSync(
         return changed
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // App icons (shown on the CEO office desktop)
+    // ---------------------------------------------------------------------------------------------
+
+    private fun loadIconState(): MutableMap<String, String> {
+        val result = HashMap<String, String>()
+        try {
+            val file = File(app.filesDir, ICON_STATE_FILE)
+            if (!file.exists()) return result
+            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                if (!isValidMediaId(id)) continue
+                val sha = root.optString(id, "")
+                if (sha.isNotEmpty()) result[id] = sha
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "The app icon record could not be read; starting with an empty one.")
+            result.clear()
+        }
+        return result
+    }
+
+    private fun saveIconState(state: Map<String, String>) {
+        try {
+            val root = JSONObject()
+            for ((id, sha) in state) if (sha.isNotEmpty()) root.put(id, sha)
+            val file = File(app.filesDir, ICON_STATE_FILE)
+            val tmp = File(app.filesDir, "$ICON_STATE_FILE.tmp")
+            tmp.writeText(root.toString(), Charsets.UTF_8)
+            if (file.exists()) file.delete()
+            tmp.renameTo(file)
+        } catch (e: Exception) {
+            // The next sync simply sends the icons again.
+        }
+    }
+
+    /**
+     * Keeps app icons in step with the cloud. Cloud path: <owner_uid>/appicon/<app_id>.jpg (bucket neribo-media).
+     * Same rules as the document photos: send a new or changed icon, fetch a missing one (for example on a new phone),
+     * and remove the cloud copy of an icon that is gone. Returns true when an icon file on this phone changed.
+     */
+    private fun syncAppIcons(uid: String, ledger: Ledger): Boolean {
+        var changed = false
+        var dirty = false
+        var offline = false
+        val state = loadIconState()
+
+        for (item in ledger.apps) {
+            if (offline) break
+            if (!isValidMediaId(item.id)) continue
+            val file = CompanyPhotos.file(app, ICON_KIND, item.id)
+            val path = "$uid/appicon/${item.id}.jpg"
+            val sent = state[item.id] ?: ""
+            if (item.hasIcon) {
+                if (file.exists()) {
+                    val bytes = try {
+                        file.readBytes()
+                    } catch (e: Exception) {
+                        continue
+                    }
+                    val sha = sha256Hex(bytes)
+                    if (sent == sha) continue
+                    when (api.uploadMedia(path, bytes, upsert = true)) {
+                        is MediaResult.Ok, MediaResult.Duplicate -> {
+                            state[item.id] = sha
+                            dirty = true
+                        }
+                        MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                        MediaResult.NotFound -> {}
+                        is MediaResult.Http -> {}
+                    }
+                } else if (sent.isEmpty()) {
+                    when (val r = api.downloadMedia(path)) {
+                        is MediaResult.Ok -> {
+                            if (CompanyPhotos.write(app, ICON_KIND, item.id, r.bytes)) {
+                                state[item.id] = sha256Hex(r.bytes)
+                                dirty = true
+                                changed = true
+                            }
+                        }
+                        MediaResult.NotFound, MediaResult.Duplicate -> {}
+                        MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                        is MediaResult.Http -> {}
+                    }
+                }
+            } else if (sent.isNotEmpty() && !file.exists()) {
+                when (api.deleteMedia(path)) {
+                    is MediaResult.Ok, MediaResult.NotFound, MediaResult.Duplicate -> {
+                        state.remove(item.id)
+                        dirty = true
+                    }
+                    MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                    is MediaResult.Http -> {}
+                }
+            }
+        }
+
+        // Apps deleted on this phone: remove the cloud icon once no icon file of it is left here.
+        val liveIds = ledger.apps.map { it.id }.toSet()
+        for (id in state.keys.toList()) {
+            if (offline) break
+            if (id in liveIds) continue
+            if (CompanyPhotos.file(app, ICON_KIND, id).exists()) continue
+            when (api.deleteMedia("$uid/appicon/$id.jpg")) {
+                is MediaResult.Ok, MediaResult.NotFound, MediaResult.Duplicate -> {
+                    state.remove(id)
+                    dirty = true
+                }
+                MediaResult.Offline, MediaResult.AuthExpired -> offline = true
+                is MediaResult.Http -> {}
+            }
+        }
+
+        if (dirty) saveIconState(state)
+        return changed
+    }
+
     /**
      * One waiting profile-picture job. Returns true when the cloud cannot be reached (so the pass stops).
      * Cloud path: <owner_uid>/socials/<account_id>/profile.jpg (an upload replaces the old picture, x-upsert true).
@@ -763,6 +887,9 @@ class MediaSync(
         private const val FILE_NAME = "media_queue.json"
         private const val TOOL_STATE_FILE = "tool_photo_sync.json"
         private const val DOC_STATE_FILE = "doc_photo_sync.json"
+        private const val ICON_STATE_FILE = "app_icon_sync.json"
+        /** The CompanyPhotos kind of an app icon file: media/company/appicon_<app_id>.jpg */
+        const val ICON_KIND = "appicon"
         const val UPLOAD = "UPLOAD"
         const val DELETE = "DELETE"
         const val KIND_STAFF = "staff"

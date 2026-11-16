@@ -84,7 +84,9 @@ fun SocialsScreen(
     /** Ids of accounts whose picture is still waiting to be uploaded. */
     waitingPhotoIds: Set<String>,
     onSetPhoto: (String, Uri) -> Unit,
-    onRemovePhoto: (String) -> Unit
+    onRemovePhoto: (String) -> Unit,
+    /** When set (a platform's own window on the CEO office desktop), only this account is shown. */
+    onlyAccountId: String? = null
 ) {
     val now = rememberNowMillis()
     val today = todayKeyFor(now)
@@ -110,8 +112,10 @@ fun SocialsScreen(
     fun draftOf(a: SocialAccount): SocialEdit =
         drafts[a.id] ?: SocialEdit(a.id, a.handle, a.displayName, a.following, a.posts, a.likes)
 
+    val shownAccounts = if (onlyAccountId == null) socials.accounts else socials.accounts.filter { it.id == onlyAccountId }
+
     SectionScaffold(
-        title = "Socials",
+        title = if (onlyAccountId == null) "Socials" else (shownAccounts.firstOrNull()?.name ?: "Socials"),
         editing = editing,
         onBack = onBack,
         onStartEdit = {
@@ -128,7 +132,7 @@ fun SocialsScreen(
             editing = false
         }
     ) {
-        if (editing) {
+        if (editing && onlyAccountId == null) {
             item(key = "soc-add") {
                 TintedButton(
                     text = "Add account",
@@ -185,7 +189,7 @@ fun SocialsScreen(
         }
 
         val bases = SocialsEngine.basesOn(ledger, today)
-        for (account in socials.accounts) {
+        for (account in shownAccounts) {
             item(key = "soc-" + account.id) {
                 if (editing) {
                     EditCard(

@@ -181,7 +181,9 @@ data class AppData(
     /** Client Hosting only: the storage its customers hold, in MB. Worked out from the customers, never saved. */
     val hostedStorageMb: Long = 0L,
     /** Client Hosting only: the time each customer was added (one per customer). Worked out, never saved. */
-    val hostedAddedMillis: List<Long> = emptyList()
+    val hostedAddedMillis: List<Long> = emptyList(),
+    /** True when the owner chose an icon for this app when he added it (the picture is a small file, see CompanyPhotos kind "appicon"). */
+    val hasIcon: Boolean = false
 ) {
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }

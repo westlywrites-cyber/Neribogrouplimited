@@ -363,7 +363,9 @@ fun GroupDashboardScreen(
                     }
                 }
 
-                if (!editing) {
+                // Inside the CEO office (onOpenDell is null there) the cards are not shown: every one of them is its
+                // own icon on the desktop. On the phone itself nothing changes.
+                if (!editing && onOpenDell != null) {
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth(),

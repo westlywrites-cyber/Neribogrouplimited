@@ -14,6 +14,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -48,6 +49,8 @@ import com.westly.neribogroup.feature.group.EquipmentScreen
 import com.westly.neribogroup.feature.group.PlayBalanceScreen
 import com.westly.neribogroup.feature.group.RenewalsScreen
 import com.westly.neribogroup.feature.dell.DellOfficeScreen
+import com.westly.neribogroup.feature.dell.DellShortcut
+import com.westly.neribogroup.feature.dell.dellShortcuts
 import com.westly.neribogroup.feature.hosting.HostingScreen
 import com.westly.neribogroup.feature.group.SettingsScreen
 import com.westly.neribogroup.feature.group.SocialsScreen
@@ -205,22 +208,54 @@ private fun NeriboRoot(vm: AppViewModel) {
 
     if (vm.dellOpen) {
         // The CEO office: the same app, with the same screens and the same data, inside a Dell screen.
+        // One icon for every card, every social platform and every app. Apps come from the ledger, so a new app has its icon at once.
+        val shortcuts = remember(vm.ledger) { dellShortcuts(vm.ledger) { id -> vm.appIconFile(id) } }
+        val windowAtRoot = vm.openSection == null && vm.openAppId == null && vm.openStaffId == null &&
+            vm.openCaseId == null && vm.openOfferId == null && vm.openProjectId == null &&
+            !vm.showSettings && !vm.showLogin
         DellOfficeScreen(
+            shortcuts = shortcuts,
+            iconTick = vm.assetPhotoTick,
+            windowAtRoot = windowAtRoot,
+            onLaunch = { item -> openDellShortcut(vm, item) },
+            onWindowClosed = { clearDellWindow(vm) },
             onExit = {
                 vm.dellOpen = false
-                vm.openSection = null
-                vm.openAppId = null
-                vm.openStaffId = null
-                vm.openCaseId = null
-                vm.openOfferId = null
-                vm.openProjectId = null
-                vm.showSettings = false
+                clearDellWindow(vm)
             }
         ) {
             NeriboScreens(vm, onExport, onImport, inDell = true)
         }
     } else {
         NeriboScreens(vm, onExport, onImport, inDell = false)
+    }
+}
+
+/** Forgets everything a CEO office window had open, so the next window (or the phone itself) starts clean. */
+private fun clearDellWindow(vm: AppViewModel) {
+    vm.openSection = null
+    vm.openAppId = null
+    vm.openStaffId = null
+    vm.openCaseId = null
+    vm.openOfferId = null
+    vm.openProjectId = null
+    vm.showSettings = false
+    vm.socialOnlyId = null
+}
+
+/** Gets the app ready for one desktop icon: the right section, app or social account is opened inside the window. */
+private fun openDellShortcut(vm: AppViewModel, item: DellShortcut) {
+    clearDellWindow(vm)
+    vm.casesStartTab = 0
+    val key = item.key
+    if (key.startsWith("sec:")) {
+        val section = runCatching { Section.valueOf(key.removePrefix("sec:")) }.getOrNull()
+        if (section != null) vm.openSection = section
+    } else if (key.startsWith("app:")) {
+        vm.openAppId = key.removePrefix("app:")
+    } else if (key.startsWith("social:")) {
+        vm.socialOnlyId = key.removePrefix("social:")
+        vm.openSection = Section.SOCIALS
     }
 }
 
@@ -473,7 +508,11 @@ private fun NeriboScreens(vm: AppViewModel, onExport: () -> Unit, onImport: () -
                 ledger = vm.ledger,
                 onBack = { vm.openSection = null },
                 onOpenApp = { vm.openAppId = it },
-                onSave = { vm.saveLedger(it) }
+                onSave = { vm.saveLedger(it) },
+                iconFileFor = { id -> vm.appIconFile(id) },
+                iconTick = vm.assetPhotoTick,
+                onPickIcon = { id, uri, done -> vm.saveAppIcon(id, uri, done) },
+                onDeleteIcon = { id -> vm.deleteAppIcon(id) }
             )
             Section.RENEWALS -> RenewalsScreen(
                 ledger = vm.ledger,
@@ -607,7 +646,8 @@ private fun NeriboScreens(vm: AppViewModel, onExport: () -> Unit, onImport: () -
                 photoBusy = vm.photoBusy,
                 waitingPhotoIds = vm.pendingSocialPhotoIds,
                 onSetPhoto = { id, uri -> vm.setSocialPhoto(id, uri) },
-                onRemovePhoto = { id -> vm.removeSocialPhoto(id) }
+                onRemovePhoto = { id -> vm.removeSocialPhoto(id) },
+                onlyAccountId = vm.socialOnlyId
             )
             null -> GroupDashboardScreen(
                 ledger = vm.ledger,

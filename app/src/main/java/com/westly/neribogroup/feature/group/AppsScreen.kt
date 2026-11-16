@@ -1,6 +1,18 @@
 package com.westly.neribogroup.feature.group
 
 import com.westly.neribogroup.feature.common.rememberKept
+import android.net.Uri
+import android.widget.Toast
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
+import com.westly.neribogroup.feature.common.DialogActions
+import com.westly.neribogroup.feature.common.LabeledField
+import com.westly.neribogroup.feature.common.NeriboDialog
+import com.westly.neribogroup.feature.common.TintedButton
+import java.io.File
+import java.util.UUID
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,7 +46,6 @@ import com.westly.neribogroup.data.isHosting
 import com.westly.neribogroup.data.isSoftware
 import com.westly.neribogroup.feature.common.ConfirmDialog
 import com.westly.neribogroup.feature.common.LocalBiometricGate
-import com.westly.neribogroup.feature.common.NameDialog
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.SectionScaffold
 import com.westly.neribogroup.feature.common.SectionTitle
@@ -52,7 +63,12 @@ fun AppsScreen(
     ledger: Ledger,
     onBack: () -> Unit,
     onOpenApp: (String) -> Unit,
-    onSave: (Ledger) -> Unit
+    onSave: (Ledger) -> Unit,
+    /** The icon file of an app on this phone (it may not exist), and a number that grows when an icon changes. */
+    iconFileFor: (String) -> File,
+    iconTick: Int,
+    onPickIcon: (String, Uri, (String) -> Unit) -> Unit,
+    onDeleteIcon: (String) -> Unit
 ) {
     val gate = LocalBiometricGate.current
     var editing by remember { mutableStateOf(false) }
@@ -215,12 +231,14 @@ fun AppsScreen(
     }
 
     if (showAddApp) {
-        NameDialog(
-            heading = "Add app",
-            label = "App name",
+        AddAppDialog(
+            iconFileFor = iconFileFor,
+            iconTick = iconTick,
+            onPickIcon = onPickIcon,
+            onDeleteIcon = onDeleteIcon,
             onDismiss = { showAddApp = false },
-            onConfirm = { name ->
-                draft = draft.copy(apps = draft.apps + AppData(name = name))
+            onAdd = { newApp ->
+                draft = draft.copy(apps = draft.apps + newApp)
                 showAddApp = false
             }
         )
@@ -243,6 +261,65 @@ fun AppsScreen(
             },
             onDismiss = { appToDelete = null }
         )
+    }
+}
+
+/**
+ * Add app: the name and, if the owner wants, the icon this app gets on the CEO office desktop.
+ * The icon is saved on this phone as soon as it is picked (and removed again if the dialog is cancelled).
+ */
+@Composable
+private fun AddAppDialog(
+    iconFileFor: (String) -> File,
+    iconTick: Int,
+    onPickIcon: (String, Uri, (String) -> Unit) -> Unit,
+    onDeleteIcon: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onAdd: (AppData) -> Unit
+) {
+    val context = LocalContext.current
+    val id = remember { UUID.randomUUID().toString() }
+    var name by remember { mutableStateOf("") }
+    var hasIcon by remember { mutableStateOf(false) }
+    var tick by remember { mutableStateOf(iconTick) }
+    val pick = rememberSinglePhotoPicker { uri ->
+        onPickIcon(id, uri) { message ->
+            if (message.isEmpty()) {
+                hasIcon = true
+                tick += 1
+            } else {
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val dismiss = {
+        if (hasIcon) onDeleteIcon(id)
+        onDismiss()
+    }
+    NeriboDialog(onDismiss = dismiss, title = "Add app") {
+        LabeledField(label = "App name", value = name, onValueChange = { name = it.take(40) })
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (hasIcon) {
+                AssetPhoto(iconFileFor(id), tick, Modifier.size(56.dp))
+                Spacer(modifier = Modifier.padding(start = 12.dp))
+            }
+            OutlinedButton(onClick = pick) { Text(if (hasIcon) "Change icon" else "Choose icon") }
+        }
+        Text(
+            text = "The icon shows on the CEO office desktop.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+        DialogActions {
+            TextButton(onClick = dismiss) { Text("Cancel") }
+            TintedButton(
+                text = "Add",
+                onClick = { onAdd(AppData(id = id, name = name.trim(), hasIcon = hasIcon)) },
+                enabled = name.isNotBlank()
+            )
+        }
     }
 }
 
