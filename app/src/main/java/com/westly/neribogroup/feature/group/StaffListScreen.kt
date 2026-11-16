@@ -1,6 +1,7 @@
 package com.westly.neribogroup.feature.group
 
 import com.westly.neribogroup.feature.common.rememberKept
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,10 +65,22 @@ fun StaffListScreen(
     var showAddStaff by remember { mutableStateOf(false) }
     var staffToDelete by remember { mutableStateOf<Staff?>(null) }
     var confirmPayAll by remember { mutableStateOf(false) }
+    // The Today page (who is On-site, Remote and Off) is a page of its own inside Staff.
+    var showToday by rememberSaveable { mutableStateOf(false) }
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else ledger
     val visible = shown.staff.filter { matchesQuery(query, it.name, it.role, it.email, it.phone) }
+
+    // Who works where today (only people who have a work plan or a one-off change for today).
+    val onSiteToday = shown.staff.filter { it.workModeOn(now) == WORK_ONSITE }
+    val remoteToday = shown.staff.filter { it.workModeOn(now) == WORK_REMOTE }
+    val offToday = shown.staff.filter { it.workModeOn(now) == WORK_OFF }
+
+    if (showToday) {
+        StaffTodayScreen(onSite = onSiteToday, remote = remoteToday, off = offToday, onBack = { showToday = false })
+        return
+    }
 
     SectionScaffold(
         title = "Staff",
@@ -122,14 +136,10 @@ fun StaffListScreen(
             )
         }
 
-        // Who works where today (only people who have a work plan or a one-off change for today).
-        val onSiteToday = shown.staff.filter { it.workModeOn(now) == WORK_ONSITE }
-        val remoteToday = shown.staff.filter { it.workModeOn(now) == WORK_REMOTE }
-        val offToday = shown.staff.filter { it.workModeOn(now) == WORK_OFF }
         if (onSiteToday.isNotEmpty() || remoteToday.isNotEmpty() || offToday.isNotEmpty()) {
             item {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().clickable { showToday = true },
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant
                     )
@@ -144,20 +154,14 @@ fun StaffListScreen(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "On-site: " + (if (onSiteToday.isEmpty()) "nobody" else onSiteToday.joinToString(", ") { it.name }),
+                            text = "On-site " + onSiteToday.size + " · Remote " + remoteToday.size + " · Off " + offToday.size,
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
-                            text = "Remote: " + (if (remoteToday.isEmpty()) "nobody" else remoteToday.joinToString(", ") { it.name }),
-                            style = MaterialTheme.typography.bodyMedium
+                            text = "Tap to see who",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (offToday.isNotEmpty()) {
-                            Text(
-                                text = "Off: " + offToday.joinToString(", ") { it.name },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
                 }
             }
