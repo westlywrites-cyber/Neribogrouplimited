@@ -76,6 +76,22 @@ fun AppsScreen(
     var query by rememberKept("query", "")
     var showAddApp by remember { mutableStateOf(false) }
     var appToDelete by remember { mutableStateOf<AppData?>(null) }
+    // The app whose icon is being picked from an existing app card (Edit mode).
+    var iconTarget by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val pickIcon = rememberSinglePhotoPicker { uri ->
+        val appId = iconTarget
+        if (appId != null) {
+            onPickIcon(appId, uri) { message ->
+                if (message.isEmpty()) {
+                    // The picture is already saved on this phone; this marks the app as having one when Save is tapped.
+                    draft = draft.copy(apps = draft.apps.map { if (it.id == appId) it.copy(hasIcon = true) else it })
+                } else {
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     val now = rememberNowMillis()
     val shown = if (editing) draft else ledger
@@ -223,7 +239,13 @@ fun AppsScreen(
                 app = app,
                 editing = editing,
                 onClick = { onOpenApp(app.id) },
-                onDelete = { if (!app.isSoftware && !app.isHosting) appToDelete = app }
+                onDelete = { if (!app.isSoftware && !app.isHosting) appToDelete = app },
+                iconFile = iconFileFor(app.id),
+                iconTick = iconTick,
+                onChangeIcon = {
+                    iconTarget = app.id
+                    pickIcon()
+                }
             )
         }
 
@@ -329,7 +351,11 @@ internal fun AppCard(
     app: AppData,
     editing: Boolean,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    /** The icon file of this app (it may not exist). Only used in Edit mode, with [onChangeIcon]. */
+    iconFile: File? = null,
+    iconTick: Int = 0,
+    onChangeIcon: (() -> Unit)? = null
 ) {
     Card(
         onClick = onClick,
@@ -369,6 +395,16 @@ internal fun AppCard(
                     style = MaterialTheme.typography.bodyMedium,
                     color = profitColor(app.profit)
                 )
+                if (editing && onChangeIcon != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (app.hasIcon && iconFile != null) {
+                            AssetPhoto(iconFile, iconTick, Modifier.size(48.dp))
+                            Spacer(modifier = Modifier.padding(start = 12.dp))
+                        }
+                        OutlinedButton(onClick = onChangeIcon) { Text(if (app.hasIcon) "Change icon" else "Choose icon") }
+                    }
+                }
             }
             if (editing && !app.isSoftware && !app.isHosting) {
                 IconButton(onClick = onDelete) {
