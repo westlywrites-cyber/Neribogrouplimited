@@ -113,6 +113,7 @@ import com.westly.neribogroup.data.Ledger
 import com.westly.neribogroup.data.StorageRoomRules
 import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.feature.common.FlatCard
+import com.westly.neribogroup.BuildConfig
 import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
@@ -154,11 +155,16 @@ fun StorageRoomScreen(
     onCreatePin: (String) -> Boolean,
     onPullFromCloud: () -> Unit,
     onBack: () -> Unit,
+    /** Opens the cloud sign-in. Used by the Storage Room app, which has no dashboard to sign in from. */
+    onConnectCloud: () -> Unit = {},
     /** True when the room is opened from the Dell office: the server hum stays off there. */
     quiet: Boolean = false
 ) {
     BackHandler { onBack() }
     var unlocked by rememberSaveable { mutableStateOf(false) }
+    val gate = LocalBiometricGate.current
+    // The fingerprint (or the screen lock) is asked first, every time the room is entered. The PIN comes after it.
+    var fingerOk by rememberSaveable { mutableStateOf(false) }
     // Zoom of the Storage room only: 1.0 is the full size, lower shows the whole room smaller.
     var zoom by rememberSaveable { mutableStateOf(1f) }
     val hasPin = StorageRules.hasPin(ledger.assets)
@@ -192,6 +198,19 @@ fun StorageRoomScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when {
+                // The Storage Room app starts empty: it must be signed in to the cloud first to get the PIN and the data.
+                BuildConfig.ROOM_ONLY && !hasPin && !cloud.on -> ConnectCloud(onConnectCloud)
+                !fingerOk -> FingerEnter(
+                    onAsk = {
+                        gate.verify(
+                            title = "Storage room",
+                            subtitle = "Verify it is you. The access PIN comes next.",
+                            logText = "Storage room opened",
+                            always = true,
+                            onSuccess = { fingerOk = true }
+                        )
+                    }
+                )
                 !hasPin -> PinCreate(
                     onCreate = { pin ->
                         val saved = onCreatePin(pin)
@@ -214,6 +233,48 @@ fun StorageRoomScreen(
 // ---------------------------------------------------------------------------------------------
 // The PIN gate
 // ---------------------------------------------------------------------------------------------
+
+/** The first step into the room: the phone's fingerprint or screen lock. It asks by itself; the button asks again. */
+@Composable
+private fun FingerEnter(onAsk: () -> Unit) {
+    LaunchedEffect(Unit) { onAsk() }
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Storage room", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            "Verify with your fingerprint or your screen lock. Then you enter your access PIN.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(18.dp))
+        Button(onClick = onAsk) { Text("Use fingerprint") }
+    }
+}
+
+/** Shown by the Storage Room app until it is signed in to the same cloud as Neribo Group. */
+@Composable
+private fun ConnectCloud(onConnect: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Connect to your cloud", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            "This app has no data yet. Sign in to the same cloud as Neribo Group and choose Use cloud data. " +
+                "Your Storage room and your PIN come with it.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(18.dp))
+        Button(onClick = onConnect) { Text("Connect to cloud") }
+    }
+}
 
 @Composable
 private fun PinCreate(onCreate: (String) -> Boolean) {

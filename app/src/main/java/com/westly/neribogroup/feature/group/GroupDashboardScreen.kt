@@ -497,24 +497,8 @@ fun GroupDashboardScreen(
                             onClick = { onOpenSection(Section.STORAGE) }
                         )
                     }
-                    item {
-                        SectionTile(
-                            title = "Storage room",
-                            subtitle = "Server desk, keyboard and live console · PIN protected",
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = { onOpenSection(Section.STORAGE_ROOM) }
-                        )
-                    }
-                    if (onOpenDell != null) {
-                        item {
-                            SectionTile(
-                                title = "Dell office",
-                                subtitle = "CEO desk: the whole app on a Dell screen with its own keyboard",
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = onOpenDell
-                            )
-                        }
-                    }
+                    // The Storage room and the Dell office are their own apps now (Storage Room and NCO), so this
+                    // app has no tile for them.
                 }
             }
 

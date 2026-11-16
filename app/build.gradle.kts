@@ -21,19 +21,28 @@ android {
         versionName = "1.0"
     }
 
-    // Two apps from this one project. "neribo" is the normal Neribo Group app (nothing changes for it).
-    // "nco" is NCO (Neribo CEO Office): its own app on the phone that opens straight on the Dell desktop and uses the
-    // same cloud (Supabase) as the normal app. Both are signed with the same key.
+    // Three apps from this one project. "neribo" is the normal Neribo Group app (it has no Storage room and no Dell
+    // office). "nco" is NCO (Neribo CEO Office): its own app that opens straight on the Dell desktop. "room" is
+    // Storage Room: its own app that opens straight on the Storage room (fingerprint first, then the PIN).
+    // All three use the same cloud (Supabase) and are signed with the same key.
     flavorDimensions += "app"
     productFlavors {
         create("neribo") {
             dimension = "app"
             buildConfigField("boolean", "CEO_ONLY", "false")
+            buildConfigField("boolean", "ROOM_ONLY", "false")
         }
         create("nco") {
             dimension = "app"
             applicationIdSuffix = ".ceo"
             buildConfigField("boolean", "CEO_ONLY", "true")
+            buildConfigField("boolean", "ROOM_ONLY", "false")
+        }
+        create("room") {
+            dimension = "app"
+            applicationIdSuffix = ".room"
+            buildConfigField("boolean", "CEO_ONLY", "false")
+            buildConfigField("boolean", "ROOM_ONLY", "true")
         }
     }
 

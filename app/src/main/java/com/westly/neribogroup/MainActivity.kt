@@ -271,6 +271,7 @@ private fun openDellShortcut(vm: AppViewModel, item: DellShortcut) {
 /** Every screen of the app. It is shown on the phone itself and, the same way, inside the Dell screen. */
 @Composable
 private fun NeriboScreens(vm: AppViewModel, onExport: () -> Unit, onImport: () -> Unit, inDell: Boolean) {
+    val context = LocalContext.current
     val openDell: (() -> Unit)? = if (inDell) null else ({ vm.dellOpen = true })
     val openApp = vm.openAppId?.let { id -> vm.ledger.apps.firstOrNull { it.id == id } }
     val openStaff = vm.openStaffId?.let { id -> vm.ledger.staff.firstOrNull { it.id == id } }
@@ -634,7 +635,15 @@ private fun NeriboScreens(vm: AppViewModel, onExport: () -> Unit, onImport: () -
                 ),
                 onCreatePin = { vm.setStoragePin(it) },
                 onPullFromCloud = { vm.syncNowAction() },
-                onBack = { vm.openSection = null }
+                onConnectCloud = { vm.openLogin() },
+                onBack = {
+                    if (BuildConfig.ROOM_ONLY) {
+                        // The Storage Room app has no dashboard behind the room, so leaving closes the app.
+                        (context as? android.app.Activity)?.finish()
+                    } else {
+                        vm.openSection = null
+                    }
+                }
             )
             Section.SOCIALS -> SocialsScreen(
                 ledger = vm.ledger,

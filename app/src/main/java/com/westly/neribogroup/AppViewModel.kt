@@ -117,7 +117,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     /** The page opened from a home tile (Apps, Renewals, Staff or Company costs), or null on the home screen. */
-    var openSection by mutableStateOf<Section?>(null)
+    var openSection by mutableStateOf<Section?>(if (BuildConfig.ROOM_ONLY) Section.STORAGE_ROOM else null)
 
     /** Where the person was on each screen (scroll, search, tab), kept while they go deeper and come back. */
     val navMemory = com.westly.neribogroup.feature.common.NavMemory()
