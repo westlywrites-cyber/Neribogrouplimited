@@ -67,6 +67,7 @@ import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -112,7 +113,7 @@ private val MOUSE_MIN_H = 56.dp
 private const val MOUSE_ASPECT = 325f / 575f
 // The top part of the monitor's bottom piece that is the chin with the Dell name; the mouse stays below it.
 private const val CHIN_SHARE = 0.25f
-private const val MOUSE_GAIN = 2.2f
+private const val MOUSE_GAIN = 2.4f
 
 /** Sends one key press (down and up) into the app that is on the Dell screen, as a real keyboard would. */
 private fun sendKey(view: View, code: Int, shift: Boolean) {
@@ -195,18 +196,21 @@ private fun DellPointer(at: Offset) {
 }
 
 /**
- * The computer mouse on the desk. Drag a finger on its body to move the pointer. Tap the left button to click, tap the
- * right button to go Back, and slide a finger up or down on the wheel to scroll. The keyboard keeps working as before.
+ * The desk under the monitor, with the computer mouse on it. The whole desk works like a mouse pad: put a finger anywhere
+ * on it and drag, and the mouse slides under your finger while the pointer moves on the screen. Tap the left button of
+ * the mouse to click, the right button to go Back. Slide a finger up or down on the wheel and lift to scroll, or tap the
+ * big arrows at the bottom left of the desk. The keyboard keeps working as before.
  */
 @Composable
-private fun DellMouse(
+private fun DellDesk(
     modifier: Modifier,
-    height: Dp,
+    mouseHeight: Dp,
     onMove: (Float, Float) -> Unit,
     onLeftClick: () -> Unit,
     onRightClick: () -> Unit,
     onWheel: (Boolean, Int) -> Unit,
-    onDragEnd: () -> Unit
+    onDragEnd: () -> Unit,
+    onScroll: (Boolean) -> Unit
 ) {
     val move by rememberUpdatedState(onMove)
     val leftClick by rememberUpdatedState(onLeftClick)
@@ -214,19 +218,33 @@ private fun DellMouse(
     val wheel by rememberUpdatedState(onWheel)
     val dragEnd by rememberUpdatedState(onDragEnd)
     val d = LocalDensity.current.density
-    Image(
-        painter = painterResource(R.drawable.dell_mouse),
-        contentDescription = "Computer mouse",
+    val mouseW = mouseHeight.value * MOUSE_ASPECT * d
+    val mouseH = mouseHeight.value * d
+    var desk by remember { mutableStateOf(IntSize.Zero) }
+    // Where the top left of the mouse picture is on the desk. Null means it is still at its start place (bottom right).
+    var spot by remember { mutableStateOf<Offset?>(null) }
+    val maxX = (desk.width - mouseW).coerceAtLeast(0f)
+    val maxY = (desk.height - mouseH).coerceAtLeast(0f)
+    val start = Offset(maxX - 10f * d, maxY - 4f * d)
+    val at = (spot ?: start).let { Offset(it.x.coerceIn(0f, maxX), it.y.coerceIn(0f, maxY)) }
+    val atNow by rememberUpdatedState(at)
+    val limits by rememberUpdatedState(Offset(maxX, maxY))
+    val mouseSize by rememberUpdatedState(Offset(mouseW, mouseH))
+
+    Box(
         modifier = modifier
-            .size(height * MOUSE_ASPECT, height)
+            .onSizeChanged { desk = it }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val fx = down.position.x / size.width
-                    val fy = down.position.y / size.height
-                    // Where the finger landed on the picture: the wheel, one of the two buttons, or the body.
-                    val onWheelPart = fx in 0.30f..0.70f && fy in 0.17f..0.45f
-                    val onButtonPart = fy in 0.15f..0.62f
+                    // The two scroll arrows (bottom left of the desk) handle their own taps.
+                    if (down.position.x < 130f * d && down.position.y > size.height - 64f * d) return@awaitEachGesture
+                    // Where the finger landed on the mouse picture (if it did): the wheel, a button, or the body.
+                    val rx = (down.position.x - atNow.x) / mouseSize.x
+                    val ry = (down.position.y - atNow.y) / mouseSize.y
+                    val onMouse = rx in 0f..1f && ry in 0f..1f
+                    val onWheelPart = onMouse && rx in 0.30f..0.70f && ry in 0.17f..0.45f
+                    val onButtonPart = onMouse && ry in 0.15f..0.62f
                     var moved = false
                     var lastY = down.position.y
                     while (true) {
@@ -234,9 +252,9 @@ private fun DellMouse(
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         if (!change.pressed) {
                             if (!moved) {
-                                // Finger lifted without dragging: a click on a button.
+                                // Finger lifted without dragging: a click on a button of the mouse.
                                 if (onButtonPart) {
-                                    if (fx < 0.5f) leftClick() else rightClick()
+                                    if (rx < 0.5f) leftClick() else rightClick()
                                 }
                             } else if (onWheelPart) {
                                 // Same as a real wheel: rolling it toward you scrolls the page down. The scroll is sent when
@@ -251,16 +269,54 @@ private fun DellMouse(
                             break
                         }
                         val delta = change.positionChange()
-                        if (!moved && (change.position - down.position).getDistance() > 8f * d) moved = true
+                        if (!moved && (change.position - down.position).getDistance() > 6f * d) moved = true
                         if (moved) {
                             lastY = change.position.y
-                            if (!onWheelPart) move(delta.x * MOUSE_GAIN, delta.y * MOUSE_GAIN)
+                            if (!onWheelPart) {
+                                // The mouse slides with the finger (it stops at the edge of the desk, the pointer does not).
+                                spot = Offset(
+                                    (atNow.x + delta.x).coerceIn(0f, limits.x),
+                                    (atNow.y + delta.y).coerceIn(0f, limits.y)
+                                )
+                                move(delta.x * MOUSE_GAIN, delta.y * MOUSE_GAIN)
+                            }
                         }
                         change.consume()
                     }
                 }
             }
-    )
+    ) {
+        Image(
+            painter = painterResource(R.drawable.dell_mouse),
+            contentDescription = "Computer mouse",
+            modifier = Modifier
+                .offset { IntOffset(at.x.roundToInt(), at.y.roundToInt()) }
+                .size(mouseHeight * MOUSE_ASPECT, mouseHeight)
+        )
+        Row(
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            DellScrollKey("▲") { onScroll(false) }
+            DellScrollKey("▼") { onScroll(true) }
+        }
+    }
+}
+
+/** A big, easy button for scrolling the page on the Dell screen. */
+@Composable
+private fun DellScrollKey(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF15181A))
+            .border(2.dp, Accent, RoundedCornerShape(12.dp))
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = label, color = Accent, fontSize = 22.sp)
+    }
 }
 
 /**
@@ -576,16 +632,21 @@ fun DellOfficeScreen(
                     )
                 }
 
+                // The desk under the monitor (a mouse pad with the mouse and the scroll arrows).
                 // Hidden together with the keyboard and in Full screen.
                 if (showKeys && !fullNow) {
-                    DellMouse(
-                        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 4.dp),
-                        height = mouseH,
+                    DellDesk(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .height(freeBelowChin.coerceAtLeast(MOUSE_MIN_H + 8.dp)),
+                        mouseHeight = mouseH,
                         onMove = { dx, dy -> mouseMove(dx, dy) },
                         onLeftClick = { mouseLeftClick() },
                         onRightClick = { mouseRightClick() },
                         onWheel = { down, units -> if (phase == DellPhase.ON) scrollPage(down, units) },
-                        onDragEnd = { mouseDragEnd() }
+                        onDragEnd = { mouseDragEnd() },
+                        onScroll = { down -> if (phase == DellPhase.ON) scrollPage(down, 2) }
                     )
                 }
             }
