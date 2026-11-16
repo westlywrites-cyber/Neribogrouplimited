@@ -36,6 +36,11 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
@@ -97,6 +102,12 @@ private const val ZOOM_START = 0.6f
 
 // The Dell screen is shaped like a real company monitor (never taller than this many times its width).
 private const val SCREEN_MAX_ASPECT = 0.85f
+
+// The on-screen mouse (dell_mouse.png is 325 x 575). The pointer moves MOUSE_GAIN times as far as the finger, because the
+// mouse is small and the screen is big.
+private val MOUSE_W = 76.dp
+private val MOUSE_H = 134.dp
+private const val MOUSE_GAIN = 2.2f
 
 /** Sends one key press (down and up) into the app that is on the Dell screen, as a real keyboard would. */
 private fun sendKey(view: View, code: Int, shift: Boolean) {
@@ -179,6 +190,72 @@ private fun DellPointer(at: Offset) {
 }
 
 /**
+ * The computer mouse on the desk. Drag a finger on its body to move the pointer. Tap the left button to click, tap the
+ * right button to go Back, and slide a finger up or down on the wheel to scroll. The keyboard keeps working as before.
+ */
+@Composable
+private fun DellMouse(
+    modifier: Modifier,
+    onMove: (Float, Float) -> Unit,
+    onLeftClick: () -> Unit,
+    onRightClick: () -> Unit,
+    onWheel: (Boolean) -> Unit
+) {
+    val move by rememberUpdatedState(onMove)
+    val leftClick by rememberUpdatedState(onLeftClick)
+    val rightClick by rememberUpdatedState(onRightClick)
+    val wheel by rememberUpdatedState(onWheel)
+    val d = LocalDensity.current.density
+    Image(
+        painter = painterResource(R.drawable.dell_mouse),
+        contentDescription = "Computer mouse",
+        modifier = modifier
+            .size(MOUSE_W, MOUSE_H)
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val fx = down.position.x / size.width
+                    val fy = down.position.y / size.height
+                    // Where the finger landed on the picture: the wheel, one of the two buttons, or the body.
+                    val onWheelPart = fx in 0.38f..0.62f && fy in 0.22f..0.40f
+                    val onButtonPart = !onWheelPart && fy in 0.15f..0.62f
+                    var moved = false
+                    var wheelSum = 0f
+                    var lastScroll = 0L
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            // Finger lifted without dragging: a click on a button.
+                            if (!moved && onButtonPart) {
+                                if (fx < 0.5f) leftClick() else rightClick()
+                            }
+                            break
+                        }
+                        val delta = change.positionChange()
+                        if (!moved && (change.position - down.position).getDistance() > 8f * d) moved = true
+                        if (moved) {
+                            if (onWheelPart) {
+                                // Same as a real wheel: rolling it toward you scrolls the page down.
+                                wheelSum += delta.y
+                                val now = SystemClock.uptimeMillis()
+                                if (kotlin.math.abs(wheelSum) > 14f * d && now - lastScroll > 300L) {
+                                    wheel(wheelSum > 0f)
+                                    wheelSum = 0f
+                                    lastScroll = now
+                                }
+                            } else {
+                                move(delta.x * MOUSE_GAIN, delta.y * MOUSE_GAIN)
+                            }
+                        }
+                        change.consume()
+                    }
+                }
+            }
+    )
+}
+
+/**
  * The CEO office: a real-looking Dell monitor on the desk with a keyboard in front of it. The Dell screen is a
  * Windows-style desktop with a wallpaper, a taskbar, a Start menu and a clock, and the whole app opens in a window on it.
  * The Dell has its own power: switching it off or on never touches the Storage room servers.
@@ -215,6 +292,8 @@ fun DellOfficeScreen(
     var screenSize by remember { mutableStateOf(IntSize.Zero) }
     // The pointer, in pixels from the top left of the Dell screen. Negative means it has not been placed yet.
     var pointer by remember { mutableStateOf(Offset(-1f, -1f)) }
+    // Becomes true once the on-screen mouse is used, so the pointer also shows on the desktop (before that it only shows in a window).
+    var mouseUsed by remember { mutableStateOf(false) }
     val px = LocalDensity.current.density
     val progress = remember { Animatable(0f) }
     val fullNow = full && phase == DellPhase.ON
@@ -306,6 +385,29 @@ fun DellOfficeScreen(
             y = edge
         }
         pointer = Offset(x, y.coerceIn(0f, h - 1f))
+    }
+
+    // The on-screen mouse: it moves the same pointer the arrow keys move, and clicks where that pointer is.
+    fun mouseMove(dx: Float, dy: Float) {
+        if (phase != DellPhase.ON || screenSize.width == 0 || pointer.x < 0f) return
+        mouseUsed = true
+        pointer = Offset(
+            (pointer.x + dx).coerceIn(0f, screenSize.width - 1f),
+            (pointer.y + dy).coerceIn(0f, screenSize.height - 1f)
+        )
+    }
+
+    fun mouseLeftClick() {
+        if (phase != DellPhase.ON || screenSize.width == 0 || pointer.x < 0f) return
+        mouseUsed = true
+        sendTap(view, screenOrigin.x + pointer.x, screenOrigin.y + pointer.y)
+    }
+
+    // The right button is Back, like Esc. On the bare desktop it only closes the Start menu (it never leaves the office).
+    fun mouseRightClick() {
+        if (phase != DellPhase.ON) return
+        if (appOpen) backOwner?.onBackPressedDispatcher?.onBackPressed()
+        else if (nav.startOpen) nav.startOpen = false
     }
 
     val onKey: (DellKey) -> Unit = { key ->
@@ -408,30 +510,45 @@ fun DellOfficeScreen(
                 }
             }
 
-            DellMonitor(
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 6.dp),
-                phase = phase,
-                bootProgress = progress.value,
-                zoom = zoom,
-                full = fullNow,
-                pointer = if (phase == DellPhase.ON && appOpen && pointer.x >= 0f) pointer else null,
-                onScreenPlaced = { origin, size ->
-                    screenOrigin = origin
-                    screenSize = size
-                    if (pointer.x < 0f) pointer = Offset(size.width * 0.5f, size.height * 0.4f)
-                }            ) {
-                DellDesktop(
-                    shortcuts = shortcuts,
-                    nav = nav,
-                    iconTick = iconTick,
-                    appOpen = appOpen,
-                    openShortcut = openShortcut,
-                    onLaunch = { openWindow(it) },
-                    onWindowShow = { appOpen = it },
-                    onWindowClose = { closeWindow() },
-                    onShutDown = { confirmOff = true },
-                    content = content
-                )
+            // The monitor fills this box. The mouse sits in its bottom right corner: the empty desk next to the stand.
+            Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 6.dp)) {
+                DellMonitor(
+                    modifier = Modifier.fillMaxSize(),
+                    phase = phase,
+                    bootProgress = progress.value,
+                    zoom = zoom,
+                    full = fullNow,
+                    pointer = if (phase == DellPhase.ON && (appOpen || mouseUsed) && pointer.x >= 0f) pointer else null,
+                    onScreenPlaced = { origin, size ->
+                        screenOrigin = origin
+                        screenSize = size
+                        if (pointer.x < 0f) pointer = Offset(size.width * 0.5f, size.height * 0.4f)
+                    }
+                ) {
+                    DellDesktop(
+                        shortcuts = shortcuts,
+                        nav = nav,
+                        iconTick = iconTick,
+                        appOpen = appOpen,
+                        openShortcut = openShortcut,
+                        onLaunch = { openWindow(it) },
+                        onWindowShow = { appOpen = it },
+                        onWindowClose = { closeWindow() },
+                        onShutDown = { confirmOff = true },
+                        content = content
+                    )
+                }
+
+                // Hidden together with the keyboard and in Full screen.
+                if (showKeys && !fullNow) {
+                    DellMouse(
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 4.dp),
+                        onMove = { dx, dy -> mouseMove(dx, dy) },
+                        onLeftClick = { mouseLeftClick() },
+                        onRightClick = { mouseRightClick() },
+                        onWheel = { down -> if (phase == DellPhase.ON) scrollPage(down) }
+                    )
+                }
             }
 
             if (showKeys && !fullNow) {
