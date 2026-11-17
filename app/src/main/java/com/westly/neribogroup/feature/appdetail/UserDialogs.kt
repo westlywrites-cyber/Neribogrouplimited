@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.westly.neribogroup.data.AppUser
+import com.westly.neribogroup.data.PaymentModel
+import com.westly.neribogroup.data.PaymentRules
 import com.westly.neribogroup.data.Plan
 import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.data.StorageUnit
@@ -74,6 +76,12 @@ fun UserDialog(
     saveLabel: String = "Save",
     premiumAvailable: Boolean = true,
     proAvailable: Boolean = true,
+    /** False when the app has no Free plan (Pro & Premium only, One-time payment). */
+    freeAvailable: Boolean = true,
+    /** The plan a new user starts on. */
+    defaultPlan: Plan = Plan.FREE,
+    /** The app's payment model: it decides the plan names shown on the chips. */
+    paymentModel: PaymentModel = PaymentModel.FREE_PRO_PREMIUM,
     /** Neribo Deploy style apps: the user's sites (null = no sites field). */
     sites: Int? = null,
     onSitesChange: (Int) -> Unit = {},
@@ -92,7 +100,7 @@ fun UserDialog(
     var name by rememberSaveable { mutableStateOf(initial?.name ?: "") }
     var email by rememberSaveable { mutableStateOf(initial?.email ?: "") }
     var phone by rememberSaveable { mutableStateOf(initial?.phone ?: "") }
-    var planKey by rememberSaveable { mutableStateOf((initial?.plan ?: Plan.FREE).name) }
+    var planKey by rememberSaveable { mutableStateOf((initial?.plan ?: defaultPlan).name) }
     var sitesText by rememberSaveable { mutableStateOf((sites ?: 1).toString()) }
     var customOn by rememberSaveable { mutableStateOf(customMb != null && customMb >= 0L) }
     var customUnitKey by rememberSaveable {
@@ -110,13 +118,22 @@ fun UserDialog(
 
     val plan = runCatching { Plan.valueOf(planKey) }.getOrDefault(Plan.FREE)
 
+    // The plans this app can give. A user already on another plan keeps that plan in the list.
+    val choices = Plan.values().filter {
+        (it == Plan.FREE && freeAvailable) ||
+            (it == Plan.PREMIUM && premiumAvailable) ||
+            (it == Plan.PRO && proAvailable) ||
+            it == initial?.plan
+    }
+
     val nameTrim = name.trim()
     val emailTrim = email.trim()
     val nameOk = nameTrim.isNotEmpty()
     val emailFormatOk = isValidEmail(emailTrim)
     val duplicate = emailFormatOk &&
         otherUsers.any { it.email.trim().equals(emailTrim, ignoreCase = true) }
-    val valid = nameOk && emailFormatOk && !duplicate && (!customOn || customText.isNotEmpty())
+    val valid = nameOk && emailFormatOk && !duplicate && (!customOn || customText.isNotEmpty()) &&
+        (customOn || plan in choices)
 
     val nameError = if (nameTouched && !nameOk) "Enter a name" else null
     val emailError = when {
@@ -207,12 +224,6 @@ fun UserDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                val choices = Plan.values().filter {
-                    it == Plan.FREE ||
-                        (it == Plan.PREMIUM && premiumAvailable) ||
-                        (it == Plan.PRO && proAvailable) ||
-                        it == initial?.plan
-                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (choice in choices) {
                         FilterChip(
@@ -221,16 +232,24 @@ fun UserDialog(
                                 planKey = choice.name
                                 customOn = false
                             },
-                            label = { Text(planLabel(choice)) },
+                            label = { Text(PaymentRules.planName(paymentModel, choice)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
                 }
 
-                if (choices.size == 1) {
+                if (freeAvailable && choices.size == 1) {
                     Text(
                         text = "Premium and Pro are not available in this app. " +
                             "Set their prices in Edit to turn them on.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (!freeAvailable && choices.isEmpty()) {
+                    Text(
+                        text = "This app has no price yet, so there is no plan to give. " +
+                            "Set a price in Edit first.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

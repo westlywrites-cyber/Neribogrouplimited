@@ -376,11 +376,13 @@ fun CompanyStorageScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                    Text(
-                        "Free " + formatCount(plainFree) + " × " + StorageRules.textMb(app.storageFreeMb),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (app.freeAllowed) {
+                        Text(
+                            "Free " + formatCount(plainFree) + " × " + StorageRules.textMb(app.storageFreeMb),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     if (app.proUsers > 0L || app.storageProMb > 0L) {
                         Text(
                             "Pro " + formatCount(app.proUsers) + " × " + StorageRules.textMb(app.storageProMb),

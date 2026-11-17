@@ -208,8 +208,8 @@ object CaseGenerator {
     private fun roundTo(value: Long, step: Long): Long = ((value + step / 2L) / step) * step
 
     private fun priceOf(app: AppData, plan: Plan): Long = when (plan) {
-        Plan.PREMIUM -> app.premiumPrice
-        Plan.PRO -> app.proPrice
+        Plan.PREMIUM -> app.effectivePremiumPrice
+        Plan.PRO -> app.effectiveProPrice
         Plan.FREE -> 0L
     }
 

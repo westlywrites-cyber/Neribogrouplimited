@@ -55,6 +55,36 @@ data class Entry(
 /** The plan a user of an app is on. */
 enum class Plan { FREE, PREMIUM, PRO }
 
+/**
+ * How an app earns from its users. It is chosen when the app is added and can be changed later in the app's
+ * settings. The rules that follow from each model (prices, access, status) live in [PaymentRules].
+ */
+enum class PaymentModel(val label: String, val summary: String) {
+    /** The old behaviour: everybody starts Free and can upgrade to Pro or Premium. */
+    FREE_PRO_PREMIUM(
+        "Free, Pro & Premium",
+        "Users can use the app free, or upgrade to Pro or Premium."
+    ),
+
+    /** No free plan: a user must buy Pro or Premium to get access. */
+    PRO_PREMIUM_ONLY(
+        "Pro & Premium only",
+        "No free plan. Users must buy Pro or Premium to use the app."
+    ),
+
+    /** Pay once, unlock for good. There are no plans. */
+    ONE_TIME(
+        "One-time payment",
+        "Users pay once to unlock the app for good. There are no Free, Pro or Premium plans."
+    );
+
+    companion object {
+        /** Reads a saved name. A missing or unknown name is the old behaviour. */
+        fun fromName(name: String?): PaymentModel =
+            values().firstOrNull { it.name == name } ?: FREE_PRO_PREMIUM
+    }
+}
+
 /** One user of an app, with the plan they are on. */
 data class AppUser(
     val id: String = UUID.randomUUID().toString(),
@@ -183,8 +213,32 @@ data class AppData(
     /** Client Hosting only: the time each customer was added (one per customer). Worked out, never saved. */
     val hostedAddedMillis: List<Long> = emptyList(),
     /** True when the owner chose an icon for this app when he added it (the picture is a small file, see CompanyPhotos kind "appicon"). */
-    val hasIcon: Boolean = false
+    val hasIcon: Boolean = false,
+    /** How this app earns from its users. Older apps are Free, Pro & Premium. */
+    val paymentModel: PaymentModel = PaymentModel.FREE_PRO_PREMIUM,
+    /** The one-time price in naira. Only used when [paymentModel] is One-time payment. 0 = not set. */
+    val oneTimePrice: Long = 0
 ) {
+    /** True when users pay once and unlock the app for good. */
+    val isOneTime: Boolean get() = paymentModel == PaymentModel.ONE_TIME
+
+    /** True when this app has a Free plan. Without it, a user who has not paid has no access. */
+    val freeAllowed: Boolean get() = paymentModel == PaymentModel.FREE_PRO_PREMIUM
+
+    /**
+     * The price that really applies, in naira. In a One-time app the single paid state is stored as
+     * Premium (with no end date) and costs the one-time price, and Pro does not exist. Everything that
+     * needs a price or asks "does this plan exist?" reads these two, never the typed prices directly.
+     */
+    val effectivePremiumPrice: Long get() = if (isOneTime) oneTimePrice else premiumPrice
+    val effectiveProPrice: Long get() = if (isOneTime) 0L else proPrice
+
+    /** When a paid plan that starts at [start] ends. 0 = no end date (a One-time unlock never ends). */
+    fun planEndFor(start: Long): Long = if (isOneTime) 0L else start + PLAN_DAYS * DAY_MILLIS
+
+    /** The name of [plan] in this app, for the screens. */
+    fun planName(plan: Plan): String = PaymentRules.planName(paymentModel, plan)
+
     val income: Long get() = entries.filter { it.isIncome }.sumOf { it.amount }
     val expenses: Long get() = entries.filter { !it.isIncome }.sumOf { it.amount }
     val profit: Long get() = income - expenses
@@ -246,7 +300,8 @@ data class AppData(
         get() {
             val custom = customStorageUsers
             val planFree = plainFreeUsers
-            return planFree * storageFreeMb + proUsers * storageProMb + premiumUsers * storagePremiumMb +
+            val freeMb = if (freeAllowed) planFree * storageFreeMb else 0L
+            return freeMb + proUsers * storageProMb + premiumUsers * storagePremiumMb +
                 custom.sumOf { it.customStorageMb } + hostedStorageMb
         }
 
@@ -366,7 +421,7 @@ data class AppData(
             val start = if (user.planStartMillis > 0L) user.planStartMillis else user.addedMillis
             user.copy(
                 planStartMillis = start,
-                planExpiryMillis = start + PLAN_DAYS * DAY_MILLIS
+                planExpiryMillis = planEndFor(start)
             )
         } else {
             user.copy(planStartMillis = 0L, planExpiryMillis = 0L)
@@ -391,7 +446,7 @@ data class AppData(
             old.plan != updated.plan ->
                 updated.copy(
                     planStartMillis = now,
-                    planExpiryMillis = now + PLAN_DAYS * DAY_MILLIS,
+                    planExpiryMillis = planEndFor(now),
                     simulated = false
                 )
             else -> updated.copy(simulated = false)
@@ -416,7 +471,7 @@ data class AppData(
      */
     fun withUserRenewed(userId: String, now: Long): AppData {
         val user = users.firstOrNull { it.id == userId } ?: return this
-        if (user.plan == Plan.FREE || user.simulated) return this
+        if (user.plan == Plan.FREE || user.simulated || isOneTime) return this
         val base = maxOf(now, user.planExpiryMillis)
         val renewed = user.copy(planExpiryMillis = base + PLAN_DAYS * DAY_MILLIS)
         var result = copy(
@@ -427,7 +482,7 @@ data class AppData(
             )
         )
         if (!googlePlayEnabled) {
-            val price = if (user.plan == Plan.PREMIUM) premiumPrice else proPrice
+            val price = if (user.plan == Plan.PREMIUM) effectivePremiumPrice else effectiveProPrice
             if (price > 0L) {
                 val label = if (user.plan == Plan.PREMIUM) "Premium" else "Pro"
                 result = result.copy(
@@ -447,7 +502,7 @@ data class AppData(
     /** A user you added did not renew: moves them to Free (and lowers that plan's count in a Manual app). */
     fun withPlanLapsed(userId: String, now: Long = System.currentTimeMillis()): AppData {
         val user = users.firstOrNull { it.id == userId } ?: return this
-        if (user.plan == Plan.FREE || user.simulated) return this
+        if (user.plan == Plan.FREE || user.simulated || isOneTime) return this
         return copy(
             planHistory = PlanHistory.merge(
                 planHistory,
@@ -565,24 +620,25 @@ data class AppData(
         if (premiumAdded == 0L && proAdded == 0L) return result
 
         val newEntries = ArrayList<Entry>()
-        if (premiumAdded > 0L && result.premiumPrice > 0L) {
+        if (premiumAdded > 0L && result.effectivePremiumPrice > 0L) {
             newEntries.add(
                 Entry(
-                    title = premiumAdded.toString() + " new Premium subscription" +
+                    title = premiumAdded.toString() +
+                        (if (result.isOneTime) " new one-time purchase" else " new Premium subscription") +
                         (if (premiumAdded > 1L) "s" else ""),
-                    amount = premiumAdded * result.premiumPrice,
+                    amount = premiumAdded * result.effectivePremiumPrice,
                     isIncome = true,
                     dateMillis = now,
                     auto = true
                 )
             )
         }
-        if (proAdded > 0L && result.proPrice > 0L) {
+        if (proAdded > 0L && result.effectiveProPrice > 0L) {
             newEntries.add(
                 Entry(
                     title = proAdded.toString() + " new Pro subscription" +
                         (if (proAdded > 1L) "s" else ""),
-                    amount = proAdded * result.proPrice,
+                    amount = proAdded * result.effectiveProPrice,
                     isIncome = true,
                     dateMillis = now,
                     auto = true
@@ -595,6 +651,29 @@ data class AppData(
             manualPremiumToday = (if (sameDay) previous.manualPremiumToday else 0L) + premiumAdded,
             manualProToday = (if (sameDay) previous.manualProToday else 0L) + proAdded,
             manualTodayKey = today
+        )
+    }
+
+    /**
+     * Applies a change of payment model to the users and numbers already saved. [from] is the model the app had
+     * before. Nobody is deleted and no money is changed:
+     * - To One-time payment: everyone who had paid keeps access as "Unlocked" (stored as Premium with no end
+     *   date), so a Pro user is moved to Premium and the typed Pro count joins the Premium count.
+     * - From One-time payment: unlocked users keep their access as Premium with no end date.
+     * - Between the two subscription models nothing is rewritten: a user with no paid plan is a Free user in one
+     *   and a "Not paid" user (no access) in the other, see [PaymentRules.hasAccess].
+     */
+    fun withModelApplied(from: PaymentModel): AppData {
+        if (from == paymentModel) return this
+        if (paymentModel != PaymentModel.ONE_TIME) return this
+        return copy(
+            users = users.map {
+                if (it.plan != Plan.FREE) it.copy(plan = Plan.PREMIUM, planExpiryMillis = 0L) else it
+            },
+            manualPremiumUsers = manualPremiumUsers + manualProUsers,
+            manualProUsers = 0L,
+            manualPremiumToday = manualPremiumToday + manualProToday,
+            manualProToday = 0L
         )
     }
 

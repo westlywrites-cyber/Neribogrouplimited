@@ -71,8 +71,8 @@ object DiceEngine {
     )
 
     private fun priceOf(app: AppData, plan: Plan): Long = when (plan) {
-        Plan.PREMIUM -> app.premiumPrice
-        Plan.PRO -> app.proPrice
+        Plan.PREMIUM -> app.effectivePremiumPrice
+        Plan.PRO -> app.effectiveProPrice
         Plan.FREE -> 0L
     }
 
@@ -82,8 +82,9 @@ object DiceEngine {
 
     /** Dice users whose paid plan has ended and whose plan still exists (has a price). */
     private fun renewalPool(app: AppData, now: Long): List<AppUser> =
+        // A One-time unlock never ends, so it is never renewed.
         app.users.filter { user ->
-            user.simulated && user.plan != Plan.FREE &&
+            !app.isOneTime && user.simulated && user.plan != Plan.FREE &&
                 (user.planDaysLeft(now) ?: 1L) <= 0L && priceOf(app, user.plan) > 0L
         }
 
@@ -105,13 +106,14 @@ object DiceEngine {
         list.add(DiceKind.NEW)
         if (app.totalUsers >= 1L) list.add(DiceKind.ACTIVE)
         val canUpgrade = upgradePool(app).isNotEmpty()
-        if (app.premiumPrice > 0L && canUpgrade) list.add(DiceKind.PREMIUM)
-        if (app.proPrice > 0L && canUpgrade) list.add(DiceKind.PRO)
+        if (app.effectivePremiumPrice > 0L && canUpgrade) list.add(DiceKind.PREMIUM)
+        if (app.effectiveProPrice > 0L && canUpgrade) list.add(DiceKind.PRO)
         if (renewalPool(app, now).isNotEmpty()) {
             list.add(DiceKind.RENEW)
             list.add(DiceKind.LOST)
         }
-        if (app.adsEnabled && app.freeUsers >= 1L) list.add(DiceKind.ADS)
+        // Ads are shown to Free users, so an app without a Free plan has none.
+        if (app.adsEnabled && app.freeAllowed && app.freeUsers >= 1L) list.add(DiceKind.ADS)
         return list
     }
 
@@ -458,8 +460,8 @@ object DiceEngine {
                     emptyList()
                 }
                 // Paid users must be listed one by one. A plan without a price does not exist, so those users stay Free.
-                val premium = if (app.premiumPrice > 0L) min(part.premium, made.size.toLong()).toInt() else 0
-                val pro = if (app.proPrice > 0L) min(part.pro, (made.size - premium).toLong()).toInt() else 0
+                val premium = if (app.effectivePremiumPrice > 0L) min(part.premium, made.size.toLong()).toInt() else 0
+                val pro = if (app.effectiveProPrice > 0L) min(part.pro, (made.size - premium).toLong()).toInt() else 0
                 made = made.mapIndexed { index, u ->
                     // They upgrade on the day they arrive: the plan starts when the user joined.
                     when {
@@ -467,13 +469,13 @@ object DiceEngine {
                             channel = channel,
                             plan = Plan.PREMIUM,
                             planStartMillis = u.addedMillis,
-                            planExpiryMillis = u.addedMillis + PLAN_DAYS * DAY_MILLIS
+                            planExpiryMillis = app.planEndFor(u.addedMillis)
                         )
                         index < premium + pro -> u.copy(
                             channel = channel,
                             plan = Plan.PRO,
                             planStartMillis = u.addedMillis,
-                            planExpiryMillis = u.addedMillis + PLAN_DAYS * DAY_MILLIS
+                            planExpiryMillis = app.planEndFor(u.addedMillis)
                         )
                         else -> u.copy(channel = channel)
                     }
@@ -489,13 +491,14 @@ object DiceEngine {
             if (advertPremium + advertPro > 0) {
                 lines.addAll(
                     channelLines(
-                        PlayTxKind.SUBSCRIPTION, advertRows.filter { it.plan == Plan.PREMIUM }, { app.premiumPrice },
-                        "new Premium subscription from adverts", "new Premium subscriptions from adverts", now
+                        PlayTxKind.SUBSCRIPTION, advertRows.filter { it.plan == Plan.PREMIUM }, { app.effectivePremiumPrice },
+                        if (app.isOneTime) "new one-time purchase from adverts" else "new Premium subscription from adverts",
+                        if (app.isOneTime) "new one-time purchases from adverts" else "new Premium subscriptions from adverts", now
                     )
                 )
                 lines.addAll(
                     channelLines(
-                        PlayTxKind.SUBSCRIPTION, advertRows.filter { it.plan == Plan.PRO }, { app.proPrice },
+                        PlayTxKind.SUBSCRIPTION, advertRows.filter { it.plan == Plan.PRO }, { app.effectiveProPrice },
                         "new Pro subscription from adverts", "new Pro subscriptions from adverts", now
                     )
                 )
@@ -515,14 +518,14 @@ object DiceEngine {
 
         // Upgrades (yellow and purple). Only dice users who were Free before this roll.
         val freePool = upgradePool(app).shuffled(random)
-        val premiumPicked = if (app.premiumPrice > 0L) {
+        val premiumPicked = if (app.effectivePremiumPrice > 0L) {
             freePool.take(
                 countFromShare(freePool.size, face(DiceKind.PREMIUM), UPGRADE_SHARE, factor, 1.0, random)
             )
         } else {
             emptyList()
         }
-        val proPicked = if (app.proPrice > 0L) {
+        val proPicked = if (app.effectiveProPrice > 0L) {
             val rest = freePool.drop(premiumPicked.size)
             rest.take(countFromShare(rest.size, face(DiceKind.PRO), UPGRADE_SHARE, factor, 0.5, random))
         } else {
@@ -534,7 +537,7 @@ object DiceEngine {
             changed[u.id] = u.copy(
                 plan = Plan.PREMIUM,
                 planStartMillis = start,
-                planExpiryMillis = start + PLAN_DAYS * DAY_MILLIS
+                planExpiryMillis = app.planEndFor(start)
             )
         }
         for (u in proPicked) {
@@ -542,18 +545,19 @@ object DiceEngine {
             changed[u.id] = u.copy(
                 plan = Plan.PRO,
                 planStartMillis = start,
-                planExpiryMillis = start + PLAN_DAYS * DAY_MILLIS
+                planExpiryMillis = app.planEndFor(start)
             )
         }
         lines.addAll(
             channelLines(
-                PlayTxKind.SUBSCRIPTION, premiumPicked, { app.premiumPrice },
-                "new Premium subscription", "new Premium subscriptions", now
+                PlayTxKind.SUBSCRIPTION, premiumPicked, { app.effectivePremiumPrice },
+                if (app.isOneTime) "new one-time purchase" else "new Premium subscription",
+                if (app.isOneTime) "new one-time purchases" else "new Premium subscriptions", now
             )
         )
         lines.addAll(
             channelLines(
-                PlayTxKind.SUBSCRIPTION, proPicked, { app.proPrice },
+                PlayTxKind.SUBSCRIPTION, proPicked, { app.effectiveProPrice },
                 "new Pro subscription", "new Pro subscriptions", now
             )
         )

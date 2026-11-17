@@ -10,6 +10,8 @@ import androidx.compose.ui.platform.LocalContext
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.LabeledField
 import com.westly.neribogroup.feature.common.NeriboDialog
+import com.westly.neribogroup.feature.common.NumberField
+import com.westly.neribogroup.feature.common.PaymentModelPicker
 import com.westly.neribogroup.feature.common.TintedButton
 import java.io.File
 import java.util.UUID
@@ -42,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Ledger
+import com.westly.neribogroup.data.PaymentModel
 import com.westly.neribogroup.data.isHosting
 import com.westly.neribogroup.data.isSoftware
 import com.westly.neribogroup.feature.common.ConfirmDialog
@@ -287,7 +290,8 @@ fun AppsScreen(
 }
 
 /**
- * Add app: the name and, if the owner wants, the icon this app gets on the CEO office desktop.
+ * Add app: the name, the payment model and its prices and, if the owner wants, the icon this app gets on the
+ * CEO office desktop. The payment model can be changed later in the app's settings.
  * The icon is saved on this phone as soon as it is picked (and removed again if the dialog is cancelled).
  */
 @Composable
@@ -303,6 +307,10 @@ private fun AddAppDialog(
     val id = remember { UUID.randomUUID().toString() }
     var name by remember { mutableStateOf("") }
     var hasIcon by remember { mutableStateOf(false) }
+    var model by remember { mutableStateOf(PaymentModel.FREE_PRO_PREMIUM) }
+    var premiumPrice by remember { mutableStateOf(0L) }
+    var proPrice by remember { mutableStateOf(0L) }
+    var oneTimePrice by remember { mutableStateOf(0L) }
     var tick by remember { mutableStateOf(iconTick) }
     val pick = rememberSinglePhotoPicker { uri ->
         onPickIcon(id, uri) { message ->
@@ -334,11 +342,46 @@ private fun AddAppDialog(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 6.dp)
         )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "How do users pay?",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        PaymentModelPicker(selected = model, onSelect = { model = it })
+        Spacer(modifier = Modifier.height(12.dp))
+        if (model == PaymentModel.ONE_TIME) {
+            NumberField("One-time price (₦, paid once)", oneTimePrice, { oneTimePrice = it })
+        } else {
+            NumberField("Premium price (₦ per subscription)", premiumPrice, { premiumPrice = it })
+            Spacer(modifier = Modifier.height(8.dp))
+            NumberField("Pro price (₦ per subscription)", proPrice, { proPrice = it })
+        }
+        Text(
+            text = "Leave a price empty if that plan does not exist. You can change the model and " +
+                "the prices later in the app's settings.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp)
+        )
         DialogActions {
             TextButton(onClick = dismiss) { Text("Cancel") }
             TintedButton(
                 text = "Add",
-                onClick = { onAdd(AppData(id = id, name = name.trim(), hasIcon = hasIcon)) },
+                onClick = {
+                    onAdd(
+                        AppData(
+                            id = id,
+                            name = name.trim(),
+                            hasIcon = hasIcon,
+                            paymentModel = model,
+                            premiumPrice = premiumPrice,
+                            proPrice = proPrice,
+                            oneTimePrice = oneTimePrice
+                        )
+                    )
+                },
                 enabled = name.isNotBlank()
             )
         }
@@ -383,7 +426,8 @@ internal fun AppCard(
                         "Customers, storage and monthly renewals"
                     } else {
                         formatCount(app.totalUsers) + " users · " +
-                            formatCount(app.proUsers) + " Pro · " +
+                            (if (app.isOneTime) formatCount(app.premiumUsers) + " unlocked"
+                            else formatCount(app.proUsers) + " Pro") + " · " +
                             formatCount(app.newUsersToday(System.currentTimeMillis())) + " new today"
                     },
                     style = MaterialTheme.typography.bodySmall,

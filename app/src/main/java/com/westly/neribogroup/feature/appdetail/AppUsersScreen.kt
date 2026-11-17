@@ -33,6 +33,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppUser
+import com.westly.neribogroup.data.PaymentModel
+import com.westly.neribogroup.data.PaymentRules
 import com.westly.neribogroup.data.PlanEvent
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.matchesQuery
@@ -63,8 +65,8 @@ private fun userPasses(filter: UserFilter, user: AppUser, now: Long): Boolean = 
  * True when [query] matches the user's name, email, phone or plan.
  * A phone search also works with digits only, so "0803 123" finds "+234 803 123 ...".
  */
-private fun userMatches(query: String, user: AppUser): Boolean {
-    if (matchesQuery(query, user.name, user.email, user.phone, planText(user.plan))) return true
+private fun userMatches(query: String, user: AppUser, model: PaymentModel): Boolean {
+    if (matchesQuery(query, user.name, user.email, user.phone, PaymentRules.planName(model, user.plan))) return true
     val digits = query.filter { it.isDigit() }
     if (digits.length < 3) return false
     val phoneDigits = user.phone.filter { it.isDigit() }
@@ -90,7 +92,9 @@ fun AppUsersScreen(
     /** The filter the list opens with (for example from the dashboard's Users activity card). */
     initialFilter: UserFilter = UserFilter.ALL,
     /** False for Manual apps: they have no Last seen. */
-    showLastSeen: Boolean = true
+    showLastSeen: Boolean = true,
+    /** The app's payment model: it decides the plan names shown on each user. */
+    paymentModel: PaymentModel = PaymentModel.FREE_PRO_PREMIUM
 ) {
     var historyUserId by rememberSaveable { mutableStateOf<String?>(null) }
     val historyUser = users.firstOrNull { it.id == historyUserId }
@@ -103,7 +107,7 @@ fun AppUsersScreen(
     val now = rememberNowMillis()
     val sorted = remember(users) { users.sortedByDescending { it.addedMillis } }
     val visible = remember(sorted, query, filter, now) {
-        sorted.filter { userPasses(filter, it, now) && userMatches(query, it) }
+        sorted.filter { userPasses(filter, it, now) && userMatches(query, it, paymentModel) }
     }
 
     BackHandler(onBack = onBack)
@@ -220,7 +224,8 @@ fun AppUsersScreen(
                     user = user,
                     clickable = true,
                     onClick = { historyUserId = user.id },
-                    seenNow = if (showLastSeen) now else null
+                    seenNow = if (showLastSeen) now else null,
+                    paymentModel = paymentModel
                 )
             }
         }

@@ -1619,8 +1619,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 locked.finalizeSave(current, now)
             }
         }
+        // A new payment model is applied to the users already saved (nobody is deleted).
+        val modelApplied = if (current != null && current.paymentModel != finalApp.paymentModel) {
+            finalApp.withModelApplied(current.paymentModel)
+        } else {
+            finalApp
+        }
         saveLedger(
-            ledger.copy(apps = ledger.apps.map { if (it.id == finalApp.id) finalApp else it })
+            ledger.copy(apps = ledger.apps.map { if (it.id == modelApplied.id) modelApplied else it })
         )
     }
 

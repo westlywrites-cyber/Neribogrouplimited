@@ -72,6 +72,8 @@ import androidx.compose.material3.OutlinedButton
 import com.westly.neribogroup.data.AdvertType
 import com.westly.neribogroup.data.CampaignSize
 import com.westly.neribogroup.data.Entry
+import com.westly.neribogroup.data.PaymentModel
+import com.westly.neribogroup.data.PaymentRules
 import com.westly.neribogroup.data.Plan
 import com.westly.neribogroup.data.StorageRules
 import com.westly.neribogroup.feature.common.AddEntryDialog
@@ -80,6 +82,7 @@ import com.westly.neribogroup.feature.common.FlatCard
 import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.EntryRow
 import com.westly.neribogroup.feature.common.NumberField
+import com.westly.neribogroup.feature.common.PaymentModelPicker
 import com.westly.neribogroup.feature.common.TopSaveActions
 import com.westly.neribogroup.feature.common.SectionTitle
 import com.westly.neribogroup.feature.common.StatTile
@@ -192,7 +195,8 @@ fun AppDashboardScreen(
             planHistory = app.planHistory,
             audienceFree = app.audienceFree,
             initialFilter = UserFilter.fromName(usersFilter),
-            showLastSeen = app.googlePlayEnabled
+            showLastSeen = app.googlePlayEnabled,
+            paymentModel = app.paymentModel
         )
         return
     }
@@ -347,16 +351,18 @@ fun AppDashboardScreen(
                     }
                     item {
                         key(fieldsKey) {
-                            NumberField("Premium users", draft.manualPremiumUsers, {
+                            NumberField(draft.planName(Plan.PREMIUM) + " users", draft.manualPremiumUsers, {
                                 draft = draft.copy(manualPremiumUsers = it)
                             })
                         }
                     }
-                    item {
-                        key(fieldsKey) {
-                            NumberField("Pro users", draft.manualProUsers, {
-                                draft = draft.copy(manualProUsers = it)
-                            })
+                    if (!draft.isOneTime) {
+                        item {
+                            key(fieldsKey) {
+                                NumberField("Pro users", draft.manualProUsers, {
+                                    draft = draft.copy(manualProUsers = it)
+                                })
+                            }
                         }
                     }
                     item {
@@ -374,7 +380,8 @@ fun AppDashboardScreen(
                     item {
                         Text(
                             text = "New users today are added to Total users for you. After saving you " +
-                                "can pick Free, Premium or Pro for each one. It goes back to 0 at 12 am.",
+                                "can pick " + PaymentRules.choiceText(draft.paymentModel) +
+                                " for each one. It goes back to 0 at 12 am.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -396,31 +403,73 @@ fun AppDashboardScreen(
                     }
                 }
 
-                item { SectionTitle("Subscription prices") }
+                item { SectionTitle("Payment model") }
                 item {
-                    NumberField("Premium price (₦ per subscription)", draft.premiumPrice, {
-                        draft = draft.copy(premiumPrice = it)
-                    })
+                    PaymentModelPicker(
+                        selected = draft.paymentModel,
+                        onSelect = { draft = draft.copy(paymentModel = it) }
+                    )
                 }
-                item {
-                    NumberField("Pro price (₦ per subscription)", draft.proPrice, {
-                        draft = draft.copy(proPrice = it)
-                    })
+                if (draft.paymentModel != app.paymentModel) {
+                    item {
+                        Text(
+                            text = PaymentRules.changeWarning(app.paymentModel, draft.paymentModel),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+                item { SectionTitle(if (draft.isOneTime) "One-time price" else "Subscription prices") }
+                if (draft.isOneTime) {
+                    item {
+                        NumberField("One-time price (₦, paid once)", draft.oneTimePrice, {
+                            draft = draft.copy(oneTimePrice = it)
+                        })
+                    }
+                } else {
+                    item {
+                        NumberField("Premium price (₦ per subscription)", draft.premiumPrice, {
+                            draft = draft.copy(premiumPrice = it)
+                        })
+                    }
+                    item {
+                        NumberField("Pro price (₦ per subscription)", draft.proPrice, {
+                            draft = draft.copy(proPrice = it)
+                        })
+                    }
                 }
                 item {
                     Text(
-                        text = "Leave a price empty if that plan does not exist in this app. " +
-                            "A plan with no price is hidden, cannot be given to users and is not rolled.",
+                        text = if (draft.isOneTime) {
+                            "Users pay this once and keep the app for good. There are no Free, Pro or " +
+                                "Premium plans. Leave it empty and nobody can unlock the app."
+                        } else if (draft.freeAllowed) {
+                            "Leave a price empty if that plan does not exist in this app. " +
+                                "A plan with no price is hidden, cannot be given to users and is not rolled."
+                        } else {
+                            "There is no Free plan. Leave a price empty if that plan does not exist in " +
+                                "this app. Users must buy a plan that has a price."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                val setupNote = PaymentRules.setupNote(draft)
+                if (setupNote != null) {
+                    item {
+                        Text(
+                            text = setupNote,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
 
                 if (!draft.googlePlayEnabled) {
                     item {
                         val premiumNew = maxOf(0L, draft.manualPremiumUsers - app.manualPremiumUsers)
                         val proNew = maxOf(0L, draft.manualProUsers - app.manualProUsers)
-                        val income = premiumNew * draft.premiumPrice + proNew * draft.proPrice
+                        val income = premiumNew * draft.effectivePremiumPrice + proNew * draft.effectiveProPrice
                         Text(
                             text = "Saving now adds " + formatNaira(income) + " income: " + premiumNew +
                                 " Premium and " + proNew + " Pro new subscriptions.",
@@ -430,7 +479,7 @@ fun AppDashboardScreen(
                     }
                 }
 
-                if (draft.googlePlayEnabled) {
+                if (draft.googlePlayEnabled && draft.freeAllowed) {
                 item { SectionTitle("Google Ads") }
                 item {
                     Row(
@@ -459,27 +508,29 @@ fun AppDashboardScreen(
                 }
 
                 item { SectionTitle("Plan benefits") }
-                item {
-                    OutlinedTextField(
-                        value = draft.freeBenefits,
-                        onValueChange = { draft = draft.copy(freeBenefits = it.take(500)) },
-                        label = { Text("What Free includes") },
-                        minLines = 3,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                if (draft.premiumPrice > 0L) {
+                if (draft.freeAllowed) {
                     item {
                         OutlinedTextField(
-                            value = draft.premiumBenefits,
-                            onValueChange = { draft = draft.copy(premiumBenefits = it.take(500)) },
-                            label = { Text("What Premium includes") },
+                            value = draft.freeBenefits,
+                            onValueChange = { draft = draft.copy(freeBenefits = it.take(500)) },
+                            label = { Text("What Free includes") },
                             minLines = 3,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
-                if (draft.proPrice > 0L) {
+                if (draft.effectivePremiumPrice > 0L) {
+                    item {
+                        OutlinedTextField(
+                            value = draft.premiumBenefits,
+                            onValueChange = { draft = draft.copy(premiumBenefits = it.take(500)) },
+                            label = { Text("What " + draft.planName(Plan.PREMIUM) + " includes") },
+                            minLines = 3,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+                if (draft.effectiveProPrice > 0L) {
                     item {
                         OutlinedTextField(
                             value = draft.proBenefits,
@@ -514,7 +565,12 @@ fun AppDashboardScreen(
                     draft.users.filter { !it.simulated }.sortedByDescending { it.addedMillis },
                     key = { "mine-" + it.id }
                 ) { user ->
-                    UserRow(user = user, clickable = true, onClick = { editUserId = user.id })
+                    UserRow(
+                        user = user,
+                        clickable = true,
+                        onClick = { editUserId = user.id },
+                        paymentModel = draft.paymentModel
+                    )
                 }
                 item {
                     Button(
@@ -579,35 +635,46 @@ fun AppDashboardScreen(
                     // Users & plans: user numbers, the activity chart and plan expiry.
                     // ---------------------------------------------------------------------
                     PAGE_USERS_PLANS -> {
+                        item { StatTile("Payment model", app.paymentModel.label, Modifier.fillMaxWidth()) }
                         item { SectionTitle("Users") }
                         item {
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 StatTile("Total users", formatCount(app.totalUsers), Modifier.weight(1f))
-                                StatTile("Free", formatCount(app.freeUsers), Modifier.weight(1f))
+                                StatTile(app.planName(Plan.FREE), formatCount(app.freeUsers), Modifier.weight(1f))
                                 StatTile("New today", formatCount(app.newUsersToday(now)), Modifier.weight(1f))
                             }
                         }
-                        if (app.premiumPrice > 0L || app.proPrice > 0L) {
+                        // Without a Free plan, only users whose payment is in force have access.
+                        if (!app.freeAllowed) {
+                            item {
+                                val access = PaymentRules.accessCounts(app, now)
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    StatTile("With access", formatCount(access.first), Modifier.weight(1f))
+                                    StatTile("No access", formatCount(access.second), Modifier.weight(1f))
+                                }
+                            }
+                        }
+                        if (app.effectivePremiumPrice > 0L || app.effectiveProPrice > 0L) {
                             item {
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    if (app.premiumPrice > 0L) {
-                                        StatTile("Premium", formatCount(app.premiumUsers), Modifier.weight(1f))
+                                    if (app.effectivePremiumPrice > 0L) {
+                                        StatTile(app.planName(Plan.PREMIUM), formatCount(app.premiumUsers), Modifier.weight(1f))
                                     }
-                                    if (app.proPrice > 0L) {
+                                    if (app.effectiveProPrice > 0L) {
                                         StatTile("Pro", formatCount(app.proUsers), Modifier.weight(1f))
                                     }
                                 }
                             }
                             item {
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    if (app.premiumPrice > 0L) {
+                                    if (app.effectivePremiumPrice > 0L) {
                                         StatTile(
-                                            "Premium today",
+                                            app.planName(Plan.PREMIUM) + " today",
                                             formatCount(app.premiumTodayAt(now)),
                                             Modifier.weight(1f)
                                         )
                                     }
-                                    if (app.proPrice > 0L) {
+                                    if (app.effectiveProPrice > 0L) {
                                         StatTile(
                                             "Pro today",
                                             formatCount(app.proTodayAt(now)),
@@ -618,18 +685,23 @@ fun AppDashboardScreen(
                             }
                             item {
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    if (app.premiumPrice > 0L) {
-                                        StatTile("Premium price", formatNaira(app.premiumPrice), Modifier.weight(1f))
+                                    if (app.effectivePremiumPrice > 0L) {
+                                        StatTile(
+                                            if (app.isOneTime) "One-time price" else "Premium price",
+                                            formatNaira(app.effectivePremiumPrice),
+                                            Modifier.weight(1f)
+                                        )
                                     }
-                                    if (app.proPrice > 0L) {
-                                        StatTile("Pro price", formatNaira(app.proPrice), Modifier.weight(1f))
+                                    if (app.effectiveProPrice > 0L) {
+                                        StatTile("Pro price", formatNaira(app.effectiveProPrice), Modifier.weight(1f))
                                     }
                                 }
                             }
                         } else {
                             item {
                                 Text(
-                                    text = "This app has no paid plans. Set a Premium or Pro price in Edit to add them.",
+                                    text = PaymentRules.setupNote(app)
+                                        ?: "This app has no paid plans. Set a Premium or Pro price in Edit to add them.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -707,7 +779,8 @@ fun AppDashboardScreen(
                             }
                         }
 
-                        if (paying.isNotEmpty()) {
+                        // A One-time unlock has no end date, so it has no expiry list.
+                        if (!app.isOneTime && paying.isNotEmpty()) {
                             item { SectionTitle("Plan expiry") }
                             item {
                                 val soonText = when (endingSoon) {
@@ -799,11 +872,14 @@ fun AppDashboardScreen(
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("Add income") }
                             }
-                            item {
-                                OutlinedButton(
-                                    onClick = { showRenewalIncome = true },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) { Text("Add renewal income") }
+                            // A One-time unlock is paid once, so there is nothing to renew.
+                            if (!app.isOneTime) {
+                                item {
+                                    OutlinedButton(
+                                        onClick = { showRenewalIncome = true },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text("Add renewal income") }
+                                }
                             }
                             item {
                                 Text(
@@ -901,11 +977,13 @@ fun AppDashboardScreen(
                     }
 
                     PAGE_BENEFITS -> {
-                        item { BenefitsBlock("Free includes", app.freeBenefits) }
-                        if (app.premiumPrice > 0L) {
-                            item { BenefitsBlock("Premium includes", app.premiumBenefits) }
+                        if (app.freeAllowed) {
+                            item { BenefitsBlock("Free includes", app.freeBenefits) }
                         }
-                        if (app.proPrice > 0L) {
+                        if (app.effectivePremiumPrice > 0L) {
+                            item { BenefitsBlock(app.planName(Plan.PREMIUM) + " includes", app.premiumBenefits) }
+                        }
+                        if (app.effectiveProPrice > 0L) {
                             item { BenefitsBlock("Pro includes", app.proBenefits) }
                         }
                     }
@@ -973,9 +1051,9 @@ fun AppDashboardScreen(
 
                         item {
                             val planParts = buildList {
-                                add("Free " + formatCount(app.freeUsers))
-                                if (app.premiumPrice > 0L) add("Premium " + formatCount(app.premiumUsers))
-                                if (app.proPrice > 0L) add("Pro " + formatCount(app.proUsers))
+                                add(app.planName(Plan.FREE) + " " + formatCount(app.freeUsers))
+                                if (app.effectivePremiumPrice > 0L) add(app.planName(Plan.PREMIUM) + " " + formatCount(app.premiumUsers))
+                                if (app.effectiveProPrice > 0L) add("Pro " + formatCount(app.proUsers))
                                 if (endingSoon > 0) add("$endingSoon ending soon")
                             }
                             NavCard(
@@ -1020,13 +1098,14 @@ fun AppDashboardScreen(
                         }
                         item {
                             val benefitNames = buildList {
-                                add("Free")
-                                if (app.premiumPrice > 0L) add("Premium")
-                                if (app.proPrice > 0L) add("Pro")
+                                if (app.freeAllowed) add("Free")
+                                if (app.effectivePremiumPrice > 0L) add(app.planName(Plan.PREMIUM))
+                                if (app.effectiveProPrice > 0L) add("Pro")
                             }
                             NavCard(
                                 title = "Plan benefits",
-                                summary = "What " + benefitNames.joinToString(", ") + " include",
+                                summary = if (benefitNames.isEmpty()) "No plans yet"
+                                else "What " + benefitNames.joinToString(", ") + " include",
                                 onClick = { page = PAGE_BENEFITS }
                             )
                         }
@@ -1055,11 +1134,14 @@ fun AppDashboardScreen(
             heading = "Add user",
             initial = null,
             otherUsers = draft.users,
-            premiumAvailable = draft.premiumPrice > 0L,
-            proAvailable = draft.proPrice > 0L,
+            premiumAvailable = draft.effectivePremiumPrice > 0L,
+            proAvailable = draft.effectiveProPrice > 0L,
+            freeAvailable = draft.freeAllowed,
+            defaultPlan = PaymentRules.defaultPlan(draft),
+            paymentModel = draft.paymentModel,
             sites = if (draft.deployTracking) 1 else null,
             onSitesChange = { pendingSites = it },
-            customMb = -1L,
+            customMb = if (draft.freeAllowed) -1L else null,
             onCustomChange = { pendingCustomMb = it },
             onSave = { name, email, phone, plan ->
                 draft = draft.withUserAdded(
@@ -1090,11 +1172,18 @@ fun AppDashboardScreen(
                 heading = "Edit user",
                 initial = userBeingEdited,
                 otherUsers = draft.users.filter { it.id != userBeingEdited.id },
-                premiumAvailable = draft.premiumPrice > 0L,
-                proAvailable = draft.proPrice > 0L,
+                premiumAvailable = draft.effectivePremiumPrice > 0L,
+                proAvailable = draft.effectiveProPrice > 0L,
+                freeAvailable = draft.freeAllowed,
+                defaultPlan = PaymentRules.defaultPlan(draft),
+                paymentModel = draft.paymentModel,
                 sites = if (draft.deployTracking) maxOf(1, userBeingEdited.sites) else null,
                 onSitesChange = { pendingEditSites = it },
-                customMb = userBeingEdited.customStorageMb,
+                customMb = if (draft.freeAllowed || userBeingEdited.customStorageMb >= 0L) {
+                    userBeingEdited.customStorageMb
+                } else {
+                    null
+                },
                 onCustomChange = { pendingEditCustomMb = it },
                 onSave = { name, email, phone, plan ->
                     draft = draft.withUserUpdated(
@@ -1135,7 +1224,8 @@ fun AppDashboardScreen(
                     expiryUserId = null
                 },
                 onDismiss = { expiryUserId = null },
-                recordsMoney = !app.googlePlayEnabled
+                recordsMoney = !app.googlePlayEnabled,
+                freeName = app.planName(Plan.FREE)
             )
         }
     }
@@ -1262,9 +1352,12 @@ fun AppDashboardScreen(
                 initial = null,
                 otherUsers = app.users,
                 saveLabel = if (last) "Save and finish" else "Save and next",
-                premiumAvailable = app.premiumPrice > 0L,
-                proAvailable = app.proPrice > 0L,
-                customMb = -1L,
+                premiumAvailable = app.effectivePremiumPrice > 0L,
+                proAvailable = app.effectiveProPrice > 0L,
+                freeAvailable = app.freeAllowed,
+                defaultPlan = PaymentRules.defaultPlan(app),
+                paymentModel = app.paymentModel,
+                customMb = if (app.freeAllowed) -1L else null,
                 onCustomChange = { queueCustomMb = it },
                 onSave = { name, email, phone, plan ->
                     // Added to the latest saved app, so earlier users are never lost.
@@ -1377,7 +1470,9 @@ internal fun UserRow(
     clickable: Boolean,
     onClick: () -> Unit,
     /** When given (Google Play apps), a status line shows Active or Last seen, judged at this time. */
-    seenNow: Long? = null
+    seenNow: Long? = null,
+    /** The app's payment model: it decides the plan name shown on the right. */
+    paymentModel: PaymentModel = PaymentModel.FREE_PRO_PREMIUM
 ) {
     Row(
         modifier = Modifier
@@ -1427,11 +1522,16 @@ internal fun UserRow(
             }
         }
         val isCustom = user.customStorageMb >= 0L && user.plan == Plan.FREE
+        // Without a Free plan a paid plan that has ended means no access any more.
+        val ended = paymentModel == PaymentModel.PRO_PREMIUM_ONLY && user.plan != Plan.FREE &&
+            (user.planDaysLeft(seenNow ?: System.currentTimeMillis()) ?: 0L) < 0L
         Text(
-            text = if (isCustom) "Customize" else planText(user.plan),
+            text = if (isCustom) "Customize"
+            else PaymentRules.planName(paymentModel, user.plan) + (if (ended) " · Expired" else ""),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium,
-            color = if (user.plan == Plan.FREE && !isCustom) MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (ended) MaterialTheme.colorScheme.error
+            else if (user.plan == Plan.FREE && !isCustom) MaterialTheme.colorScheme.onSurfaceVariant
             else MaterialTheme.colorScheme.primary
         )
     }
@@ -1672,11 +1772,20 @@ private fun StorageOfferDialog(
         subtitle = "What each plan gives every user, in MB. Used storage is worked out from the users, so it is " +
             "always up to date."
     ) {
-        NumberField(label = "Free users (MB)", value = free, onChange = { free = it }, maxDigits = 9)
-        Spacer(modifier = Modifier.height(8.dp))
-        NumberField(label = "Pro users (MB)", value = pro, onChange = { pro = it }, maxDigits = 9)
-        Spacer(modifier = Modifier.height(8.dp))
-        NumberField(label = "Premium users (MB)", value = premium, onChange = { premium = it }, maxDigits = 9)
+        if (app.freeAllowed) {
+            NumberField(label = "Free users (MB)", value = free, onChange = { free = it }, maxDigits = 9)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        if (!app.isOneTime) {
+            NumberField(label = "Pro users (MB)", value = pro, onChange = { pro = it }, maxDigits = 9)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        NumberField(
+            label = app.planName(Plan.PREMIUM) + " users (MB)",
+            value = premium,
+            onChange = { premium = it },
+            maxDigits = 9
+        )
         if (app.isDeployApp && app.googlePlayEnabled) {
             Spacer(modifier = Modifier.height(12.dp))
             ChannelSwitchRow("Neribo Deploy sites (users have sites)", app.deployTracking, onSetDeploy)
@@ -1717,7 +1826,7 @@ private fun RenewalIncomeDialog(
     onSave: (String, Long) -> Unit
 ) {
     val users = app.users.filter { !it.simulated && it.plan != Plan.FREE }
-    fun priceOf(user: AppUser): Long = if (user.plan == Plan.PREMIUM) app.premiumPrice else app.proPrice
+    fun priceOf(user: AppUser): Long = if (user.plan == Plan.PREMIUM) app.effectivePremiumPrice else app.effectiveProPrice
     var selectedId by remember { mutableStateOf(users.firstOrNull()?.id ?: "") }
     var amount by remember { mutableStateOf(users.firstOrNull()?.let { priceOf(it) } ?: 0L) }
     val selected = users.firstOrNull { it.id == selectedId }

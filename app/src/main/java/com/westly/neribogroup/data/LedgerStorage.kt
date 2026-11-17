@@ -70,6 +70,8 @@ object LedgerStorage {
             o.put("name", app.name)
             o.put("premiumPrice", app.premiumPrice)
             o.put("proPrice", app.proPrice)
+            o.put("paymentModel", app.paymentModel.name)
+            o.put("oneTimePrice", app.oneTimePrice)
             o.put("entries", entriesToJson(app.entries))
             o.put("users", usersToJson(app.users))
             o.put("premiumBenefits", app.premiumBenefits)
@@ -472,6 +474,9 @@ object LedgerStorage {
             name = o.optString("name"),
             premiumPrice = o.optLong("premiumPrice"),
             proPrice = o.optLong("proPrice"),
+            // Older files have no payment model: the app keeps the old Free, Pro & Premium behaviour.
+            paymentModel = PaymentModel.fromName(o.optString("paymentModel")),
+            oneTimePrice = o.optLong("oneTimePrice"),
             entries = jsonToEntries(o.optJSONArray("entries")),
             users = users,
             premiumBenefits = o.optString("premiumBenefits"),
