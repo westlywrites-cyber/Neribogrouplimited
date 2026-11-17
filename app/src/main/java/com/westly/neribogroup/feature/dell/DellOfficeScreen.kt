@@ -16,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -39,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.material3.AlertDialog
@@ -339,6 +341,8 @@ fun DellOfficeScreen(
 ) {
     val context = LocalContext.current
     DellPower.load(context)
+    DellLock.load(context)
+    DellWifi.load(context)
 
     var phase by remember { mutableStateOf(if (DellPower.isOff) DellPhase.OFF else DellPhase.ON) }
     var confirmOff by remember { mutableStateOf(false) }
@@ -386,7 +390,11 @@ fun DellOfficeScreen(
     // Back closes full screen, then the app window, then leaves the office. Inside the app, Back works as usual
     // because the screens of the app register their own handlers after this one.
     BackHandler {
-        if (fullNow) {
+        if (DellLock.locked || DellLock.screenOff) {
+            // The lock screen and a turned-off screen ignore Back.
+        } else if (nav.wifiOpen) {
+            nav.wifiOpen = false
+        } else if (fullNow) {
             full = false
         } else if (appOpen) {
             closeWindow()
@@ -408,8 +416,22 @@ fun DellOfficeScreen(
             phase = DellPhase.OFF
         } else if (phase == DellPhase.BOOTING) {
             progress.snapTo(0f)
-            progress.animateTo(1f, tween(durationMillis = 90_000, easing = LinearEasing))
+            progress.animateTo(1f, tween(durationMillis = 30_000, easing = LinearEasing))
             phase = DellPhase.ON
+            DellLock.touch()
+        }
+    }
+
+    // While the Dell is on: every second, check if the screen should turn off (3 minutes without a touch or key)
+    // or the Dell should lock (5 minutes). Powered off or starting, the Dell is always locked for when it is on again.
+    LaunchedEffect(phase) {
+        if (phase == DellPhase.ON) {
+            while (true) {
+                delay(1000L)
+                DellLock.tick()
+            }
+        } else {
+            DellLock.powerCycled()
         }
     }
 
@@ -518,7 +540,9 @@ fun DellOfficeScreen(
     // The right button is Back, like Esc. On the bare desktop it only closes the Start menu (it never leaves the office).
     fun mouseRightClick() {
         if (phase != DellPhase.ON) return
-        if (appOpen) backOwner?.onBackPressedDispatcher?.onBackPressed()
+        if (DellLock.locked || DellLock.screenOff) return
+        if (nav.wifiOpen) nav.wifiOpen = false
+        else if (appOpen) backOwner?.onBackPressedDispatcher?.onBackPressed()
         else if (nav.startOpen) nav.startOpen = false
     }
 
@@ -527,9 +551,15 @@ fun DellOfficeScreen(
             powerPressed()
         } else if (phase == DellPhase.ON) {
             val code = key.code
-            if (key.kind == DellKey.SHIFT) {
+            if (DellLock.screenOff || DellLock.recentlyWoke()) {
+                // The key that wakes the screen does nothing else.
+            } else if (DellLock.locked) {
+                // On the lock screen the keys type the PIN (digits, Backspace, Enter).
+                if (key.kind != DellKey.SHIFT) DellLock.onKey(context, code)
+                shift = false
+            } else if (key.kind == DellKey.SHIFT) {
                 shift = !shift
-            } else if (!appOpen && nav.handleKey(code, shortcuts.size) { index -> shortcuts.getOrNull(index)?.let { openWindow(it) } }) {
+            } else if (!appOpen && !nav.wifiOpen && nav.handleKey(code, shortcuts.size) { index -> shortcuts.getOrNull(index)?.let { openWindow(it) } }) {
                 // On the desktop the keys work the icons and the Start menu, so the screen never has to be touched.
                 shift = false
             } else if (code == AndroidKeyEvent.KEYCODE_ESCAPE) {
@@ -554,7 +584,20 @@ fun DellOfficeScreen(
 
     // Only the Dell monitor and its keyboard: no office picture, no desk. The monitor takes all the room that is left
     // above the keyboard, and the keyboard is docked at the bottom, as in the Storage room.
-    Box(modifier = Modifier.fillMaxSize().background(Desk)) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Desk)
+            // Any touch (also the taps of the Dell keyboard and the mouse) counts as activity and wakes a screen that was off.
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitPointerEvent(PointerEventPass.Initial)
+                        DellLock.touch()
+                    }
+                }
+            }
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -638,7 +681,7 @@ fun DellOfficeScreen(
                     bootProgress = progress.value,
                     zoom = zoom,
                     full = fullNow,
-                    pointer = if (phase == DellPhase.ON && (appOpen || mouseUsed) && pointer.x >= 0f) pointer else null,
+                    pointer = if (phase == DellPhase.ON && !DellLock.screenOff && (appOpen || mouseUsed) && pointer.x >= 0f) pointer else null,
                     onScreenPlaced = { origin, size ->
                         screenOrigin = origin
                         screenSize = size
@@ -655,6 +698,7 @@ fun DellOfficeScreen(
                         onWindowShow = { appOpen = it },
                         onWindowClose = { closeWindow() },
                         onShutDown = { confirmOff = true },
+                        onScreenOff = { DellLock.turnOffScreen() },
                         content = content
                     )
                 }
@@ -763,39 +807,46 @@ private fun DellMonitor(
     }
 }
 
-/** What the monitor shows for each power phase: the desktop, the shutting down message, the boot logo, or black. */
+/** What the monitor shows for each power phase: the desktop (with the lock screen or a black screen over it), the shutting down screen, the boot logo, or black. */
 @Composable
 private fun DellScreenContent(phase: DellPhase, bootProgress: Float, zoom: Float, desktop: @Composable () -> Unit) {
     when (phase) {
-        DellPhase.ON -> ScaledDesktop(zoom, desktop)
+        DellPhase.ON -> Box(modifier = Modifier.fillMaxSize()) {
+            ScaledDesktop(zoom, desktop)
+            // The desktop stays underneath, so an open window is exactly as it was when the PIN is typed.
+            if (DellLock.locked) ScaledDesktop(zoom) { DellLockScreen() }
+            if (DellLock.screenOff) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }
+                )
+            }
+        }
         DellPhase.SHUTTING -> Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().background(Color(0xFF0B57D0)),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
-            Spacer(modifier = Modifier.height(10.dp))
-            Text("Shutting down…", color = Color.White, fontSize = 13.sp)
-            Spacer(modifier = Modifier.height(2.dp))
-            Text("The Storage room keeps running", color = ScreenDimText, fontSize = 11.sp)
+            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(34.dp), strokeWidth = 3.dp)
+            Spacer(modifier = Modifier.height(14.dp))
+            Text("Shutting down…", color = Color.White, fontSize = 16.sp)
         }
         DellPhase.BOOTING -> Column(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().background(Color.Black),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Image(
                 painter = painterResource(R.drawable.dell_logo),
                 contentDescription = null,
-                modifier = Modifier.size(64.dp)
+                modifier = Modifier.size(96.dp)
             )
-            Spacer(modifier = Modifier.height(14.dp))
-            LinearProgressIndicator(
-                progress = { bootProgress },
-                modifier = Modifier.width(120.dp),
-                color = Color.White,
-                trackColor = Color(0xFF333A3D)
-            )
+            Spacer(modifier = Modifier.height(22.dp))
+            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Starting Windows…", color = Color.White, fontSize = 13.sp)
         }
         DellPhase.OFF -> Box(modifier = Modifier.fillMaxSize())
     }

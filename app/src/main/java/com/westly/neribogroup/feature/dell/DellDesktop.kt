@@ -85,6 +85,9 @@ class DellDesktopNav {
     var startOpen by mutableStateOf(false)
     var startIndex by mutableStateOf(0)
 
+    /** True while the Wi-Fi list (opened from the taskbar) is open. */
+    var wifiOpen by mutableStateOf(false)
+
     /** What each Start menu line does, in order. Filled in by [DellDesktop] every time it is drawn. */
     var menuActions: List<() -> Unit> = emptyList()
 
@@ -158,10 +161,12 @@ fun DellDesktop(
     onWindowShow: (Boolean) -> Unit,
     onWindowClose: () -> Unit,
     onShutDown: () -> Unit,
+    onScreenOff: () -> Unit,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    DellWifi.load(context)
     val home = shortcuts.firstOrNull()
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -177,12 +182,29 @@ fun DellDesktop(
         }
     }
 
+    val lockPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) { DellLockPicture.saveFrom(context, uri) }
+                if (ok) {
+                    DellLockPicture.changed()
+                } else {
+                    Toast.makeText(context, "That picture could not be used", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     // The Start menu: the lines and what they do. The keyboard (Up, Down, Enter) uses the same list.
     val hasCustomWallpaper = DellWallpaper.version >= 0 && DellWallpaper.hasCustom(context)
     val menu = ArrayList<Pair<String, () -> Unit>>()
     if (home != null) menu.add("Neribo Group" to { onLaunch(home) })
     menu.add("Change wallpaper" to { picker.launch("image/*") })
     if (hasCustomWallpaper) menu.add("Use the original wallpaper" to { DellWallpaper.reset(context) })
+    val hasCustomLock = DellLockPicture.version >= 0 && DellLockPicture.hasCustom(context)
+    menu.add("Change lock screen picture" to { lockPicker.launch("image/*") })
+    if (hasCustomLock) menu.add("Use the original lock screen picture" to { DellLockPicture.reset(context) })
+    menu.add("Turn off screen" to { onScreenOff() })
     menu.add("Shut down" to { onShutDown() })
     nav.menuActions = menu.map { it.second }
 
@@ -215,7 +237,15 @@ fun DellDesktop(
                         // The window is not under the phone's status bar, nav bar or keyboard, so the app adds no gaps for them.
                         .consumeWindowInsets(WindowInsets.safeDrawing)
                 ) {
-                    content()
+                    // With no Wi-Fi connected, every window except OPay asks for an internet connection.
+                    if (DellWifi.connected == null && openShortcut?.key != DELL_OPAY_KEY) {
+                        DellOfflineNotice(onOpenWifi = {
+                            nav.startOpen = false
+                            nav.wifiOpen = true
+                        })
+                    } else {
+                        content()
+                    }
                 }
             }
         }
@@ -233,14 +263,14 @@ fun DellDesktop(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = TaskbarHeight + 6.dp)
-                    .width(210.dp)
+                    .width(250.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(MenuColor)
                     .border(0.5.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
                     .padding(vertical = 6.dp)
             ) {
                 for ((index, line) in menu.withIndex()) {
-                    if (line.first == "Shut down") {
+                    if (line.first == "Turn off screen") {
                         Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(Color(0x33FFFFFF)))
                     }
                     MenuItem(line.first, selected = nav.keys && index == nav.startIndex) {
@@ -250,6 +280,22 @@ fun DellDesktop(
                     }
                 }
             }
+        }
+
+        if (nav.wifiOpen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { nav.wifiOpen = false }
+            )
+            DellWifiPanel(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 8.dp, bottom = TaskbarHeight + 6.dp)
+            )
         }
 
         Row(
@@ -269,6 +315,7 @@ fun DellDesktop(
                     .background(if (nav.startOpen) Color(0x33FFFFFF) else Color.Transparent)
                     .clickable {
                         nav.keys = false
+                        nav.wifiOpen = false
                         nav.startOpen = !nav.startOpen
                         nav.startIndex = 0
                     },
@@ -305,7 +352,24 @@ fun DellDesktop(
                 }
             }
             Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.CenterEnd) {
-                Clock()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (nav.wifiOpen) Color(0x33FFFFFF) else Color.Transparent)
+                            .clickable {
+                                nav.keys = false
+                                nav.startOpen = false
+                                nav.wifiOpen = !nav.wifiOpen
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        DellWifiIcon(connected = DellWifi.connected != null, color = Color.White, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Clock()
+                }
             }
         }
     }

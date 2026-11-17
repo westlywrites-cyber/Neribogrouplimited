@@ -12,6 +12,9 @@ const val DELL_PER_PAGE = 5
 /** The key of the first icon, Neribo Group (the home page: profit and renewals only). */
 const val DELL_HOME_KEY = "ng"
 
+/** The key of the OPay icon (NCO only). Its window works with or without Wi-Fi. */
+const val DELL_OPAY_KEY = "opay"
+
 /**
  * One icon on the CEO office desktop. [key] says what it opens: "ng" (home), "sec:<SECTION NAME>", "app:<app id>"
  * or "social:<account id>". [iconFile] is the picture the owner chose when he added an app (it may not exist);
