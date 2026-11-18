@@ -1478,7 +1478,7 @@ private fun wirePaths(): List<Path> {
             cubicTo(880f, 546f, 830f, 492f, 760f, 458f)
         },
         // Main server to the backup server: the 10G link.
-        path { moveTo(578f, 522f); lineTo(578f, 596f) },
+        path { moveTo(578f, 497f); lineTo(578f, 565f) },
         // Starlink to the router.
         path { moveTo(1302f, 482f); lineTo(1282f, 482f) }
     )
@@ -1576,7 +1576,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                         drawPath(seg, Color(0xFF111111), style = Stroke(width = 7f, cap = StrokeCap.Round))
                         if (cableShown >= 0.99f && drive.phase != DrivePhase.PLUG) {
                             val lamp = if (drive.phase == DrivePhase.COPY && blink.value < 0.5f) Color(0xFF1F6A3A) else Color(0xFF43D17A)
-                            drawCircle(lamp, radius = 4f, center = Offset(405f, 648f))
+                            drawCircle(lamp, radius = 4f, center = Offset(405f, 598f))
                         }
                     }
                     if (onDesk != null) {
@@ -1608,7 +1608,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                     }
                     // The drive lights of the two servers (main on top, backup below).
                     if (picture == "on") {
-                        for (c in listOf(Offset(427f, 484f), Offset(427f, 504f), Offset(427f, 623f), Offset(427f, 643f))) {
+                        for (c in listOf(Offset(422f, 460f), Offset(422f, 480f), Offset(424f, 573f), Offset(424f, 593f))) {
                             drawCircle(Color(0x5543D17A), radius = 9f, center = c)
                         }
                     }
@@ -1624,14 +1624,14 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
             )
             Box(
                 modifier = Modifier
-                    .offset(x = w * 0.262f, y = h * 0.405f)
-                    .size(width = w * 0.266f, height = h * 0.097f)
+                    .offset(x = w * 0.262f, y = h * 0.392f)
+                    .size(width = w * 0.266f, height = h * 0.068f)
                     .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
             )
             Box(
                 modifier = Modifier
-                    .offset(x = w * 0.262f, y = h * 0.540f)
-                    .size(width = w * 0.266f, height = h * 0.090f)
+                    .offset(x = w * 0.262f, y = h * 0.505f)
+                    .size(width = w * 0.266f, height = h * 0.068f)
                     .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
             )
             // The drive on the table: a tap asks what to do with it.
@@ -1694,7 +1694,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
 private fun drivePath(): Path = Path().apply {
     moveTo(153f, 563f)
     cubicTo(148f, 650f, 120f, 745f, 235f, 752f)
-    cubicTo(350f, 759f, 360f, 725f, 405f, 650f)
+    cubicTo(350f, 759f, 362f, 700f, 405f, 600f)
 }
 
 // ---------------------------------------------------------------------------------------------
