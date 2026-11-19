@@ -111,6 +111,10 @@ object LedgerStorage {
             o.put("paystackTx", playTxToJson(app.paystackTx))
             o.put("audienceApple", app.audienceApple)
             o.put("audienceWebsite", app.audienceWebsite)
+            // Counted-only paid users (apps without a Free plan). Only written when there are some.
+            if (app.audiencePremium != 0L) o.put("audiencePremium", app.audiencePremium)
+            if (app.audiencePro != 0L) o.put("audiencePro", app.audiencePro)
+            if (app.audienceBatches.isNotEmpty()) o.put("audienceBatches", batchesToJson(app.audienceBatches))
             val dr = app.dayRolls
             if (dr != null) {
                 o.put(
@@ -518,6 +522,10 @@ object LedgerStorage {
             paystackTx = jsonToPlayTx(o.optJSONArray("paystackTx")),
             audienceApple = o.optLong("audienceApple"),
             audienceWebsite = o.optLong("audienceWebsite"),
+            // Older files have none of these: nobody counted-only is on a paid plan.
+            audiencePremium = maxOf(0L, o.optLong("audiencePremium")),
+            audiencePro = maxOf(0L, o.optLong("audiencePro")),
+            audienceBatches = jsonToBatches(o.optJSONArray("audienceBatches")),
             dayRolls = o.optJSONObject("dayRolls")?.let { d ->
                 DayRolls(
                     dayKey = d.optString("day"),
@@ -1071,6 +1079,35 @@ object LedgerStorage {
             endDayKey = end,
             stoppedDayKey = o.optString("stopped")
         )
+    }
+
+    private fun batchesToJson(batches: List<AudienceBatch>): JSONArray {
+        val array = JSONArray()
+        for (b in batches) {
+            val o = JSONObject()
+            o.put("day", b.dayKey)
+            o.put("channel", b.channel.name)
+            o.put("premium", b.premium)
+            o.put("pro", b.pro)
+            array.put(o)
+        }
+        return array
+    }
+
+    private fun jsonToBatches(array: JSONArray?): List<AudienceBatch> {
+        if (array == null) return emptyList()
+        val list = ArrayList<AudienceBatch>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val day = o.optString("day")
+            if (day.isBlank()) continue
+            val channel = Channel.values().firstOrNull { it.name == o.optString("channel") } ?: Channel.PLAY
+            val premium = maxOf(0L, o.optLong("premium"))
+            val pro = maxOf(0L, o.optLong("pro"))
+            if (premium + pro <= 0L) continue
+            list.add(AudienceBatch(dayKey = day, channel = channel, premium = premium, pro = pro))
+        }
+        return list
     }
 
     private fun historyToJson(history: List<DayCount>): JSONArray {

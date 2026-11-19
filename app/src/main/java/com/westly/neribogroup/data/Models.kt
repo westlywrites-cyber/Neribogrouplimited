@@ -2,6 +2,7 @@ package com.westly.neribogroup.data
 
 import java.text.SimpleDateFormat
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.Date
@@ -127,6 +128,24 @@ data class AppUser(
         else calendarDaysLeft(now, planExpiryMillis)
 }
 
+/**
+ * One day's counted-only users (adverts beyond the rows that are listed) who paid on arrival, for one channel.
+ * [dayKey] is the day their paid period started. Only used in apps without a Free plan that sell Premium and Pro.
+ */
+data class AudienceBatch(
+    val dayKey: String,
+    val channel: Channel,
+    val premium: Long,
+    val pro: Long
+) {
+    /** True when the paid period that started on [dayKey] has run its [PLAN_DAYS] days by the day [today]. */
+    fun endedOn(today: String): Boolean {
+        val from = runCatching { LocalDate.parse(dayKey) }.getOrNull() ?: return false
+        val to = runCatching { LocalDate.parse(today) }.getOrNull() ?: return false
+        return ChronoUnit.DAYS.between(from, to) >= PLAN_DAYS.toLong()
+    }
+}
+
 /** One app dashboard, for example "Neribo Vault". */
 data class AppData(
     val id: String = UUID.randomUUID().toString(),
@@ -195,6 +214,15 @@ data class AppData(
     /** Of [audienceFree]: how many belong to the Apple Store and to the Website (the rest are Google Play). */
     val audienceApple: Long = 0,
     val audienceWebsite: Long = 0,
+    /**
+     * Of [audienceFree] (all counted-only users): how many are on Premium and on Pro. Only apps without a Free
+     * plan make these (everybody who joins there pays on arrival). The others of [audienceFree] are on Free,
+     * or "Not paid" in an app without a Free plan.
+     */
+    val audiencePremium: Long = 0,
+    val audiencePro: Long = 0,
+    /** Pro & Premium only apps: the counted-only paid users per start day and channel, so their period can end. */
+    val audienceBatches: List<AudienceBatch> = emptyList(),
     /** What the backend decided for the last day it was asked about. */
     val dayRolls: DayRolls? = null,
     /** True for a Neribo Deploy style app: users have sites. */
@@ -246,12 +274,15 @@ data class AppData(
     /** Google Play apps count from the user list. Manual apps use the numbers typed in Edit. */
     val totalUsers: Long get() = if (googlePlayEnabled) users.size.toLong() + audienceFree else manualTotalUsers
     val premiumUsers: Long
-        get() = if (googlePlayEnabled) users.count { it.plan == Plan.PREMIUM }.toLong() else manualPremiumUsers
+        get() = if (googlePlayEnabled) users.count { it.plan == Plan.PREMIUM }.toLong() + audiencePremium else manualPremiumUsers
     val proUsers: Long
-        get() = if (googlePlayEnabled) users.count { it.plan == Plan.PRO }.toLong() else manualProUsers
+        get() = if (googlePlayEnabled) users.count { it.plan == Plan.PRO }.toLong() + audiencePro else manualProUsers
     val freeUsers: Long
-        get() = if (googlePlayEnabled) users.count { it.plan == Plan.FREE }.toLong() + audienceFree
-        else maxOf(0L, manualTotalUsers - manualPremiumUsers - manualProUsers)
+        get() = if (googlePlayEnabled) {
+            users.count { it.plan == Plan.FREE }.toLong() + maxOf(0L, audienceFree - audiencePremium - audiencePro)
+        } else {
+            maxOf(0L, manualTotalUsers - manualPremiumUsers - manualProUsers)
+        }
 
     /** Everything waiting in the Google Play Balance. It is not profit until it is withdrawn. */
     val playBalance: Long get() = playSubsBalance + playAdsBalance
@@ -560,6 +591,9 @@ data class AppData(
         paystackTx = current.paystackTx,
         audienceApple = current.audienceApple,
         audienceWebsite = current.audienceWebsite,
+        audiencePremium = current.audiencePremium,
+        audiencePro = current.audiencePro,
+        audienceBatches = current.audienceBatches,
         dayRolls = current.dayRolls,
         storageUsedKb = current.storageUsedKb,
         planHistory = PlanHistory.merge(current.planHistory, planHistory)
@@ -673,7 +707,11 @@ data class AppData(
             manualPremiumUsers = manualPremiumUsers + manualProUsers,
             manualProUsers = 0L,
             manualPremiumToday = manualPremiumToday + manualProToday,
-            manualProToday = 0L
+            manualProToday = 0L,
+            // Counted-only Pro users join the unlocked ones, and nobody has an end date any more.
+            audiencePremium = audiencePremium + audiencePro,
+            audiencePro = 0L,
+            audienceBatches = emptyList()
         )
     }
 

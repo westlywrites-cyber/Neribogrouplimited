@@ -3,6 +3,7 @@ package com.westly.neribogroup.data
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.ZoneId
+import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -110,10 +111,13 @@ object DiceEngine {
         val list = ArrayList<DiceKind>()
         list.add(DiceKind.NEW)
         if (app.totalUsers >= 1L) list.add(DiceKind.ACTIVE)
-        val canUpgrade = upgradePool(app).isNotEmpty()
+        // The upgrade dice (yellow and purple) turn Free users into paid users. An app without a Free plan has none:
+        // everybody who joins pays on arrival, so there is nothing to upgrade.
+        val canUpgrade = app.freeAllowed && upgradePool(app).isNotEmpty()
         if (app.effectivePremiumPrice > 0L && canUpgrade) list.add(DiceKind.PREMIUM)
         if (app.effectiveProPrice > 0L && canUpgrade) list.add(DiceKind.PRO)
-        if (renewalPool(app, now).isNotEmpty()) {
+        // Renewals also cover the counted-only paid users whose period has ended.
+        if (renewalPool(app, now).isNotEmpty() || hasEndedBatches(app, dayKey(now))) {
             list.add(DiceKind.RENEW)
             list.add(DiceKind.LOST)
         }
@@ -225,6 +229,184 @@ object DiceEngine {
             out.add(tx(kind, label, payments.sum(), channelFee(channel, payments), now, channel))
         }
         return out
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Apps without a Free plan: everybody who joins pays on the day they arrive
+    // -----------------------------------------------------------------------------------------
+
+    /** How many of [n] people start on Pro when [proShare] (0.0 to 1.0) of the people do. Rounds fairly by chance. */
+    private fun proCountFor(n: Long, proShare: Double, rng: Random): Long {
+        if (n <= 0L || proShare <= 0.0) return 0L
+        if (proShare >= 1.0) return n
+        val exact = n * proShare
+        val base = floor(exact).toLong()
+        val extra = if (rng.nextDouble() < exact - base) 1L else 0L
+        return min(n, base + extra)
+    }
+
+    /**
+     * Puts the listed joiners on a paid plan from the day they arrive (the plan starts on the join day).
+     * Without a price for Pro they are all Premium (Unlocked in a One-time app); without a price for Premium all Pro.
+     */
+    private fun paidOnJoin(app: AppData, users: List<AppUser>, proShare: Double, rng: Random): List<AppUser> {
+        if (users.isEmpty()) return users
+        val pro = proCountFor(users.size.toLong(), proShare, rng).toInt()
+        val premium = users.size - pro
+        return users.mapIndexed { index, u ->
+            u.copy(
+                plan = if (index < premium) Plan.PREMIUM else Plan.PRO,
+                planStartMillis = u.addedMillis,
+                planExpiryMillis = app.planEndFor(u.addedMillis)
+            )
+        }
+    }
+
+    /** What [channel] keeps from [count] payments of the same [price] (any count, without making a long list). */
+    private fun bulkFee(channel: Channel, price: Long, count: Long): Long {
+        if (price <= 0L || count <= 0L) return 0L
+        return when (channel) {
+            Channel.PLAY -> playSubscriptionFee(price * count)
+            Channel.APPLE -> appleSubscriptionFee(price * count)
+            Channel.WEBSITE -> paystackPaymentFee(price) * count
+        }
+    }
+
+    /** One balance line for counted-only users: [premium] payments of the Premium price and [pro] of the Pro price. */
+    private fun countedLine(kind: PlayTxKind, channel: Channel, premium: Long, pro: Long, app: AppData, label: String, now: Long): PlayTx? {
+        val premiumPrice = app.effectivePremiumPrice
+        val proPrice = app.effectiveProPrice
+        val gross = premium * premiumPrice + pro * proPrice
+        if (gross <= 0L) return null
+        val fee = bulkFee(channel, premiumPrice, premium) + bulkFee(channel, proPrice, pro)
+        val text = label + (if (channel == Channel.PLAY) "" else " (" + channel.label + ")")
+        return tx(kind, text, gross, fee, now, channel)
+    }
+
+    /** True when some counted-only paid users have reached the end of their paid period on the day [today]. */
+    private fun hasEndedBatches(app: AppData, today: String): Boolean =
+        app.audienceBatches.any { it.endedOn(today) && (it.premium + it.pro) > 0L }
+
+    /** Joins batches of the same start day and channel, drops empty ones and sorts them by day. */
+    private fun mergeBatches(list: List<AudienceBatch>): List<AudienceBatch> {
+        val map = LinkedHashMap<String, AudienceBatch>()
+        for (b in list) {
+            if (b.premium + b.pro <= 0L) continue
+            val key = b.dayKey + "|" + b.channel.name
+            val old = map[key]
+            map[key] = if (old == null) b else old.copy(premium = old.premium + b.premium, pro = old.pro + b.pro)
+        }
+        return map.values.sortedWith(compareBy<AudienceBatch>({ it.dayKey }, { it.channel.ordinal }))
+    }
+
+    /** Like [countFromShare] for a pool that can be bigger than an Int. */
+    private fun countFromShareLong(pool: Long, face: Int, table: Array<Pair<Double, Double>>, random: Random): Long {
+        if (face <= 0 || pool <= 0L) return 0L
+        val range = table[face - 1]
+        val share = random.nextDouble(range.first, range.second)
+        return min(pool, max(1L, (pool * share).roundToLong()))
+    }
+
+    /** What the counted-only paid users did in one roll: the batches that are left, who renewed, who was lost. */
+    private class BatchSettle(
+        val batches: List<AudienceBatch>,
+        val renewedPremium: Map<Channel, Long>,
+        val renewedPro: Map<Channel, Long>,
+        val lostPremium: Long,
+        val lostPro: Long
+    ) {
+        val renewed: Long get() = renewedPremium.values.sum() + renewedPro.values.sum()
+        val lost: Long get() = lostPremium + lostPro
+    }
+
+    /**
+     * The batches whose paid period has ended are judged by the same orange (renew) and red (not renewed) dice as
+     * the listed users. A renewed part starts a new period today, a lost part becomes "Not paid" (it leaves the
+     * Premium or Pro count), and the rest waits and is judged again on the next roll. A plan that no longer exists
+     * (price 0) lapses by itself. Uses its own [rng], so no number of the rest of the roll changes.
+     */
+    private fun settleBatches(app: AppData, today: String, renewFace: Int, lostFace: Int, rng: Random): BatchSettle {
+        val ended = app.audienceBatches.filter { it.endedOn(today) }
+        if (ended.isEmpty()) return BatchSettle(app.audienceBatches, emptyMap(), emptyMap(), 0L, 0L)
+        val endedPremium = ended.sumOf { it.premium }
+        val endedPro = ended.sumOf { it.pro }
+        val deadPremium = if (app.effectivePremiumPrice > 0L) 0L else endedPremium
+        val deadPro = if (app.effectiveProPrice > 0L) 0L else endedPro
+        val poolPremium = endedPremium - deadPremium
+        val poolPro = endedPro - deadPro
+        val pool = poolPremium + poolPro
+
+        var renewPremium = 0L
+        var renewPro = 0L
+        var lostPremium = deadPremium
+        var lostPro = deadPro
+        if (pool > 0L) {
+            val renewCount = countFromShareLong(pool, renewFace, RENEW_SHARE, rng)
+            val lostCount = min(pool - renewCount, countFromShareLong(pool, lostFace, LOST_SHARE, rng))
+            renewPro = (renewCount.toDouble() * poolPro / pool).roundToLong().coerceIn(0L, min(poolPro, renewCount))
+            renewPremium = renewCount - renewPro
+            if (renewPremium > poolPremium) {
+                renewPro += renewPremium - poolPremium
+                renewPremium = poolPremium
+            }
+            val leftPremium = poolPremium - renewPremium
+            val leftPro = poolPro - renewPro
+            val left = leftPremium + leftPro
+            if (lostCount > 0L && left > 0L) {
+                var lostP = (lostCount.toDouble() * leftPro / left).roundToLong().coerceIn(0L, min(leftPro, lostCount))
+                var lostM = lostCount - lostP
+                if (lostM > leftPremium) {
+                    lostP += lostM - leftPremium
+                    lostM = leftPremium
+                }
+                lostPremium += lostM
+                lostPro += lostP
+            }
+        }
+
+        var remRenewPremium = renewPremium
+        var remRenewPro = renewPro
+        var remLostPremium = lostPremium
+        var remLostPro = lostPro
+        val kept = ArrayList<AudienceBatch>()
+        val renewedPremiumBy = HashMap<Channel, Long>()
+        val renewedProBy = HashMap<Channel, Long>()
+        for (b in app.audienceBatches.sortedWith(compareBy<AudienceBatch>({ it.dayKey }, { it.channel.ordinal }))) {
+            if (!b.endedOn(today)) {
+                kept.add(b)
+                continue
+            }
+            var premium = b.premium
+            var pro = b.pro
+            val rp = min(premium, remRenewPremium)
+            remRenewPremium -= rp
+            premium -= rp
+            val rr = min(pro, remRenewPro)
+            remRenewPro -= rr
+            pro -= rr
+            val lp = min(premium, remLostPremium)
+            remLostPremium -= lp
+            premium -= lp
+            val lr = min(pro, remLostPro)
+            remLostPro -= lr
+            pro -= lr
+            if (rp > 0L) renewedPremiumBy[b.channel] = (renewedPremiumBy[b.channel] ?: 0L) + rp
+            if (rr > 0L) renewedProBy[b.channel] = (renewedProBy[b.channel] ?: 0L) + rr
+            if (premium + pro > 0L) kept.add(b.copy(premium = premium, pro = pro))
+        }
+        // A renewed part starts a new paid period today.
+        for (channel in Channel.values()) {
+            val p = renewedPremiumBy[channel] ?: 0L
+            val r = renewedProBy[channel] ?: 0L
+            if (p + r > 0L) kept.add(AudienceBatch(today, channel, p, r))
+        }
+        return BatchSettle(
+            batches = mergeBatches(kept),
+            renewedPremium = renewedPremiumBy,
+            renewedPro = renewedProBy,
+            lostPremium = lostPremium - remLostPremium,
+            lostPro = lostPro - remLostPro
+        )
     }
 
     /**
@@ -447,10 +629,33 @@ object DiceEngine {
 
         // New users (green). They are Free users with a made-up name, email and phone.
         val newCount = newUsersFor(face(DiceKind.NEW), app.totalUsers, factor, random)
-        val newUsers = if (newCount > 0) {
+        val placedNew = if (newCount > 0) {
             placeNewUsers(makeNewUsers(newCount, ledger, now, dayStart, random, preset), app, today, random)
         } else {
             emptyList()
+        }
+
+        // An app without a Free plan: everybody who joins pays on the day they arrive (70% Premium, 30% Pro when both
+        // have a price; Unlocked in a One-time app). This uses its own random, never [random], so no other number of
+        // the roll changes. Apps with a Free plan skip all of this.
+        val payOnArrival = PaymentRules.paysOnArrival(app)
+        val payRng = Random(stableSeed("pay|" + app.id + "|" + today))
+        val proShare = PaymentRules.arrivalProShare(app)
+        val newUsers = if (payOnArrival) paidOnJoin(app, placedNew, proShare, payRng) else placedNew
+        if (payOnArrival) {
+            lines.addAll(
+                channelLines(
+                    PlayTxKind.SUBSCRIPTION, newUsers.filter { it.plan == Plan.PREMIUM }, { app.effectivePremiumPrice },
+                    if (app.isOneTime) "new one-time purchase on joining" else "new Premium subscription on joining",
+                    if (app.isOneTime) "new one-time purchases on joining" else "new Premium subscriptions on joining", now
+                )
+            )
+            lines.addAll(
+                channelLines(
+                    PlayTxKind.SUBSCRIPTION, newUsers.filter { it.plan == Plan.PRO }, { app.effectiveProPrice },
+                    "new Pro subscription on joining", "new Pro subscriptions on joining", now
+                )
+            )
         }
 
         // Adverts: users that celebrities' and blogs' followers bring. The backend already decided how many
@@ -463,6 +668,9 @@ object DiceEngine {
         var advertPro = 0
         var audienceApple = 0L
         var audienceWebsite = 0L
+        // Counted-only advert users who paid on arrival (apps without a Free plan), per channel.
+        val countedPaidPremium = HashMap<Channel, Long>()
+        val countedPaidPro = HashMap<Channel, Long>()
         if (advertTotal > 0L) {
             val room = max(0, AdvertEngine.MAX_STORED_USER_ROWS_PER_APP - (app.users.size + newCount))
             val rowCap = min(AdvertEngine.MAX_ROWS_PER_ROLL, room)
@@ -476,35 +684,58 @@ object DiceEngine {
                 } else {
                     emptyList()
                 }
-                // Paid users must be listed one by one. A plan without a price does not exist, so those users stay Free.
-                val premium = if (app.effectivePremiumPrice > 0L) min(part.premium, made.size.toLong()).toInt() else 0
-                val pro = if (app.effectiveProPrice > 0L) min(part.pro, (made.size - premium).toLong()).toInt() else 0
-                made = made.mapIndexed { index, u ->
-                    // They upgrade on the day they arrive: the plan starts when the user joined.
-                    when {
-                        index < premium -> u.copy(
-                            channel = channel,
-                            plan = Plan.PREMIUM,
-                            planStartMillis = u.addedMillis,
-                            planExpiryMillis = app.planEndFor(u.addedMillis)
-                        )
-                        index < premium + pro -> u.copy(
-                            channel = channel,
-                            plan = Plan.PRO,
-                            planStartMillis = u.addedMillis,
-                            planExpiryMillis = app.planEndFor(u.addedMillis)
-                        )
-                        else -> u.copy(channel = channel)
+                if (payOnArrival) {
+                    // No Free plan: every advert user pays on the day they arrive. The backend's Premium and Pro
+                    // numbers are not used here.
+                    made = paidOnJoin(app, made.map { it.copy(channel = channel) }, proShare, payRng)
+                    rows.addAll(made)
+                    advertPremium += made.count { it.plan == Plan.PREMIUM }
+                    advertPro += made.count { it.plan == Plan.PRO }
+                } else {
+                    // Paid users must be listed one by one. A plan without a price does not exist, so those users stay Free.
+                    val premium = if (app.effectivePremiumPrice > 0L) min(part.premium, made.size.toLong()).toInt() else 0
+                    val pro = if (app.effectiveProPrice > 0L) min(part.pro, (made.size - premium).toLong()).toInt() else 0
+                    made = made.mapIndexed { index, u ->
+                        // They upgrade on the day they arrive: the plan starts when the user joined.
+                        when {
+                            index < premium -> u.copy(
+                                channel = channel,
+                                plan = Plan.PREMIUM,
+                                planStartMillis = u.addedMillis,
+                                planExpiryMillis = app.planEndFor(u.addedMillis)
+                            )
+                            index < premium + pro -> u.copy(
+                                channel = channel,
+                                plan = Plan.PRO,
+                                planStartMillis = u.addedMillis,
+                                planExpiryMillis = app.planEndFor(u.addedMillis)
+                            )
+                            else -> u.copy(channel = channel)
+                        }
                     }
+                    rows.addAll(made)
+                    advertPremium += premium
+                    advertPro += pro
                 }
-                rows.addAll(made)
-                advertPremium += premium
-                advertPro += pro
                 val counted = part.users - made.size
+                if (payOnArrival && counted > 0L) {
+                    val countedPro = proCountFor(counted, proShare, payRng)
+                    countedPaidPro[channel] = (countedPaidPro[channel] ?: 0L) + countedPro
+                    countedPaidPremium[channel] = (countedPaidPremium[channel] ?: 0L) + (counted - countedPro)
+                }
                 if (channel == Channel.APPLE) audienceApple += counted
                 if (channel == Channel.WEBSITE) audienceWebsite += counted
             }
             advertRows = rows
+            for (channel in Channel.values()) {
+                val p = countedPaidPremium[channel] ?: 0L
+                val r = countedPaidPro[channel] ?: 0L
+                if (p + r > 0L) {
+                    val label = (p + r).toString() +
+                        (if (p + r == 1L) " counted user paid on joining" else " counted users paid on joining")
+                    countedLine(PlayTxKind.SUBSCRIPTION, channel, p, r, app, label, now)?.let { lines.add(it) }
+                }
+            }
             if (advertPremium + advertPro > 0) {
                 lines.addAll(
                     channelLines(
@@ -523,6 +754,14 @@ object DiceEngine {
         }
         // The rest is only counted (Free users that are not listed one by one).
         val audienceAdded = advertTotal - advertRows.size
+        val audiencePremiumAdded = countedPaidPremium.values.sum()
+        val audienceProAdded = countedPaidPro.values.sum()
+        // A One-time app needs only the counters. A subscription app also keeps today's batch per channel.
+        val newBatches: List<AudienceBatch> = if (app.isOneTime) {
+            emptyList()
+        } else {
+            Channel.values().map { AudienceBatch(today, it, countedPaidPremium[it] ?: 0L, countedPaidPro[it] ?: 0L) }
+        }
 
         // Active users (blue). All of today's new users and advert users are active on the day they arrive, and the
         // dice adds its share of the users who joined before. Never more than all users.
@@ -602,6 +841,21 @@ object DiceEngine {
             channelLines(PlayTxKind.RENEWAL, renewedUsers, { priceOf(app, it.plan) }, "renewal", "renewals", now)
         )
 
+        // Counted-only paid users (apps without a Free plan) whose period has ended: the same renew and red dice
+        // decide. Their own random, so the listed users' numbers above stay the same.
+        val settle = settleBatches(
+            app, today, face(DiceKind.RENEW), face(DiceKind.LOST),
+            Random(stableSeed("audience|" + app.id + "|" + today))
+        )
+        for (channel in Channel.values()) {
+            val p = settle.renewedPremium[channel] ?: 0L
+            val r = settle.renewedPro[channel] ?: 0L
+            if (p + r > 0L) {
+                val label = (p + r).toString() + (if (p + r == 1L) " counted renewal" else " counted renewals")
+                countedLine(PlayTxKind.RENEWAL, channel, p, r, app, label, now)?.let { lines.add(it) }
+            }
+        }
+
         // Google Ads (gold). Based on how many Free users the app has.
         var adsGross = 0L
         if (face(DiceKind.ADS) > 0) {
@@ -638,10 +892,12 @@ object DiceEngine {
             faces = faces,
             newUsers = newCount.toLong(),
             active = activeToday,
-            premium = (premiumPicked.size + advertPremium).toLong(),
-            pro = (proPicked.size + advertPro).toLong(),
-            renewed = renewedUsers.size.toLong(),
-            lapsed = lapsed.toLong(),
+            premium = (premiumPicked.size + advertPremium).toLong() +
+                newUsers.count { it.plan == Plan.PREMIUM }.toLong() + audiencePremiumAdded,
+            pro = (proPicked.size + advertPro).toLong() +
+                newUsers.count { it.plan == Plan.PRO }.toLong() + audienceProAdded,
+            renewed = renewedUsers.size.toLong() + settle.renewed,
+            lapsed = lapsed.toLong() + settle.lost,
             subsNet = subsNet,
             adsNet = adsNet,
             campaign = campaignToday != null,
@@ -669,6 +925,10 @@ object DiceEngine {
             planEvents.add(PlanHistory.event(c.id, PlanEventKind.STARTED, c.plan, c.planStartMillis, c.planExpiryMillis))
         }
         for (u in advertRows) {
+            if (u.plan == Plan.FREE) continue
+            planEvents.add(PlanHistory.event(u.id, PlanEventKind.STARTED, u.plan, u.planStartMillis, u.planExpiryMillis))
+        }
+        for (u in newUsers) {
             if (u.plan == Plan.FREE) continue
             planEvents.add(PlanHistory.event(u.id, PlanEventKind.STARTED, u.plan, u.planStartMillis, u.planExpiryMillis))
         }
@@ -701,6 +961,9 @@ object DiceEngine {
             audienceApple = app.audienceApple + audienceApple,
             audienceWebsite = app.audienceWebsite + audienceWebsite,
             audienceFree = app.audienceFree + audienceAdded,
+            audiencePremium = max(0L, app.audiencePremium + audiencePremiumAdded - settle.lostPremium),
+            audiencePro = max(0L, app.audiencePro + audienceProAdded - settle.lostPro),
+            audienceBatches = mergeBatches(settle.batches + newBatches),
             audienceTodayKey = if (audienceAdded > 0L) today else app.audienceTodayKey,
             audienceToday = if (audienceAdded > 0L) {
                 (if (app.audienceTodayKey == today) app.audienceToday else 0L) + audienceAdded

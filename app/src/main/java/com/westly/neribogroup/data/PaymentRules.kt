@@ -91,8 +91,40 @@ object PaymentRules {
         for (user in app.users) {
             if (hasAccess(app, user, now)) yes += 1L else no += 1L
         }
-        if (app.freeAllowed) yes += app.audienceFree else no += app.audienceFree
+        // Counted-only users: those on a paid period that has not ended have access. The rest are Free (with a Free
+        // plan everybody has access) or Not paid / on an ended period (no access without a Free plan).
+        val today = dayKey(now)
+        val audiencePaid = minOf(app.audienceFree, app.audiencePremium + app.audiencePro)
+        val audienceNotPaid = maxOf(0L, app.audienceFree - audiencePaid)
+        val audienceEnded = minOf(audiencePaid, app.audienceBatches.filter { it.endedOn(today) }.sumOf { it.premium + it.pro })
+        if (app.freeAllowed) {
+            yes += app.audienceFree
+        } else {
+            yes += audiencePaid - audienceEnded
+            no += audienceNotPaid + audienceEnded
+        }
         return Pair(yes, no)
+    }
+
+    /** Out of every 100 people who join an app that has Pro and Premium but no Free plan, this many start on Pro. */
+    const val PRO_ARRIVAL_PERCENT = 30
+
+    /**
+     * True when everybody who joins pays on the day they arrive: the app has no Free plan (Pro & Premium only, or
+     * One-time payment) and at least one paid price is set. Then the Premium and Pro upgrade dice are not needed.
+     */
+    fun paysOnArrival(app: AppData): Boolean =
+        !app.freeAllowed && (app.effectivePremiumPrice > 0L || app.effectiveProPrice > 0L)
+
+    /**
+     * The share (0.0 to 1.0) of the people who join that start on Pro. 30% when both plans have a price, all of
+     * them when only Pro has a price, none when only Premium has a price. A One-time app has no Pro: everybody
+     * is Unlocked (stored as Premium).
+     */
+    fun arrivalProShare(app: AppData): Double = when {
+        app.effectiveProPrice <= 0L -> 0.0
+        app.effectivePremiumPrice <= 0L -> 1.0
+        else -> PRO_ARRIVAL_PERCENT / 100.0
     }
 
     /** The plans you can give a user in this app: only those that exist, in the order shown on the chips. */
