@@ -30,6 +30,9 @@ import com.westly.neribogroup.cloud.sha256Hex
 import com.westly.neribogroup.cloud.AiJobRules
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.AppUser
+import com.westly.neribogroup.data.AudienceBatch
+import com.westly.neribogroup.data.Channel
+import com.westly.neribogroup.data.PaymentModel
 import com.westly.neribogroup.data.DAY_MILLIS
 import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.DiceKind
@@ -39,6 +42,7 @@ import com.westly.neribogroup.data.Plan
 import com.westly.neribogroup.data.PresetIdentity
 import com.westly.neribogroup.data.PresetRoll
 import com.westly.neribogroup.data.SOFTWARE_APP_ID
+import com.westly.neribogroup.data.dayKey
 import com.westly.neribogroup.data.LedgerStorage
 import com.westly.neribogroup.feature.common.DialogActions
 import com.westly.neribogroup.feature.common.NeriboDialog
@@ -453,6 +457,68 @@ object SelfCheck {
                     }
                 }
                 Pair(problems == 0 && jobs.isNotEmpty(), jobs.size.toString() + " jobs checked")
+            }
+        )
+
+        lines.add(
+            runCheck("16. Apps without a Free plan: everyone pays on joining") {
+                val old = (1..20).map { i ->
+                    AppUser(
+                        id = "np$i",
+                        name = "Not Paid $i",
+                        email = "np$i@example.com",
+                        addedMillis = now - 5L * DAY_MILLIS,
+                        simulated = true
+                    )
+                }
+                val paidApp = AppData(
+                    id = "selfcheck-paid",
+                    name = "Paid test app",
+                    paymentModel = PaymentModel.PRO_PREMIUM_ONLY,
+                    premiumPrice = 1000L,
+                    proPrice = 3000L,
+                    googlePlayEnabled = true,
+                    users = old
+                )
+                val oneTimeApp = paidApp.copy(
+                    id = "selfcheck-onetime",
+                    paymentModel = PaymentModel.ONE_TIME,
+                    oneTimePrice = 2000L,
+                    premiumPrice = 0L,
+                    proPrice = 0L
+                )
+                val hidden = DiceKind.PREMIUM !in DiceEngine.visibleDice(paidApp, now) &&
+                    DiceKind.PRO !in DiceEngine.visibleDice(paidApp, now) &&
+                    DiceKind.PREMIUM !in DiceEngine.visibleDice(oneTimeApp, now)
+
+                val rolled = DiceEngine.roll(Ledger(apps = listOf(paidApp)), paidApp.id, now, Random(7), null).apps.first()
+                val joined = rolled.users.filter { u -> old.none { it.id == u.id } }
+                val allPaid = joined.all { it.plan != Plan.FREE && it.planStartMillis == it.addedMillis }
+                val countersOk = rolled.audiencePremium + rolled.audiencePro <= rolled.audienceFree
+
+                val rolledOne = DiceEngine.roll(Ledger(apps = listOf(oneTimeApp)), oneTimeApp.id, now, Random(7), null).apps.first()
+                val joinedOne = rolledOne.users.filter { u -> old.none { it.id == u.id } }
+                val oneOk = joinedOne.all { it.plan == Plan.PREMIUM && it.planExpiryMillis == 0L } && rolledOne.audiencePro == 0L
+
+                // Counted-only paid users are saved and read back, and an ended period is judged by the renew dice.
+                val started = dayKey(now - 40L * DAY_MILLIS)
+                val withBatch = paidApp.copy(
+                    audienceFree = 10L,
+                    audiencePremium = 7L,
+                    audiencePro = 3L,
+                    audienceBatches = listOf(AudienceBatch(started, Channel.WEBSITE, 7L, 3L))
+                )
+                val back = LedgerStorage.fromJson(LedgerStorage.toJson(Ledger(apps = listOf(withBatch)))).apps.first()
+                val saved = back.audiencePremium == 7L && back.audiencePro == 3L &&
+                    back.audienceBatches == withBatch.audienceBatches
+                val judged = DiceKind.RENEW in DiceEngine.visibleDice(withBatch, now)
+                val after = DiceEngine.roll(Ledger(apps = listOf(withBatch)), withBatch.id, now, Random(7), null).apps.first()
+                val batchSum = after.audienceBatches.sumOf { it.premium + it.pro }
+                val consistent = batchSum == after.audiencePremium + after.audiencePro &&
+                    after.audiencePremium + after.audiencePro <= after.audienceFree
+
+                val ok = hidden && allPaid && countersOk && oneOk && saved && judged && consistent
+                Pair(ok, if (ok) joined.size.toString() + " new users paid on joining" else "A case failed")
             }
         )
         return lines
