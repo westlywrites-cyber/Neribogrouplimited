@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.westly.neribogroup.data.AppUser
 import com.westly.neribogroup.data.PaymentModel
 import com.westly.neribogroup.data.PaymentRules
+import com.westly.neribogroup.data.Plan
 import com.westly.neribogroup.data.PlanEvent
 import com.westly.neribogroup.feature.common.SearchField
 import com.westly.neribogroup.feature.common.matchesQuery
@@ -89,6 +90,9 @@ fun AppUsersScreen(
     planHistory: List<PlanEvent> = emptyList(),
     /** Free users brought by adverts that are counted but not listed one by one. */
     audienceFree: Long = 0L,
+    /** Of [audienceFree]: how many are on Premium and on Pro (paid on arrival, apps without a Free plan). */
+    audiencePremium: Long = 0L,
+    audiencePro: Long = 0L,
     /** The filter the list opens with (for example from the dashboard's Users activity card). */
     initialFilter: UserFilter = UserFilter.ALL,
     /** False for Manual apps: they have no Last seen. */
@@ -196,6 +200,20 @@ fun AppUsersScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (audiencePremium + audiencePro > 0L) {
+                            val parts = ArrayList<String>()
+                            if (audiencePremium > 0L) {
+                                parts.add(formatCount(audiencePremium) + " " + PaymentRules.planName(paymentModel, Plan.PREMIUM))
+                            }
+                            if (audiencePro > 0L) {
+                                parts.add(formatCount(audiencePro) + " " + PaymentRules.planName(paymentModel, Plan.PRO))
+                            }
+                            Text(
+                                text = "Of them: " + parts.joinToString(" and ") + " (paid)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         if (showLastSeen) {
                             Text(
                                 text = "Audience users are counted but have no last seen.",

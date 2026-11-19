@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.DiceEngine
 import com.westly.neribogroup.data.DiceKind
+import com.westly.neribogroup.data.Plan
 import com.westly.neribogroup.data.RollBlock
 import com.westly.neribogroup.data.RollRecord
 import com.westly.neribogroup.data.dayKey
@@ -190,7 +191,7 @@ fun DicePanel(app: AppData, now: Long, onRoll: () -> Unit) {
 
         if (record != null && !rolling) {
             Spacer(modifier = Modifier.height(14.dp))
-            RollResults(record = record, adsOn = record.faces.getOrElse(DiceKind.ADS.ordinal) { -1 } >= 0)
+            RollResults(record = record, adsOn = record.faces.getOrElse(DiceKind.ADS.ordinal) { -1 } >= 0, app = app)
         }
 
         Spacer(modifier = Modifier.height(14.dp))
@@ -254,7 +255,7 @@ private fun ResultLine(label: String, value: String) {
 
 /** What today's roll did, one line each for the dice that were in play. */
 @Composable
-private fun RollResults(record: RollRecord, adsOn: Boolean) {
+private fun RollResults(record: RollRecord, adsOn: Boolean, app: AppData) {
     fun has(kind: DiceKind): Boolean = record.faces.getOrElse(kind.ordinal) { -1 } >= 0
     Column {
         ResultLine("New users", "+" + formatCount(record.newUsers))
@@ -262,6 +263,13 @@ private fun RollResults(record: RollRecord, adsOn: Boolean) {
         ResultLine("Active users", formatCount(record.active))
         if (has(DiceKind.PREMIUM)) ResultLine("Upgraded to Premium", formatCount(record.premium))
         if (has(DiceKind.PRO)) ResultLine("Upgraded to Pro", formatCount(record.pro))
+        // An app without a Free plan has no upgrade dice: everybody pays on the day they join.
+        if (!has(DiceKind.PREMIUM) && record.premium > 0L) {
+            ResultLine("Paid on joining: " + app.planName(Plan.PREMIUM), formatCount(record.premium))
+        }
+        if (!has(DiceKind.PRO) && record.pro > 0L) {
+            ResultLine("Paid on joining: " + app.planName(Plan.PRO), formatCount(record.pro))
+        }
         if (has(DiceKind.RENEW)) ResultLine("Renewed", formatCount(record.renewed))
         if (has(DiceKind.LOST)) ResultLine("Did not renew", formatCount(record.lapsed))
         ResultLine("Subscriptions to Play Balance", formatNaira(record.subsNet))

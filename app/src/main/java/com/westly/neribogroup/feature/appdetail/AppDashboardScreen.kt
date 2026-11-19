@@ -194,6 +194,8 @@ fun AppDashboardScreen(
             onBack = { showUsers = false },
             planHistory = app.planHistory,
             audienceFree = app.audienceFree,
+            audiencePremium = app.audiencePremium,
+            audiencePro = app.audiencePro,
             initialFilter = UserFilter.fromName(usersFilter),
             showLastSeen = app.googlePlayEnabled,
             paymentModel = app.paymentModel
