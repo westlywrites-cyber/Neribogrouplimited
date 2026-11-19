@@ -43,15 +43,20 @@ object DiceEngine {
     // Dice 1 to 5 for new users: a range of people per day for an app with 1,000 users.
     private val NEW_RANGES = arrayOf(1 to 5, 6 to 12, 13 to 20, 21 to 30, 31 to 45)
 
-    // Dice 1 to 5 as a share of a group of people (low, high).
-    private val ACTIVE_SHARE = arrayOf(
-        0.03 to 0.08, 0.08 to 0.15, 0.15 to 0.25, 0.25 to 0.35, 0.35 to 0.50
+    // Active users (blue dice). The Active face (0 to 5) sets the LOWEST share of each group that is active; a small
+    // random extra (the spread) is added on top, so a roll is never below these numbers. Face 0 is no longer "nothing".
+    // Rows: joined yesterday, joined 2 to 3 days ago, joined 4 to 7 days ago. Columns: face 0 to 5.
+    private val RETAINED_LOW = arrayOf(
+        doubleArrayOf(0.45, 0.50, 0.55, 0.60, 0.65, 0.70),
+        doubleArrayOf(0.33, 0.38, 0.43, 0.48, 0.53, 0.58),
+        doubleArrayOf(0.25, 0.30, 0.35, 0.40, 0.45, 0.50)
     )
+    private const val RETAINED_SPREAD = 0.03
 
-    // Active users, step 1: people who joined recently stay active at these rates (low, high). The Active face
-    // (1 to 5) picks the band inside each range: face 1 the bottom fifth, face 5 the top fifth, face 0 nothing.
-    // Rows: joined yesterday, joined 2 to 3 days ago, joined 4 to 7 days ago.
-    private val RETAINED_SHARE = arrayOf(0.25 to 0.40, 0.15 to 0.25, 0.08 to 0.15)
+    // Older users (joined 8 or more days ago): face 0 to 5.
+    private val OLDER_LOW = doubleArrayOf(0.20, 0.28, 0.36, 0.44, 0.52, 0.60)
+    private const val OLDER_SPREAD = 0.04
+
     private val RETAINED_FIRST_DAY = intArrayOf(1, 2, 4)
     private val RETAINED_LAST_DAY = intArrayOf(1, 3, 7)
 
@@ -131,35 +136,44 @@ object DiceEngine {
         return min(MAX_NEW_PER_ROLL, max(1, (base * factor).roundToInt()))
     }
 
-    /** The part of a (low, high) range the Active face (1 to 5) allows: face 1 the bottom fifth, face 5 the top fifth. */
-    private fun faceBand(range: Pair<Double, Double>, face: Int): Pair<Double, Double> {
-        val step = (range.second - range.first) / 5.0
-        return (range.first + step * (face - 1)) to (range.first + step * face)
+    /** The (low, high) share of one recent-joiner group (0 yesterday, 1 two to three days ago, 2 four to seven days ago) the Active face (0 to 5) allows. */
+    private fun retainedBand(group: Int, face: Int): Pair<Double, Double> {
+        val low = RETAINED_LOW[group][face]
+        return low to (low + RETAINED_SPREAD)
+    }
+
+    /** The (low, high) share of older users the Active face (0 to 5) allows. */
+    private fun olderBand(face: Int): Pair<Double, Double> {
+        val low = OLDER_LOW[face]
+        return low to (low + OLDER_SPREAD)
     }
 
     /** What the Active dice worked out: the total, and the rates the listed users are picked with. */
     private class ActiveSplit(val total: Long, val tierRates: DoubleArray)
 
     /**
-     * Active users today, not counting today's new users (the caller adds them as a floor):
+     * Active users today, not counting today's new users (the caller adds them on top):
      * retained from recent joiners (yesterday, 2 to 3 days ago, 4 to 7 days ago) + the dice share of older users.
      * Each cohort is the number of users who joined that day (saved history). A fixed number of random numbers is
-     * drawn whenever the face is above 0, so the rest of the roll does not depend on the cohorts.
+     * drawn whenever the face is 1 to 5. Face 0 uses its own seeded random instead and draws nothing from the shared
+     * one, so the rest of the roll does not depend on the cohorts or on the face.
      */
     private fun activeFor(face: Int, app: AppData, now: Long, total: Long, factor: Double, random: Random): ActiveSplit {
         val rates = DoubleArray(4)
-        if (face <= 0 || total <= 0L) return ActiveSplit(0L, rates)
+        if (total <= 0L) return ActiveSplit(0L, rates)
+        val level = face.coerceIn(0, 5)
+        val rng = if (level == 0) Random(stableSeed("active0|" + app.id + "|" + dayKey(now))) else random
         val boost = 1.0 + (factor - 1.0) / 2.0
-        val retainedShares = DoubleArray(RETAINED_SHARE.size) { i ->
-            val band = faceBand(RETAINED_SHARE[i], face)
-            random.nextDouble(band.first, band.second)
+        val retainedShares = DoubleArray(RETAINED_FIRST_DAY.size) { i ->
+            val band = retainedBand(i, level)
+            rng.nextDouble(band.first, band.second)
         }
-        val range = ACTIVE_SHARE[face - 1]
-        val olderShare = min(1.0, random.nextDouble(range.first, range.second) * boost)
+        val older = olderBand(level)
+        val olderShare = min(1.0, rng.nextDouble(older.first, older.second) * boost)
 
         var left = app.totalUsers
         var active = 0.0
-        for (i in RETAINED_SHARE.indices) {
+        for (i in RETAINED_FIRST_DAY.indices) {
             var cohort = 0L
             for (back in RETAINED_FIRST_DAY[i]..RETAINED_LAST_DAY[i]) cohort += app.newUsersOn(now - back * DAY_MILLIS, now)
             cohort = min(cohort, left)
@@ -285,7 +299,7 @@ object DiceEngine {
     /** One plain sentence about what the dice controls. */
     fun diceMeaning(kind: DiceKind): String = when (kind) {
         DiceKind.NEW -> "Decides how many new Free users join the app today."
-        DiceKind.ACTIVE -> "Decides how many users are active today: all of today's new users, a share of the users who joined in the last 7 days (more for newer joiners), and a share of older users."
+        DiceKind.ACTIVE -> "Decides how many users are active today: all of today's new users, plus a share of the users who joined in the last 7 days (more for newer joiners), plus a share of older users."
         DiceKind.PREMIUM -> "Decides how many Free users upgrade to Premium today."
         DiceKind.PRO -> "Decides how many Free users upgrade to Pro today."
         DiceKind.RENEW -> "Decides how many users whose plan ended renew it today."
@@ -316,6 +330,14 @@ object DiceEngine {
     private fun percentRange(range: Pair<Double, Double>, multiplier: Double): String =
         trimNumber(range.first * multiplier * 100.0) + " to " + trimNumber(range.second * multiplier * 100.0) + " %"
 
+    /** One plain sentence for one face (0 to 5) of the Active dice. */
+    private fun activeFaceText(face: Int, boost: Double): String =
+        "Today's new users are all active, and on top of them about " +
+            percentRange(retainedBand(0, face), 1.0) + " of the users who joined yesterday, " +
+            percentRange(retainedBand(1, face), 1.0) + " of those who joined 2 to 3 days ago, " +
+            percentRange(retainedBand(2, face), 1.0) + " of those who joined 4 to 7 days ago, and " +
+            percentRange(olderBand(face), boost) + " of older users (never more than all users)."
+
     /**
      * Six one-line effects (face 0 to 5) of one dice for this app today, made from the same numbers
      * the roll uses. The ranges are the dice's own; nothing here changes the app.
@@ -325,7 +347,7 @@ object DiceEngine {
         val boost = 1.0 + (factor - 1.0) / 2.0
         val scale = max(0.1, sqrt(app.totalUsers / 1000.0))
         val rows = ArrayList<String>()
-        rows.add("Nothing happens.")
+        rows.add(if (kind == DiceKind.ACTIVE) activeFaceText(0, boost) else "Nothing happens.")
         for (face in 1..5) {
             val index = face - 1
             val text = when (kind) {
@@ -337,12 +359,7 @@ object DiceEngine {
                     val highF = min(MAX_NEW_PER_ROLL, max(lowF, (high * factor).roundToInt()))
                     "About $lowF to $highF new users join."
                 }
-                DiceKind.ACTIVE ->
-                    "Today's new users are all active. Of the users who joined yesterday about " +
-                        percentRange(faceBand(RETAINED_SHARE[0], face), 1.0) + " are active, of those who joined 2 to 3 days ago " +
-                        percentRange(faceBand(RETAINED_SHARE[1], face), 1.0) + ", of those who joined 4 to 7 days ago " +
-                        percentRange(faceBand(RETAINED_SHARE[2], face), 1.0) + ", and of older users " +
-                        percentRange(ACTIVE_SHARE[index], boost) + " (never fewer than today's new users, never more than all users)."
+                DiceKind.ACTIVE -> activeFaceText(face, boost)
                 DiceKind.PREMIUM ->
                     "About " + percentRange(UPGRADE_SHARE[index], factor) + " of Free users upgrade to Premium (at least 1 person)."
                 DiceKind.PRO ->
@@ -507,14 +524,14 @@ object DiceEngine {
         // The rest is only counted (Free users that are not listed one by one).
         val audienceAdded = advertTotal - advertRows.size
 
-        // Active users (blue). Never more than all users, never fewer than today's new users
-        // (advert users are active on the day they arrive).
+        // Active users (blue). All of today's new users and advert users are active on the day they arrive, and the
+        // dice adds its share of the users who joined before. Never more than all users.
         val totalAfter = app.totalUsers + newCount + advertTotal
         val activeSplit = activeFor(face(DiceKind.ACTIVE), app, now, totalAfter, factor, random)
         val fromDice = activeSplit.total
         // A Neribo Deploy app: the users you added yourself are always Active.
         val alwaysActive = if (app.deployTracking) app.users.count { !it.simulated }.toLong() else 0L
-        val activeToday = min(totalAfter, max(max(fromDice, newCount + advertTotal), alwaysActive))
+        val activeToday = min(totalAfter, max(fromDice + newCount + advertTotal, alwaysActive))
 
         // Upgrades (yellow and purple). Only dice users who were Free before this roll.
         val freePool = upgradePool(app).shuffled(random)
