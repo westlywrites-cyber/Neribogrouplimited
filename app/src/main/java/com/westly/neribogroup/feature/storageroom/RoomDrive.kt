@@ -1,6 +1,8 @@
 package com.westly.neribogroup.feature.storageroom
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -10,6 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.westly.neribogroup.BuildConfig
+import com.westly.neribogroup.cloud.RoomState
 import com.westly.neribogroup.data.StorageRules
 import kotlinx.coroutines.delay
 import java.io.File
@@ -63,10 +67,11 @@ class DriveActions(
 }
 
 /**
- * The two off-site drives (A and B) of the Storage room, kept only on this phone. It is a small file in the app's
- * private folder (not backed up, never sent anywhere), like the server power. The phase is worked out from the
- * clock every time it is read, so a copy keeps counting while the app is closed.
- * Nothing here touches the ledger, the cloud sync or Supabase, and its console lines stay in the phone's memory.
+ * The two off-site drives (A and B) of the Storage room. The state is a small file in the app's private folder, and
+ * in the Storage Room app the same text is also saved in the cloud (table room_state, key "drives") after every
+ * change, so after a reinstall or an update the drives come back exactly as they were. The phase is worked out
+ * from the clock every time it is read, so a copy keeps counting while the app is closed.
+ * Nothing here touches the ledger or the normal cloud sync, and its console lines stay in the phone's memory.
  */
 object RoomDrive {
     /** The size of each drive: 25 TB, counted in KB like the rest of the app (1 TB = 1024 x 1024 x 1024 KB). */
@@ -88,6 +93,15 @@ object RoomDrive {
         private set
 
     private var loaded = false
+
+    /** When the saved text was written (the "U" line). The newer of the phone's text and the cloud's text wins. */
+    private var localU = 0L
+
+    /** True when this phone had no saved file at all (a fresh install): the cloud copy always wins then. */
+    private var fresh = false
+    private var pulling = false
+    private var pulledOnce = false
+    private var lastTry = 0L
     private val onDesk = booleanArrayOf(true, false)
     private val copied = longArrayOf(0L, 0L)
     private val last = longArrayOf(0L, 0L)
@@ -113,54 +127,152 @@ object RoomDrive {
         loaded = true
         try {
             val f = file(context)
-            if (!f.exists()) return
-            for (line in f.readLines()) {
-                val p = line.split("|")
-                when (p.getOrNull(0)) {
-                    "D" -> {
-                        val i = idx(p[1].firstOrNull() ?: 'A')
-                        onDesk[i] = p[2] == "1"
-                        copied[i] = p[3].toLong()
-                        last[i] = p[4].toLong()
-                        failed[i] = p[5] == "1"
-                    }
-                    "C" -> {
-                        cur = p[1].toInt()
-                        phase = DrivePhase.valueOf(p[2])
-                        t0 = p[3].toLong()
-                        durMs = p[4].toLong()
-                        toCopy = p[5].toLong()
-                        target = p[6].toLong()
-                    }
-                    "N" -> next = p[1].toInt()
-                    "H" -> days.add(DriveDay(p[1], p[2][0], p[3] == "1", p[4].toLong()))
-                }
+            if (!f.exists()) {
+                fresh = true
+                return
             }
+            applyText(f.readText())
         } catch (e: Exception) {
-            // A damaged file is ignored: the drives start fresh.
+            // A damaged file is ignored: the drives start fresh (and the cloud copy fills them in).
             cur = -1
             phase = DrivePhase.NONE
+            fresh = true
         }
     }
 
+    /** Reads a saved text (the phone's file or the cloud's copy) into the drives. */
+    private fun applyText(text: String) {
+        onDesk[0] = true
+        onDesk[1] = false
+        copied[0] = 0L
+        copied[1] = 0L
+        last[0] = 0L
+        last[1] = 0L
+        failed[0] = false
+        failed[1] = false
+        cur = -1
+        phase = DrivePhase.NONE
+        t0 = 0L
+        durMs = 0L
+        toCopy = 0L
+        target = 0L
+        next = 0
+        bucket = 0
+        localU = 0L
+        days.clear()
+        for (line in text.lines()) {
+            val p = line.split("|")
+            when (p.getOrNull(0)) {
+                "U" -> localU = p[1].toLong()
+                "D" -> {
+                    val i = idx(p[1].firstOrNull() ?: 'A')
+                    onDesk[i] = p[2] == "1"
+                    copied[i] = p[3].toLong()
+                    last[i] = p[4].toLong()
+                    failed[i] = p[5] == "1"
+                }
+                "C" -> {
+                    cur = p[1].toInt()
+                    phase = DrivePhase.valueOf(p[2])
+                    t0 = p[3].toLong()
+                    durMs = p[4].toLong()
+                    toCopy = p[5].toLong()
+                    target = p[6].toLong()
+                }
+                "N" -> next = p[1].toInt()
+                "H" -> days.add(DriveDay(p[1], p[2][0], p[3] == "1", p[4].toLong()))
+            }
+        }
+    }
+
+    private fun serialize(): String {
+        val sb = StringBuilder()
+        sb.append("U|").append(localU).append('\n')
+        for (i in 0..1) {
+            sb.append("D|").append(ch(i)).append('|').append(if (onDesk[i]) 1 else 0).append('|').append(copied[i])
+                .append('|').append(last[i]).append('|').append(if (failed[i]) 1 else 0).append('\n')
+        }
+        sb.append("C|").append(cur).append('|').append(phase.name).append('|').append(t0).append('|').append(durMs)
+            .append('|').append(toCopy).append('|').append(target).append('\n')
+        sb.append("N|").append(next).append('\n')
+        for (d in days) {
+            sb.append("H|").append(d.day).append('|').append(d.key).append('|').append(if (d.ok) 1 else 0)
+                .append('|').append(d.kb).append('\n')
+        }
+        return sb.toString()
+    }
+
     private fun save(context: Context) {
+        localU = System.currentTimeMillis()
+        val text = serialize()
         try {
-            val sb = StringBuilder()
-            for (i in 0..1) {
-                sb.append("D|").append(ch(i)).append('|').append(if (onDesk[i]) 1 else 0).append('|').append(copied[i])
-                    .append('|').append(last[i]).append('|').append(if (failed[i]) 1 else 0).append('\n')
-            }
-            sb.append("C|").append(cur).append('|').append(phase.name).append('|').append(t0).append('|').append(durMs)
-                .append('|').append(toCopy).append('|').append(target).append('\n')
-            sb.append("N|").append(next).append('\n')
-            for (d in days) {
-                sb.append("H|").append(d.day).append('|').append(d.key).append('|').append(if (d.ok) 1 else 0)
-                    .append('|').append(d.kb).append('\n')
-            }
-            file(context).writeText(sb.toString())
+            file(context).writeText(text)
         } catch (e: Exception) {
             // The state still works for this run of the app.
         }
+        // The Storage Room app also keeps it in the cloud (sent at once, kept until the cloud confirms it).
+        if (BuildConfig.ROOM_ONLY) RoomState.push("drives", text)
+    }
+
+    private fun bump() {
+        Handler(Looper.getMainLooper()).post { changes += 1 }
+    }
+
+    /**
+     * Storage Room app only: the first time (and again after a failed try) the cloud copy is read. A fresh install, or
+     * a cloud text that is newer, replaces what is on the phone; a phone text that is newer is sent to the cloud.
+     * After that, anything waiting to be saved is sent again every time this is called.
+     */
+    private fun cloudSync(context: Context, now: Long) {
+        if (!BuildConfig.ROOM_ONLY) return
+        if (pulledOnce) {
+            RoomState.flushAsync()
+            return
+        }
+        if (pulling || now - lastTry < 4_000L) return
+        pulling = true
+        lastTry = now
+        val app = context.applicationContext
+        Thread {
+            try {
+                when (val r = RoomState.pull("drives")) {
+                    is RoomState.Pulled.Found -> {
+                        val cloudU = RoomState.stamp(r.content)
+                        var replaced = false
+                        synchronized(this@RoomDrive) {
+                            if (fresh || cloudU > localU) {
+                                RoomState.discard("drives")
+                                applyText(r.content)
+                                fresh = false
+                                try {
+                                    file(app).writeText(serialize())
+                                } catch (e: Exception) {
+                                    // Kept in memory for this run.
+                                }
+                                replaced = true
+                            } else if (localU > cloudU) {
+                                RoomState.push("drives", serialize())
+                            }
+                            pulledOnce = true
+                        }
+                        RoomState.markReady("drives")
+                        if (replaced) bump()
+                    }
+                    RoomState.Pulled.None -> {
+                        synchronized(this@RoomDrive) {
+                            if (!fresh) RoomState.push("drives", serialize())
+                            pulledOnce = true
+                        }
+                        RoomState.markReady("drives")
+                    }
+                    RoomState.Pulled.Unavailable -> Unit
+                }
+            } catch (e: Exception) {
+                // Tried again a little later.
+            } finally {
+                pulling = false
+            }
+        }.start()
     }
 
     private fun addDay(key: Char, ok: Boolean, kb: Long) {
@@ -186,6 +298,7 @@ object RoomDrive {
     @Synchronized
     fun view(context: Context, powerOn: Boolean, liveKb: Long, now: Long = System.currentTimeMillis()): DriveView {
         load(context)
+        cloudSync(context, now)
         if (cur >= 0) {
             val k = ch(cur)
             if (!powerOn && phase != DrivePhase.SAFE) {

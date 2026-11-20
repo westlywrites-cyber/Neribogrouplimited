@@ -107,6 +107,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.layout
 import kotlin.math.roundToInt
 import com.westly.neribogroup.R
+import com.westly.neribogroup.cloud.RoomNet
 import com.westly.neribogroup.cloud.StorageRoomCloud
 import com.westly.neribogroup.data.AppData
 import com.westly.neribogroup.data.Ledger
@@ -117,7 +118,9 @@ import com.westly.neribogroup.BuildConfig
 import com.westly.neribogroup.feature.common.LocalBiometricGate
 import com.westly.neribogroup.feature.common.rememberNowMillis
 import com.westly.neribogroup.ui.formatCount
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -493,6 +496,8 @@ private fun RoomContent(
             ledger,
             power = { power.value },
             onPower = { on -> if (on) RoomPower.startBoot(powerContext) else RoomPower.startShutdown(powerContext) },
+            // The Storage Room app changes nothing without the real internet; the Neribo Group app is not held to it.
+            online = { !BuildConfig.ROOM_ONLY || RoomNet.online },
             drive = { drive.value },
             driveActions = driveActions,
             backup = { backup.value },
@@ -508,6 +513,23 @@ private fun RoomContent(
     // to the background, or the server is switched off.
     // From the Dell office the room stays quiet: no hum at all.
     RoomHum(playing = !quiet && RoomPower.humPlaying(power.value))
+
+    // The Storage Room app needs the real internet to change anything: every few seconds the connection is looked at.
+    if (BuildConfig.ROOM_ONLY) {
+        LaunchedEffect(cloudFeed) {
+            while (true) {
+                withContext(Dispatchers.IO) { cloudFeed.checkInternet() }
+                delay(4_000L)
+            }
+        }
+    }
+    // The red "Internet Service Not Available" screen closes by itself after a few seconds (or with a tap).
+    LaunchedEffect(controller.offline) {
+        if (controller.offline) {
+            delay(4_000L)
+            controller.dismissOffline()
+        }
+    }
 
     val apps = StorageRoomRules.roomApps(ledger.apps)
     val now = rememberNowMillis()
@@ -647,6 +669,7 @@ private fun RoomContent(
 
     // The keyboard is docked at the bottom of the screen so it is always visible together with the monitor.
     // The monitor, desk, console and live cards scroll above it.
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().pinchZoom(onPinch)) {
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item { RoomScene(controller, ledger, shownCloud, linked, zoom) }
@@ -659,6 +682,38 @@ private fun RoomContent(
                 .padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
         ) {
             RoomKeyboard(isLit = { controller.isLit(it) }, onKey = { controller.press(it) })
+        }
+    }
+    if (controller.offline) NoInternetOverlay { controller.dismissOffline() }
+    }
+}
+
+/** The whole screen dims and shows a red error when a change is tried without the real internet. */
+@Composable
+private fun NoInternetOverlay(onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color(0xE6000000)).clickable { onDismiss() },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "Internet Service Not Available",
+                color = Color(0xFFFF4D4D),
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                "Nothing was changed. Connect to the internet to make changes.",
+                color = Color(0xFFFFB0A8),
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center
+            )
+            Text("Tap anywhere to close", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
         }
     }
 }
@@ -1664,6 +1719,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                     confirmButton = {
                         TextButton(onClick = {
                             close()
+                            if (!controller.requireInternet()) return@TextButton
                             if (safe) {
                                 acts.unplug()
                                 acts.takeHome(key)?.let { controller.note(it, true) }
@@ -1677,6 +1733,8 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                     dismissButton = {
                         TextButton(onClick = {
                             close()
+                            if (!safe && plugged) return@TextButton
+                            if (!controller.requireInternet()) return@TextButton
                             if (safe) {
                                 acts.unplug()
                             } else if (!plugged) {

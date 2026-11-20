@@ -91,6 +91,8 @@ class RoomController(
     /** The pretend nightly backup (local to this phone only). */
     private val backup: () -> BackupView = { BackupView.NONE },
     val backupActions: BackupActions = BackupActions.NONE,
+    /** True while the real internet is there. The Storage Room app changes nothing without it. */
+    private val online: () -> Boolean = { true },
     private val actions: () -> RoomActions
 ) {
 
@@ -112,6 +114,28 @@ class RoomController(
     /** True while the "Turn off the server?" warning is on the monitor. */
     var warn by mutableStateOf(false)
         private set
+
+    /** True while the red "Internet Service Not Available" screen covers the room. */
+    var offline by mutableStateOf(false)
+        private set
+
+    /**
+     * Every change (a number, a drive, the backup, the power) asks this first. Without the real internet nothing is
+     * changed: whatever was being typed is dropped and the red screen is shown. True when the change may go on.
+     */
+    fun requireInternet(): Boolean {
+        if (online()) return true
+        edit = null
+        pin = null
+        warn = false
+        message = null
+        offline = true
+        return false
+    }
+
+    fun dismissOffline() {
+        offline = false
+    }
 
     private var current: Ledger = initial
 
@@ -182,8 +206,13 @@ class RoomController(
     // ---- Keys ----
 
     fun press(k: String) {
+        if (offline) {
+            if (k == "Escape" || k == "Enter") offline = false
+            return
+        }
         val phase = power().phase
         if (k == "PWR") {
+            if (!requireInternet()) return
             if (phase == PowerPhase.OFF) {
                 onPower(true)
             } else if (phase == PowerPhase.ON && pin == null && edit == null && !warn) {
@@ -345,6 +374,7 @@ class RoomController(
         val e = edit ?: return
         edit = null
         if (e.buf.isEmpty() || e.buf == ".") return
+        if (!requireInternet()) return
         when (e.kind) {
             RoomEditKind.TOTAL -> {
                 val mb = StorageRoomRules.typedToMb(e.buf, e.unit) ?: return
@@ -436,6 +466,7 @@ class RoomController(
 
     /** Enter on "Run backup now": runs the failed night again, after the owner's fingerprint (or face or phone lock). */
     fun requestRetry() {
+        if (!requireInternet()) return
         val v = backup()
         if (v.retryRunning) {
             note("The backup is already running.")
@@ -463,6 +494,7 @@ class RoomController(
 
     /** Enter on a drive line of the Copies page: bring it, plug it in, or take it out when it is safe. */
     private fun driveEnter(key: Char) {
+        if (!requireInternet()) return
         val v = drive()
         val result: String? = when {
             v.plugged == key && v.phase == DrivePhase.SAFE -> {
@@ -489,6 +521,7 @@ class RoomController(
      * lock), asked every time, then the access PIN on the monitor. Only after both does the drive go in.
      */
     fun requestPlug(key: Char) {
+        if (!requireInternet()) return
         val v = drive()
         val already = v.plugged
         if (already != null) {
@@ -538,6 +571,7 @@ class RoomController(
     }
 
     private fun checkPin(p: RoomPin) {
+        if (!requireInternet()) return
         val wait = RoomPinGuard.waitSeconds()
         if (wait > 0L) {
             pin = p.copy(buf = "", message = "Too many wrong tries. Wait $wait seconds.")

@@ -1,6 +1,8 @@
 package com.westly.neribogroup.feature.storageroom
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -10,6 +12,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.westly.neribogroup.BuildConfig
+import com.westly.neribogroup.cloud.RoomState
 import com.westly.neribogroup.data.StorageRules
 import kotlinx.coroutines.delay
 import java.io.File
@@ -64,9 +68,10 @@ class BackupActions(val retry: () -> String?) {
  * never two nights in a row, so the night after a failure always passes (that is how it "fixes itself").
  * The owner can also run the backup again by hand while the last night is failed.
  *
- * Only two things are stored, in a small private file on this phone (not backed up, never sent anywhere, like the
- * server power and the drives): the day the room was first opened, and the hand-made reruns.
- * Nothing here touches the ledger, the cloud sync or Supabase, and its console lines stay in the phone's memory.
+ * Only two things are stored, in a small private file on this phone: the day the room was first opened, and the
+ * hand-made reruns. In the Storage Room app the same text is also saved in the cloud (table room_state, key "backup"),
+ * so a reinstall or an update keeps the same history.
+ * Nothing here touches the ledger or the normal cloud sync, and its console lines stay in the phone's memory.
  */
 object RoomBackup {
     private const val FILE_NAME = "storage_room_backup.txt"
@@ -106,6 +111,15 @@ object RoomBackup {
     private var loaded = false
     private var firstSeenMillis = 0L
 
+    /** When the saved text was written (the "U" line). The newer of the phone's text and the cloud's text wins. */
+    private var localU = 0L
+
+    /** True when this phone had no saved file at all (a fresh install): the cloud copy always wins then. */
+    private var fresh = false
+    private var pulling = false
+    private var pulledOnce = false
+    private var lastTry = 0L
+
     /** night epoch day -> (start millis, duration millis) of the hand-made rerun. */
     private val retries = LinkedHashMap<Long, LongArray>()
     private val failCache = HashMap<Long, Boolean>()
@@ -121,18 +135,11 @@ object RoomBackup {
         loaded = true
         try {
             val f = file(context)
-            if (f.exists()) {
-                for (line in f.readLines()) {
-                    val p = line.split("|")
-                    when (p.getOrNull(0)) {
-                        "F" -> firstSeenMillis = p[1].toLong()
-                        "R" -> retries[p[1].toLong()] = longArrayOf(p[2].toLong(), p[3].toLong())
-                    }
-                }
-            }
+            if (f.exists()) applyText(f.readText()) else fresh = true
         } catch (e: Exception) {
             // A damaged file is ignored: the story starts fresh (the nights themselves come from the date).
             retries.clear()
+            fresh = true
         }
         if (firstSeenMillis == 0L) {
             firstSeenMillis = now
@@ -140,17 +147,97 @@ object RoomBackup {
         }
     }
 
-    private fun save(context: Context) {
-        try {
-            val sb = StringBuilder()
-            sb.append("F|").append(firstSeenMillis).append('\n')
-            for ((day, r) in retries) {
-                sb.append("R|").append(day).append('|').append(r[0]).append('|').append(r[1]).append('\n')
+    /** Reads a saved text (the phone's file or the cloud's copy). */
+    private fun applyText(text: String) {
+        firstSeenMillis = 0L
+        retries.clear()
+        localU = 0L
+        for (line in text.lines()) {
+            val p = line.split("|")
+            when (p.getOrNull(0)) {
+                "U" -> localU = p[1].toLong()
+                "F" -> firstSeenMillis = p[1].toLong()
+                "R" -> retries[p[1].toLong()] = longArrayOf(p[2].toLong(), p[3].toLong())
             }
-            file(context).writeText(sb.toString())
+        }
+    }
+
+    private fun serialize(): String {
+        val sb = StringBuilder()
+        sb.append("U|").append(localU).append('\n')
+        sb.append("F|").append(firstSeenMillis).append('\n')
+        for ((day, r) in retries) {
+            sb.append("R|").append(day).append('|').append(r[0]).append('|').append(r[1]).append('\n')
+        }
+        return sb.toString()
+    }
+
+    private fun save(context: Context) {
+        localU = System.currentTimeMillis()
+        val text = serialize()
+        try {
+            file(context).writeText(text)
         } catch (e: Exception) {
             // The state still works for this run of the app.
         }
+        if (BuildConfig.ROOM_ONLY) RoomState.push("backup", text)
+    }
+
+    private fun bump() {
+        Handler(Looper.getMainLooper()).post { changes += 1 }
+    }
+
+    /** Storage Room app only: reads the cloud copy once (see RoomDrive.cloudSync), then resends what is waiting. */
+    private fun cloudSync(context: Context, now: Long) {
+        if (!BuildConfig.ROOM_ONLY) return
+        if (pulledOnce) {
+            RoomState.flushAsync()
+            return
+        }
+        if (pulling || now - lastTry < 4_000L) return
+        pulling = true
+        lastTry = now
+        val app = context.applicationContext
+        Thread {
+            try {
+                when (val r = RoomState.pull("backup")) {
+                    is RoomState.Pulled.Found -> {
+                        val cloudU = RoomState.stamp(r.content)
+                        var replaced = false
+                        synchronized(this@RoomBackup) {
+                            if (fresh || cloudU > localU) {
+                                RoomState.discard("backup")
+                                applyText(r.content)
+                                fresh = false
+                                try {
+                                    file(app).writeText(serialize())
+                                } catch (e: Exception) {
+                                    // Kept in memory for this run.
+                                }
+                                replaced = true
+                            } else if (localU > cloudU) {
+                                RoomState.push("backup", serialize())
+                            }
+                            pulledOnce = true
+                        }
+                        RoomState.markReady("backup")
+                        if (replaced) bump()
+                    }
+                    RoomState.Pulled.None -> {
+                        synchronized(this@RoomBackup) {
+                            if (firstSeenMillis != 0L) RoomState.push("backup", serialize())
+                            pulledOnce = true
+                        }
+                        RoomState.markReady("backup")
+                    }
+                    RoomState.Pulled.Unavailable -> Unit
+                }
+            } catch (e: Exception) {
+                // Tried again a little later.
+            } finally {
+                pulling = false
+            }
+        }.start()
     }
 
     // ---- The story, worked out from the date ----
@@ -256,6 +343,7 @@ object RoomBackup {
         now: Long = System.currentTimeMillis()
     ): BackupView {
         load(context, now)
+        cloudSync(context, now)
         val zone = ZoneId.systemDefault()
         val today = LocalDateTime.ofInstant(Instant.ofEpochMilli(now), zone).toLocalDate()
         val lastNight = lastFinishedNight(now, zone)
