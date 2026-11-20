@@ -1081,8 +1081,10 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo, backup: BackupVie
     val liveKb = StorageRules.usedKb(apps)
     val copiesKb = StorageRules.copiesKb(assets, apps)
     val overKb = StorageRules.companyOverKb(assets, apps)
-    // Each server holds two 24 TB drives: about 43 TB of room for the live data (and the same again for the backup).
-    val ssdKb = 43L * 1024L * 1024L * 1024L
+    // Main: 16 IronWolf Pro 24 TB drives as two groups of 8 (12 hold files): about 261 TB of room for the live data.
+    // Backup: 11 drives in one group (9 hold files): about 196 TB.
+    val mainKb = 261L * 1024L * 1024L * 1024L
+    val backupKb = 196L * 1024L * 1024L * 1024L
     val syncing = cloud.syncing
     val failover = backup.failover
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1106,17 +1108,19 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo, backup: BackupVie
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         SsdCard(
             "Main Storage",
+            "16",
             if (failover) {
                 "Fault: the backup server took over"
             } else {
-                StorageRules.text(liveKb) + " used · " + StorageRules.text(maxOf(0L, ssdKb - liveKb)) + " free"
+                StorageRules.text(liveKb) + " used · " + StorageRules.text(maxOf(0L, mainKb - liveKb)) + " free"
             },
             liveKb,
-            ssdKb,
+            mainKb,
             Modifier.weight(1f)
         )
         SsdCard(
             "Backup Storage",
+            "11",
             when {
                 overKb > 0L -> "Stopped: over the total"
                 failover -> "Serving as the main server"
@@ -1124,7 +1128,7 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo, backup: BackupVie
                 else -> "Copy of main drive"
             },
             liveKb,
-            ssdKb,
+            backupKb,
             Modifier.weight(1f)
         )
     }
@@ -1164,9 +1168,9 @@ private fun OverviewPage(ledger: Ledger, cloud: RoomCloudInfo, backup: BackupVie
     }
 }
 
-/** One of the two server cards of the Overview: the orange bar shows the live data against the server's 43 TB. */
+/** One of the two server cards of the Overview: the orange bar shows the live data against the server's room. */
 @Composable
-private fun SsdCard(title: String, note: String, valueKb: Long, ofKb: Long, modifier: Modifier = Modifier) {
+private fun SsdCard(title: String, drives: String, note: String, valueKb: Long, ofKb: Long, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
@@ -1175,7 +1179,7 @@ private fun SsdCard(title: String, note: String, valueKb: Long, ofKb: Long, modi
             .padding(8.dp)
     ) {
         Text(title, color = Color.White, fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
-        Text("IronWolf Pro 24 TB × 2", color = Color(0xFF9FC3E6), fontSize = 9.5.sp)
+        Text("IronWolf Pro 24 TB × " + drives, color = Color(0xFF9FC3E6), fontSize = 9.5.sp)
         Spacer(modifier = Modifier.height(6.dp))
         OrangeBar(valueKb, ofKb)
         Text(note, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 5.dp))
@@ -1515,28 +1519,44 @@ private fun LogPage(ledger: Ledger) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The server room: one photo with the rack (two servers), two UPS units, router and Starlink
+// The server room: one photo with the rack (two servers and two drive boxes), four UPS units, router and Starlink
 // ---------------------------------------------------------------------------------------------
 
-/** The desk is drawn in a 1448 x 1086 space and scaled to the screen width, like the preview's stage. */
-private const val DESK_W = 1448f
-private const val DESK_H = 1086f
+/** The desk is drawn in a 1536 x 1024 space and scaled to the screen width, like the preview's stage. */
+private const val DESK_W = 1536f
+private const val DESK_H = 1024f
 
 private fun wirePaths(): List<Path> {
     fun path(build: Path.() -> Unit): Path = Path().apply(build)
     return listOf(
         // Router to the main server: the blue cable.
         path {
-            moveTo(1140f, 480f)
-            cubicTo(1132f, 540f, 1100f, 580f, 1040f, 580f)
-            cubicTo(990f, 580f, 950f, 574f, 925f, 564f)
-            cubicTo(880f, 546f, 830f, 492f, 760f, 458f)
+            moveTo(1240f, 424f)
+            cubicTo(1236f, 482f, 1212f, 522f, 1160f, 525f)
+            cubicTo(1100f, 528f, 1040f, 520f, 985f, 512f)
+            cubicTo(950f, 507f, 930f, 502f, 905f, 498f)
+            cubicTo(880f, 440f, 850f, 360f, 822f, 306f)
         },
-        // Main server to the backup server: the 10G link.
-        path { moveTo(578f, 497f); lineTo(578f, 565f) },
+        // Main server to the backup server: the 10G link, down the left rack rail.
+        path { moveTo(441f, 332f); lineTo(441f, 490f) },
         // Starlink to the router.
-        path { moveTo(1302f, 482f); lineTo(1282f, 482f) }
+        path { moveTo(1402f, 425f); lineTo(1380f, 425f) }
     )
+}
+
+/** The lit drive bays (picture coordinates): two on each server, twelve on each drive box. */
+private fun driveLights(): List<Offset> {
+    val lights = ArrayList<Offset>()
+    // The servers: the left bay column (main on top, backup below).
+    for (c in listOf(Offset(468f, 302f), Offset(468f, 326f), Offset(470f, 498f), Offset(470f, 522f))) lights.add(c)
+    // The drive boxes: three columns by four rows (the main box, then the backup box).
+    val columns = floatArrayOf(466f, 577f, 688f)
+    for (rows in listOf(floatArrayOf(373f, 398f, 413f, 442f), floatArrayOf(570f, 593f, 610f, 637f))) {
+        for (y in rows) {
+            for (x in columns) lights.add(Offset(x, y))
+        }
+    }
+    return lights
 }
 
 @Composable
@@ -1552,6 +1572,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
         }
     )
     val wires = remember { wirePaths() }
+    val lights = remember { driveLights() }
     // The off-site drive: the dock on the table, drive A or B in it, and the USB cable to the backup server.
     val dock = ImageBitmap.imageResource(R.drawable.room_dock)
     val driveA = ImageBitmap.imageResource(R.drawable.room_drive_a)
@@ -1601,7 +1622,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
         Box(modifier = Modifier.fillMaxWidth().height(h)) {
             Image(
                 bitmap = photo,
-                contentDescription = "Server room: rack with two servers, two UPS units, router and Starlink",
+                contentDescription = "Server room: rack with two servers and two drive boxes, four UPS units, router and Starlink",
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier
                     .fillMaxSize()
@@ -1622,7 +1643,7 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                 val s = size.width / DESK_W
                 scale(s, Offset.Zero) {
                     // The drive table: the dock is always there, a drive stands in it while it is on the table.
-                    drawImage(dock, dstOffset = IntOffset(14, 402), dstSize = IntSize(dock.width, dock.height), filterQuality = FilterQuality.Medium)
+                    drawImage(dock, dstOffset = IntOffset(14, 354), dstSize = IntSize(dock.width, dock.height), filterQuality = FilterQuality.Medium)
                     val onDesk = drive.onDesk
                     if (cableShown > 0.01f) {
                         val seg = Path()
@@ -1631,18 +1652,18 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                         drawPath(seg, Color(0xFF111111), style = Stroke(width = 7f, cap = StrokeCap.Round))
                         if (cableShown >= 0.99f && drive.phase != DrivePhase.PLUG) {
                             val lamp = if (drive.phase == DrivePhase.COPY && blink.value < 0.5f) Color(0xFF1F6A3A) else Color(0xFF43D17A)
-                            drawCircle(lamp, radius = 4f, center = Offset(405f, 598f))
+                            drawCircle(lamp, radius = 4f, center = Offset(436f, 512f))
                         }
                     }
                     if (onDesk != null) {
                         drawImage(
                             if (onDesk == 'A') driveA else driveB,
-                            dstOffset = IntOffset(104, 408),
+                            dstOffset = IntOffset(104, 360),
                             dstSize = IntSize(driveA.width, driveA.height),
                             filterQuality = FilterQuality.Medium
                         )
-                        drawCircle(if (onDesk == 'A') Color(0xFF1F5FD0) else Color(0xFFE8631A), radius = 12f, center = Offset(153f, 549f))
-                        drawContext.canvas.nativeCanvas.drawText(onDesk.toString(), 153f, 555f, badgePaint)
+                        drawCircle(if (onDesk == 'A') Color(0xFF1F5FD0) else Color(0xFFE8631A), radius = 12f, center = Offset(153f, 501f))
+                        drawContext.canvas.nativeCanvas.drawText(onDesk.toString(), 153f, 507f, badgePaint)
                         val on = blink.value > 0.5f
                         val led = when {
                             drive.plugged == null -> if (drive.info(onDesk).failed) Color(0xFFFF5A4A) else Color(0xFF2A8A50)
@@ -1651,8 +1672,8 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                             drive.phase == DrivePhase.COPY -> if (on) Color(0xFF43D17A) else Color(0xFF1F6A3A)
                             else -> Color(0xFF43D17A)
                         }
-                        drawCircle(led.copy(alpha = 0.35f), radius = 10f, center = Offset(153f, 528f))
-                        drawCircle(led, radius = 4.5f, center = Offset(153f, 528f))
+                        drawCircle(led.copy(alpha = 0.35f), radius = 10f, center = Offset(153f, 480f))
+                        drawCircle(led, radius = 4.5f, center = Offset(153f, 480f))
                     }
                     if (syncing) {
                         val dash = PathEffect.dashPathEffect(floatArrayOf(10f, 30f), 40f - phase.value)
@@ -1661,41 +1682,37 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
                             drawPath(wire, Color(0xFF7FD1C7), style = Stroke(width = 5f, cap = StrokeCap.Round, pathEffect = dash))
                         }
                     }
-                    // The drive lights of the two servers (main on top, backup below).
+                    // The drive lights of the two servers and their two drive boxes (main on top, backup below).
                     if (picture == "on") {
-                        for (c in listOf(Offset(422f, 460f), Offset(422f, 480f), Offset(424f, 573f), Offset(424f, 593f))) {
-                            drawCircle(Color(0x5543D17A), radius = 9f, center = c)
+                        for (c in lights) {
+                            drawCircle(Color(0x5543D17A), radius = 8f, center = c)
                         }
                     }
                 }
             }
-            // Tap areas: the rack opens the Log, either server opens Copies.
+            // Tap areas: the rack opens the Log; the two servers and their two drive boxes open Copies.
             val tapSource = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
-                    .offset(x = w * 0.207f, y = h * 0.170f)
-                    .size(width = w * 0.432f, height = h * 0.686f)
+                    .offset(x = w * 0.224f, y = h * 0.146f)
+                    .size(width = w * 0.417f, height = h * 0.770f)
                     .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(5) }
             )
-            Box(
-                modifier = Modifier
-                    .offset(x = w * 0.262f, y = h * 0.392f)
-                    .size(width = w * 0.266f, height = h * 0.068f)
-                    .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
-            )
-            Box(
-                modifier = Modifier
-                    .offset(x = w * 0.262f, y = h * 0.505f)
-                    .size(width = w * 0.266f, height = h * 0.068f)
-                    .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
-            )
+            for ((top, height) in listOf(0.272f to 0.063f, 0.347f to 0.102f, 0.464f to 0.062f, 0.535f to 0.105f)) {
+                Box(
+                    modifier = Modifier
+                        .offset(x = w * 0.279f, y = h * top)
+                        .size(width = w * 0.254f, height = h * height)
+                        .clickable(interactionSource = tapSource, indication = null) { controller.tapTab(4) }
+                )
+            }
             // The drive on the table: a tap asks what to do with it.
             val key = drive.onDesk
             if (key != null) {
                 Box(
                     modifier = Modifier
-                        .offset(x = w * 0.065f, y = h * 0.37f)
-                        .size(width = w * 0.115f, height = h * 0.17f)
+                        .offset(x = w * 0.061f, y = h * 0.346f)
+                        .size(width = w * 0.108f, height = h * 0.18f)
                         .clickable(interactionSource = tapSource, indication = null) { choose = true }
                 )
             }
@@ -1750,9 +1767,9 @@ private fun DeskPhoto(controller: RoomController, cloud: RoomCloudInfo) {
 
 /** The USB cable from the dock on the table to the front of the backup server (picture coordinates). */
 private fun drivePath(): Path = Path().apply {
-    moveTo(153f, 563f)
-    cubicTo(148f, 650f, 120f, 745f, 235f, 752f)
-    cubicTo(350f, 759f, 362f, 700f, 405f, 600f)
+    moveTo(153f, 515f)
+    cubicTo(148f, 600f, 120f, 690f, 235f, 700f)
+    cubicTo(330f, 708f, 395f, 640f, 436f, 520f)
 }
 
 // ---------------------------------------------------------------------------------------------
