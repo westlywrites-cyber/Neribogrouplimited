@@ -1509,7 +1509,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         override fun run() {
             if (!appInForeground) return
             autoSync()
-            mainHandler.postDelayed(this, FOREGROUND_TICK_MILLIS)
+            mainHandler.postDelayed(this, foregroundTickMillis())
         }
     }
 
@@ -1530,7 +1530,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun onAppResumed() {
         appInForeground = true
         mainHandler.removeCallbacks(tickRunnable)
-        mainHandler.postDelayed(tickRunnable, FOREGROUND_TICK_MILLIS)
+        mainHandler.postDelayed(tickRunnable, foregroundTickMillis())
         mainHandler.removeCallbacks(aiTickRunnable)
         mainHandler.postDelayed(aiTickRunnable, AI_TICK_MILLIS)
         if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) return
@@ -1570,7 +1570,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!appInForeground) return
         if (cloudConfig.cloudMode != CloudMode.ON || !cloudConfig.signedIn) return
         mainHandler.removeCallbacks(debounceRunnable)
-        mainHandler.postDelayed(debounceRunnable, DEBOUNCE_MILLIS)
+        mainHandler.postDelayed(debounceRunnable, if (BuildConfig.ROOM_ONLY) ROOM_DEBOUNCE_MILLIS else DEBOUNCE_MILLIS)
     }
 
     /** The one door for every automatic sync. Busy = one more sync is remembered for when this one ends. */
@@ -2500,9 +2500,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The Storage Room app looks at the cloud far more often than the other apps, so what changed elsewhere shows at once. */
+    private fun foregroundTickMillis(): Long = if (BuildConfig.ROOM_ONLY) ROOM_TICK_MILLIS else FOREGROUND_TICK_MILLIS
+
     private companion object {
         /** Wait this long after the last change before syncing. */
         const val DEBOUNCE_MILLIS = 2_500L
+
+        /** The Storage Room app sends a change to the cloud almost at once (a burst of keys still gives one sync). */
+        const val ROOM_DEBOUNCE_MILLIS = 200L
+
+        /** The Storage Room app: one sync every 30 seconds while it is open. */
+        const val ROOM_TICK_MILLIS = 30_000L
 
         /** The foreground timer: one sync every 5 minutes while the app is open. */
         const val FOREGROUND_TICK_MILLIS = 5L * 60L * 1000L
