@@ -39,3 +39,10 @@ SoftwareClientsScreen.kt, AppViewModel.kt, MainActivity.kt.
 - Changed: StorageRoomScreen.kt, RoomController.kt (drive rows are now 2 and 3), RoomDrive.kt (console line now /mnt/drive-A ready), StorageScreens.kt, AppViewModel.kt (backUpOffsiteNow removed), MainActivity.kt, StorageRules.kt, StorageRoomRules.kt.
 - Kept on purpose: offsiteKb and offsiteMillis in Channels.kt and LedgerStorage.kt, so old backups still import. They are never shown or counted.
 - Not compiled here: the GitHub Actions build is the first compile.
+
+## Storage room: new photos and the storage upgrade (16 main drives, 11 backup drives)
+- The room photos are new (1536 x 1024): the rack now holds the main server, its drive box, the backup server, its drive box and the AI server, with four UPS units. The four power states (on, s1, s2, off) were replaced: res/drawable-nodpi/room_desk.jpg, room_pwr_s1.jpg, room_pwr_s2.jpg, room_pwr_off.jpg.
+- Changed: StorageRoomScreen.kt only. The picture space is 1536 x 1024 (DESK_W, DESK_H). Moved to the new photo: the sync lines, the drive table and its USB cable to the backup server, the drive lights (now also on the two drive boxes), the tap areas (the drive boxes open Copies like the servers) and the tap area of the drive on the table.
+- Company Storage cards: Main Storage says "IronWolf Pro 24 TB x 16" with 261 TB of room (two groups of 8, 12 drives hold files); Backup Storage says "x 11" with 196 TB (one group of 11, 9 hold files). SsdCard now takes the drive count.
+- Not changed: the company storage total lives in the ledger (assets.storageTotalMb), not in the code.
+- Not compiled here (no Kotlin compiler in this environment): the GitHub Actions build is the first compile.
