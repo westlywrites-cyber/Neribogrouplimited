@@ -9,6 +9,8 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
@@ -35,6 +37,14 @@ class StorageRoomCloud(
     /** True while company storage is over its total: like sync, the feed is stopped then. */
     private val blocked: () -> Boolean
 ) {
+
+    init {
+        // The Storage Room app keeps its drives and backup story in the cloud through the same sign-in.
+        RoomState.attach(config, api)
+    }
+
+    /** Looks (blocking, call it off the main thread) whether the real internet and the cloud can be reached. */
+    fun checkInternet(): Boolean = RoomNet.check(config)
 
     /** Adds one line to the feed in the background. Best effort: a failure is ignored. */
     fun send(level: String, source: String, message: String, appId: String? = null) {
@@ -302,5 +312,161 @@ class StorageRealtime(
         const val TOPIC = "realtime:neribo-storage-room"
         const val HEARTBEAT_MILLIS = 25_000L
         const val IDLE_RETRY_MILLIS = 30_000L
+    }
+}
+
+/**
+ * Does the phone have the real internet right now? The Storage Room app only lets the owner change something while
+ * it does. It is a quick look at the cloud address every few seconds (any answer from the server counts as online;
+ * only a failed connection counts as offline), so a Wi-Fi without internet is caught too.
+ */
+object RoomNet {
+    /** True until a look fails. Read from the main thread, written from a background thread. */
+    @Volatile
+    var online: Boolean = true
+        private set
+
+    /** Blocking. Call it from a background thread. */
+    fun check(config: CloudConfig): Boolean {
+        val url = config.projectUrl
+        val key = config.anonKey
+        if (url.isEmpty()) {
+            online = false
+            return false
+        }
+        val ok = try {
+            val conn = URL("$url/auth/v1/health").openConnection() as HttpURLConnection
+            try {
+                conn.connectTimeout = 4_000
+                conn.readTimeout = 4_000
+                conn.requestMethod = "GET"
+                if (key.isNotEmpty()) conn.setRequestProperty("apikey", key)
+                conn.responseCode
+                true
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            false
+        }
+        online = ok
+        return ok
+    }
+
+    /** A cloud call just failed because there is no connection. */
+    fun failed() {
+        online = false
+    }
+}
+
+/**
+ * The Storage Room app's drives (A and B) and nightly-backup story are saved in the cloud (backend/006_room_drives.sql,
+ * table room_state), so a reinstall or an update brings them back exactly as they were.
+ * - [pull] reads the saved text of one key ("drives" or "backup");
+ * - [push] saves a text. It is sent at once in the background and kept until the cloud confirms it, so a save made
+ *   while the connection drops is sent as soon as it is back;
+ * - nothing is sent for a key before its first [pull] is finished ([markReady]), so a fresh install can never
+ *   overwrite the saved drives with empty ones.
+ */
+object RoomState {
+    sealed class Pulled {
+        object None : Pulled()
+        object Unavailable : Pulled()
+        class Found(val content: String, val updatedMs: Long) : Pulled()
+    }
+
+    private val lock = Any()
+    private var config: CloudConfig? = null
+    private var api: SupabaseApi? = null
+    private val ready = HashSet<String>()
+    private val dirty = LinkedHashMap<String, String>()
+    private var sending = false
+
+    fun attach(config: CloudConfig, api: SupabaseApi) {
+        synchronized(lock) {
+            this.config = config
+            this.api = api
+        }
+    }
+
+    /** The time a saved text was written: its "U|millis" line (0 when it has none). */
+    fun stamp(text: String): Long {
+        for (line in text.lineSequence()) {
+            if (line.startsWith("U|")) return line.substring(2).trim().toLongOrNull() ?: 0L
+        }
+        return 0L
+    }
+
+    /** Blocking. Call it from a background thread. */
+    fun pull(key: String): Pulled {
+        val a = synchronized(lock) { api } ?: return Pulled.Unavailable
+        val c = synchronized(lock) { config }
+        if (c == null || !c.signedIn) return Pulled.Unavailable
+        return when (val r = a.rpc("get_room_state", JSONObject().put("p_key", key))) {
+            is ApiResult.Ok -> {
+                if (r.json.optBoolean("found", false)) {
+                    Pulled.Found(r.json.optString("content", ""), r.json.optLong("updated_ms", 0L))
+                } else {
+                    Pulled.None
+                }
+            }
+            is ApiResult.Offline -> {
+                RoomNet.failed()
+                Pulled.Unavailable
+            }
+            else -> Pulled.Unavailable
+        }
+    }
+
+    /** Keeps the newest text of [key] to be saved in the cloud and sends it in the background. */
+    fun push(key: String, text: String) {
+        synchronized(lock) { dirty[key] = text }
+        flushAsync()
+    }
+
+    /** Drops a waiting text (the cloud copy won). */
+    fun discard(key: String) {
+        synchronized(lock) { dirty.remove(key) }
+    }
+
+    /** The first look at the cloud copy of [key] is done: from now on its saves may be sent. */
+    fun markReady(key: String) {
+        synchronized(lock) { ready.add(key) }
+        flushAsync()
+    }
+
+    /** Sends what is waiting (also called again every second or two while the room is open). */
+    fun flushAsync() {
+        synchronized(lock) {
+            if (sending || dirty.isEmpty()) return
+            sending = true
+        }
+        Thread {
+            try {
+                while (true) {
+                    val job: Pair<String, String>? = synchronized(lock) {
+                        dirty.entries.firstOrNull { ready.contains(it.key) }?.let { it.key to it.value }
+                    }
+                    if (job == null) break
+                    val a = synchronized(lock) { api } ?: break
+                    val r = a.rpc(
+                        "save_room_state",
+                        JSONObject().put("p_key", job.first).put("p_content", job.second)
+                    )
+                    if (r is ApiResult.Ok) {
+                        synchronized(lock) {
+                            if (dirty[job.first] == job.second) dirty.remove(job.first)
+                        }
+                    } else {
+                        if (r is ApiResult.Offline) RoomNet.failed()
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                // It stays waiting and is tried again.
+            } finally {
+                synchronized(lock) { sending = false }
+            }
+        }.start()
     }
 }
